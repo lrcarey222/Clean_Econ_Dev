@@ -16,7 +16,7 @@ region_id <- us_counties %>%
   filter(abbr == state_abbreviation) 
 
 #County Business Patterns
-cbp_2021 <- getCensus(
+cbp_2022 <- getCensus(
   name = "cbp",
   vars=c("STATE",
          "COUNTY",
@@ -28,35 +28,36 @@ cbp_2021 <- getCensus(
          "EMP",
          "PAYANN"),
   region = "county:*",
-  vintage = 2021)
+  vintage = 2022)
 
-cbp_21<-cbp_2021
+cbp_22<-cbp_2022
 
 #Join with State Abbreviations for state names etc
-cbp_21$state<-as.numeric(cbp_21$state)
-cbp_21<-left_join(states_simple,cbp_21,by=c("fips"="state"))
+cbp_22$state<-as.numeric(cbp_22$STATE)
+cbp_22<-left_join(states_simple,cbp_22 %>%
+                    mutate(state=as.numeric(STATE)),by=c("fips"="state"))
 
 #join with NAICS Codes to get industry descriptions
-cbp_21$naics2017<-as.numeric(cbp_21$NAICS2017)
+cbp_22$naics2017<-as.numeric(cbp_22$NAICS2017)
 #cbp_21 <-left_join(cbp_21,eti_long,by=c("naics2017"="6-Digit Code"))
 
 #Six Digit Level
-cbp_21_6d <- cbp_21 %>%
+cbp_22_6d <- cbp_22 %>%
   filter(INDLEVEL=="6")
 
 #Two Digit Level
-cbp21_2d <- cbp_21 %>%
+cbp22_2d <- cbp_22 %>%
   select(-fips) %>%
   mutate(state=as.numeric(STATE)) %>%
   filter(INDLEVEL=="2")  %>%
   mutate(FIPS=paste0(STATE, COUNTY)) %>%
   left_join(EAs,by=c("FIPS"="FIPS")) %>%
   left_join(naics2017 %>% mutate(naics2017=as.numeric(`2017 NAICS US   Code`)) %>%
-                                   select(naics2017,`2017 NAICS US Title`),by=c("NAICS2017"="naics2017")) %>%
+                                   select(naics2017,`2017 NAICS US Title`),by=c("naics2017"="naics2017")) %>%
   rename(naics_desc=`2017 NAICS US Title`)
 
 #Filter just for region of interest
-region_cbp_2d <- cbp21_2d %>%
+region_cbp_2d <- cbp22_2d %>%
   filter(abbr==state_abbreviation) %>%
   mutate(region_id=ifelse(fips %in% region_id$fips,1,0)) %>%
   mutate(code=ifelse(NAICS2017 %in% c("00","11","21","22","23","31-33","42","48-49","54"),NAICS2017,"Other")) %>%
@@ -71,7 +72,7 @@ region_totalemp<-region_cbp_2d %>%
          region_id==1) 
 
 #Calculate proportions
-total_emp <- cbp21_2d %>%
+total_emp <- cbp22_2d %>%
   filter(NAICS2017=="0")
 total_emp_nat<-cbp21_2d  %>%
   filter(NAICS2017=="0") %>%
@@ -90,7 +91,7 @@ fossil_codes <- tibble(
                   "Pipeline Transportation of Crude Oil",
                   "Pipeline Transportation of Natural Gas"))
 
-fossil_emp_national <- cbp_21 %>%
+fossil_emp_national <- cbp_22 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   group_by(fossil) %>%
   summarize_at(vars(EMP),sum,na.rm=T) %>%
@@ -98,7 +99,7 @@ fossil_emp_national <- cbp_21 %>%
   ungroup() %>%
   mutate(emp_share_national = EMP / EMP_nat)
 
-fossil_emp_county <- cbp_21 %>%
+fossil_emp_county <- cbp_22 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   filter(fossil==1) %>%
   group_by(abbr,full,STATE,COUNTY,fossil) %>%
@@ -158,6 +159,10 @@ fossil_emp_state <- fossil_emp_county %>%
   filter(full==state_name) %>%
   mutate(FIPS=paste0(STATE,COUNTY)) %>%
   left_join(county_labels,by=c("FIPS"="fips")) 
+
+
+
+
 
 
 #Diversity
@@ -233,7 +238,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_hachman_map_county",
 
 #Quarterly Census of Employment and Wages
 
-#2018:2023 data for industries in Clean Investment MOnitory
+#2018:2023 data for industries in Clean Investment MOnitor
 #Fastest:
 cim_qcew <- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/QCEW.csv')
 
@@ -263,10 +268,10 @@ for (year in c('2018', '2019', '2020', '2021')) {
 }
 
 # Loop for years 2022 and first three quarters of 2023 - note use of NAICS2022 codes
-for (year in c('2022', '2023')) {
+for (year in c('2022', '2023','2024')) {
   
   # Determine quarters to loop over based on the year
-  quarters <- if (year == '2023') c('1', '2', '3') else c('1', '2', '3', '4')
+  quarters <- if (year == '2024') c('1') else c('1', '2', '3', '4')
   
   # Loop over each quarter
   for (quarter in quarters) {
@@ -511,4 +516,193 @@ state_spec_1 <- state_emp %>%
                        tech))
 write.csv(state_spec_1,'C:/Users/LCarey.RMI/Downloads/state_spec_1.csv')
 
+#DOE Energy EMployment Report
+destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/'
+file_path <- paste0(destination_folder, "USEER 2024 Public Data.xlsx")
 
+state_useer <- read_excel(file_path, sheet = 7,skip=6)
+
+state_useer <- state_useer %>%
+  pivot_longer(cols=c("Solar":"Did not hire")) %>%
+  mutate(category="TBD",
+         category=ifelse(name %in% 
+                           c("Solar",
+                             "Wind",
+                             "Traditional hydropower",
+                             "Low impact hydropower, marine, and hydrokinetics",
+                             "Geothermal electricity",
+                             "Bioenergy/Combined heat and power",
+                             "Natural gas electricity",
+                             "Coal electricity",
+                             "Oil and other fossil fuel electricity",
+                             "Nuclear electricity",
+                             "Other electricity",
+                             "Electric power generation total"),
+                         "Electric Power Generation",category),
+         category=ifelse(name %in% 
+                           c("Traditional transmission and distribution",
+                             "Clean storage",
+                             "Other storage",
+                             "Storage total",
+                             "Smart grid",
+                             "Micro grid",
+                             "Other grid modernization",
+                             "Other (including commodity flows)",
+                             "Transmission, distribution, and storage total"),
+                         "Transmission, Distribution, and Storage",category),
+         category=ifelse(name %in% 
+                           c("Energy STAR and efficient lighting",
+                             "Traditional HVAC with an efficiency component",
+                             "High efficiency HVAC and renewable heating and cooling",
+                             "Advanced materials",
+                             "Other",
+                             "Energy efficiency total"),
+                         "Energy Efficiency",category),
+         category=ifelse(name %in% 
+                           c("Coal fuels",
+                             "Oil (petroleum and other fossil fuels)",
+                             "Natural gas fuels",
+                             "Corn ethanol",
+                             "Other ethanol and non-woody biomass",
+                             "Woody biomass",
+                             "Other biofuels",
+                             "Nuclear fuels",
+                             "Other fuels",
+                             "Fuels total"),
+                         "Fuels",category),
+         category=ifelse(name %in% 
+                           c("Gasoline and diesel vehicles",
+                             "Hybrid electric vehicles",
+                             "Plug-in hybrid electric vehicles",
+                             "Battery electric vehicles",
+                             "Natural gas vehicles",
+                             "Hydrogen/fuel cell vehicles",
+                             "Other vehicles",
+                             "Motor vehicle commodity flows",
+                             "Motor vehicle total"),
+                         "Vehicles",category),
+         category=ifelse(name %in% 
+                           c("Clean jobs without transmission and distribution",
+                             "Clean jobs with transmission and distribution"),
+                         "Clean Jobs",category),
+         category=ifelse(name %in%
+                           c( "Agriculture and Forestry",
+                              "Mining and Extraction",
+                              "Utilities",
+                              "Construction",
+                              "Manufacturing",
+                              "Trade",
+                              "Pipeline Transport & Commodity Flows",
+                              "Professional Services",
+                              "Other Services"),
+                         "Jobs by Industry",category),
+         category=ifelse(name %in%
+                           c("Very difficult hiring",
+                             "Somewhat difficult hiring",
+                             "Not at all difficult hiring",	
+                             "Did not hire"),
+                         "Hiring Difficulty",category))
+
+
+
+state_useer_total <- state_useer %>%
+  filter(category=="Jobs by Industry") %>%
+  group_by(`State abbreviation`,State) %>%
+  summarize_at(vars(value),sum,na.rm=T) %>%
+  mutate(name="Total energy jobs",
+         category="Totals")
+
+
+nat_useer_totals<- state_useer %>%
+  group_by(name,category) %>%
+  summarize_at(vars(value),sum,na.rm=T) 
+
+nat_useer_total<- state_useer %>%
+  filter(category=="Jobs by Industry") %>%
+  summarize_at(vars(value),sum,na.rm=T) %>%
+  mutate(name="Total energy jobs",
+         category="Totals")
+
+state_clean_useer<-left_join(state_useer,state_useer_total,by=c("State"="State"))
+state_clean_useer<-state_clean_useer %>%
+  mutate(state_share=value.x/value.y) 
+nat_clean_useer<-cbind(nat_useer_totals,nat_useer_total) 
+nat_clean_useer<-nat_clean_useer %>%
+  mutate(nat_share=value...3/value...4)
+
+state_clean_useer<-state_clean_useer %>%
+  left_join(nat_clean_useer %>% select(name...1,category...2,nat_share),by=c("name.x"="name...1","category.x"="category...2")) %>%
+  mutate(emp_lq = state_share/nat_share) %>%
+  arrange(desc(emp_lq)) %>%
+  select(State,name.x,category.x,value.x,state_share,emp_lq) %>%
+  filter(category.x != "Hiring Difficulty",
+         category.x != "Totals") %>%
+  mutate(clean = ifelse(name.x %in%
+                          c("Solar",
+                            "Wind",
+                            "Traditional hydropower",
+                            "Nuclear electricity",
+                            "Nuclear fuels",
+                            "Bioenergy/Combined heat and power",
+                            "Corn ethanol",
+                            "Woody biomass",
+                            "Other ethanol and non-woody biomass",
+                            "Other biofuels",
+                            "Clean storage",
+                            "Smart grid",
+                            "Micro grid",
+                            "Other grid modernization",
+                            "Low impact hydropower, marine, and hydrokinetics",
+                            "Geothermal electricity",
+                            "Battery electric vehicles",
+                            "Hybrid electric vehicles",
+                            "Plug-in hybrid electric vehicles",
+                            "Energy STAR and efficient lighting",
+                            "Traditional HVAC with an efficiency component",
+                            "Hydrogen/fuel cell vehicles",
+                            "High efficiency HVAC and renewable heating and cooling",
+                            "Advanced materials"),1,0))
+
+#State Level Specialization and Share across US
+state_emp_spec_useer <- state_clean_useer %>%
+  filter(clean==1,
+         category.x != "Fuels") %>%
+  group_by(State) %>%
+  slice_max(order_by=emp_lq,n=1) 
+write.csv(state_emp_spec_useer,file.path(output_folder, paste0(state_abbreviation,"_emp_spec_useer", ".csv")))
+
+state_emp_share_useer <- state_clean_useer %>%
+  filter(clean==1,
+         category.x != "Clean Jobs",
+         category.x != "Jobs by Industry") %>%
+  mutate(state_share=round(state_share*100,1)) %>%
+  group_by(State) %>%
+  slice_max(order_by=state_share,n=1) 
+
+
+#Individual state breakdown
+state_useer_breakdown <- state_clean_useer %>%
+  filter(State==state_name,
+         category.x %in% 
+           c("Electric Power Generation",
+             "Transmission, Distribution, and Storage",
+             "Energy Efficiency",
+             "Vehicles",
+             "Fuels"),
+         !grepl("total",name.x )) %>% 
+  group_by(category.x,clean) %>%
+  summarize_at(vars(value.x),sum,na.rm=T) %>%
+  select(clean,category.x,value.x) %>%
+  pivot_wider(names_from=category.x,values_from=value.x) %>%
+  write.csv(file.path(output_folder, paste0(state_abbreviation,"_useer_breakdown", ".csv")))
+
+state_useer_breakdown_ind <- state_clean_useer %>%
+  filter(State==state_name,
+         category.x %in% 
+           c("Jobs by Industry"),
+         !grepl("total",name.x )) %>% 
+  select(name.x,value.x)%>%
+  arrange(desc(value.x)) %>%
+  write.csv(file.path(output_folder, paste0(state_abbreviation,"_useer_breakdown_ind", ".csv")))
+  
+  
