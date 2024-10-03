@@ -41,7 +41,7 @@ library(blsAPI)
 library(ggrepel)
 library(fuzzyjoin)
 library(tigris)
-
+options(scipen = 999)
 rmi_palette<-c("#0BD0D9",
                "#0989B1",
                "#003A61",
