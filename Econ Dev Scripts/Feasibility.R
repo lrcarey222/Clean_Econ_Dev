@@ -1,8 +1,8 @@
 #Feasibility & Clean Growth Tool
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "NM"  # Replace with any US state abbreviation
-state_name <- "New Mexico"  # Replace with the full name of any US state
+state_abbreviation <- "SC"  # Replace with any US state abbreviation
+state_name <- "South Carolina"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username
 setwd("C:/Users/LCarey.RMI/")
@@ -273,6 +273,81 @@ state_ranks <- msa_data %>%
   summarize(across(c(percent_change_green_jobs_l5,green_share,unemployment_percent,capex,inv_gdp,ren_share_22,incent_gdp_rank,state_ems_change_1621,state_effective_tax_rate,med_house_inc,pov_rate,emp_pop,ind_elec_price,ren_cagr_20_23,gdp_17_22,property_value_usd,invest_index,worker_pay_x,cnbc_rank),
                 mean,na.rm=T)) 
 
+
+#County Level Feasibility
+cgt_county<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
+
+
+
+#I-85 Feasibility
+road_counties<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
+
+feasibility_roads <- cgt_county %>%
+  left_join(road_counties %>%
+              select(GEOID,FULLNAME,RTTYP) %>%
+              filter(RTTYP=="I"),by=c("county"="GEOID")) %>%
+  distinct()
+
+feas_EV_roads<-feasibility_roads %>%
+  inner_join(naics_data,by=c("industry_desc"="naics_desc",
+                            "aggregation_level"="aggregation_level"))%>%
+  filter(aggregation_level=="2",
+         RTTYP=="I",
+         transition_sector_category_id %in% c("9")) %>%
+  group_by(state_name,county_name,county) %>%
+  summarize_at(vars(density,rca),mean,na.rm=T)
+write.csv(feas_EV_roads,paste0(output_folder,"/",state_abbreviation,"_feas_EV_roads.csv"),row.names=F)
+
+feasibility_I85<-feasibility_roads %>%
+  inner_join(naics_data,by=c("industry_desc"="naics_desc",
+                             "aggregation_level"="aggregation_level"))%>%
+  filter(grepl("I- 85",FULLNAME),
+         aggregation_level=="2",
+         transition_sector_category_id %in% c("8","4","5","9")) %>%
+  group_by(county_name) %>%
+  slice_max(density,n=1)
+
+write.csv(feasibility_I85,paste0(output_folder,"/",state_abbreviation,"_feasibility_I85.csv"),row.names=F)
+
+
+
+
+#Feasibility Drivers
+feas_drivers<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/tech_feas_drivers.csv')
+feas_drivers<-right_join(feas_drivers,states_msa %>% 
+                           mutate(msa=as.numeric(cbsa)),by=c("msa"="msa"))
+
+state_feas_top5 <- feas_drivers %>%
+  left_join(naics_data,by=c("naics"="naics")) %>%
+  filter(aggregation_level.y=="2",
+         transition_sector_category_id %in% c("8","2","4","5","9"),
+         state_avb==state_abbreviation,
+         region=="EA") %>%
+  distinct(msa_name,naics_desc.x,density) %>%
+  group_by(msa_name) %>%
+  slice_max(density,n=5)
+
+state_feas_drivers <- feas_drivers %>%
+  left_join(naics_data,by=c("naics"="naics")) %>%
+  filter(aggregation_level.y=="2",
+         transition_sector_category_id %in% c("8","2","4","5","9"),
+         state_avb==state_abbreviation,
+         region=="EA",
+         contributor_in_tool=="TRUE",
+         rank_as_contributor_2>6) %>%
+  inner_join(state_feas_top5,by=c("msa_name","naics_desc.x","density"))%>%
+  group_by(msa_name,naics_desc.x) %>%
+  mutate(
+    row_id = rev(row_number()) # Create a unique row identifier for each naics_desc_2
+  ) %>%
+  arrange(row_id) %>%
+  select(msa_name, naics_desc.x, naics_desc_2, row_id) %>%
+  pivot_wider(
+    names_from = row_id, # Pivot using the unique row identifier
+    values_from = naics_desc_2, 
+    values_fn = list(naics_desc_2 = first) # Ensure that each cell only contains one value
+  ) %>%
+  arrange(msa_name)
 
 #Misc
 feasibility_naics<-naics_data %>%

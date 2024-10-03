@@ -7,8 +7,8 @@
 #4. Announced Investments by Segment, Technology within States, Economic Areas and MSAs
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "NM"  # Replace with any US state abbreviation
-state_name <- "New Mexico"  # Replace with the full name of any US state
+state_abbreviation <- "SC"  # Replace with any US state abbreviation
+state_name <- "South Carolina"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username
 setwd("C:/Users/LCarey.RMI/")
@@ -18,9 +18,9 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 # Clean investment Monitor Data - Check it's the latest quarter available
-investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_24/quarterly_actual_investment.csv'
-facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_24/manufacturing_energy_and_industry_facility_metadata.csv'
-socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_24/socioeconomics.csv'
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/quarterly_actual_investment.csv'
+facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/manufacturing_energy_and_industry_facility_metadata.csv'
+socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/socioeconomics.csv'
 
 # Read Data
 investment <- read.csv(investment_data_path, skip=5)
@@ -35,7 +35,7 @@ tech_mapping <- data.frame(
   Technology = c("Batteries", "Solar", "Critical Minerals", "Fueling Equipment", "Zero Emission Vehicles", "Electrolyzers", "Storage", "Wind", "Hydrogen", "SAF", "Storage", "Nuclear", "Solar", "Wind"),
   tech = c("Batteries & Components", "Solar Energy Components", "Low-Carbon Minerals", "Low-Carbon Industrial Equipment", "Electric Vehicles", "Low-Carbon Industrial Equipment", "Batteries & Components", "Wind Energy Components", "Green Hydrogen", "Biofuels", "Energy Utility Systems", "Nuclear Electric Power", "Solar Electric Power", "Wind Electric Power")
 )
-tech_mapping_left_join(tech_mapping,eti_long %>% select(Sector,Subsector,Technology,`6-Digit Code`,`6-Digit Description`),by=c("tech"="Technology"))
+tech_mapping <- left_join(tech_mapping,eti_long %>% select(Sector,Subsector,Technology,`6-Digit Code`,`6-Digit Description`),by=c("tech"="Technology"))
 tech_mapping<-left_join(tech_mapping,naics2022 %>% select("2022 NAICS Code",
                                                           "2022 NAICS Title",
                                                           "2017 NAICS Code"),
@@ -114,6 +114,25 @@ investment_growth_wide<-investment_growth %>% #wide format for Datawrapper
 
 
 #State Clean Energy Investment  - Clean Investment Monitor
+#Total Clean Investment within Division
+division_abbr<-census_divisions %>%
+  filter(State.Code==state_abbreviation) 
+state_inv_tot <- investment %>%
+  filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
+  left_join(census_divisions, by=c("State"="State.Code")) %>%
+  group_by(Division,State,quarter) %>%
+  summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
+  filter(Division==division_abbr$Division,
+         State != "DC") %>%
+  left_join(socioecon,by=c("State"="State","quarter"="quarter"))%>%
+  mutate(year_quarter = yq(quarter)) %>%
+  mutate(cum_inv = cumsum(Estimated_Actual_Quarterly_Expenditure),
+         cum_inv_cap=cum_inv/population) %>%
+  mutate(inv_index_18 = 100*cum_inv/cum_inv[quarter=="2022-Q2"],na.rm=T) %>%
+  select(year_quarter,State,inv_index_18)  %>%
+  pivot_wider(names_from=State,values_from=inv_index_18) 
+write.csv(state_inv_tot,paste0(output_folder,"/",state_abbreviation,"_cuminv_index.csv"))
+
 
 # Determine the top 5 technologies by value for each state and segment and create "Other" Category
 top_technologies <-investment %>%
@@ -136,11 +155,20 @@ states_investment_quarterly <- investment %>%
   left_join(top_technologies, by = c("State", "industry")) %>%
   rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
   mutate(industry = ifelse(top=="1",industry, "Other"),
-         industry=ifelse(is.na(industry),"Other",Technology)) %>%
+         industry=ifelse(is.na(industry),"Other",industry)) %>%
   group_by(State,industry,quarter) %>%
   summarize_at(vars(Value,real_gdp),sum,na.rm=T) %>%
   mutate(inv_gdp = Value/real_gdp) %>%
   mutate(year_quarter = yq(quarter))
+
+state_abbr_inv_q <-states_investment_quarterly %>%
+  ungroup() %>%
+  filter(State==state_abbreviation) %>%
+  mutate(year=yq(quarter)) %>%
+  select(year,Value,industry) %>%
+  pivot_wider(names_from=industry,values_from=Value) %>%
+  arrange(year) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_quarterly_inv.csv"))
 
 #Quarterly Clean Energy Investment Chart for the State
 plot_quarterly_inv<-ggplot(data=states_investment_quarterly %>%
@@ -188,7 +216,7 @@ states_investment_gdp_2123 <- investment %>%
   filter(year_quarter>"2020-12-01") %>%
   mutate(post_IRA = ifelse(year_quarter>"2022-08-15",1,0)) %>%
   filter(post_IRA=="1") %>%
-  group_by(State,industry,Subcategory) %>%
+  group_by(State,industry) %>%
   summarize_at(vars(Value,real_gdp),sum,na.rm=T) %>%
   mutate(inv_gdp = Value/real_gdp) %>%
   group_by(State) %>%
@@ -230,6 +258,12 @@ ggsave(paste0(output_folder,"/state_specialization_map.png"), plot = inv_spec_ma
 
 
 #Select State Investment/GDP
+
+state_abbr_inv_spec<-states_investment_gdp_2123 %>%
+  filter(State==state_abbreviation) %>%
+  slice_max(order_by=gdp_lq,n=6) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_top_inv_gdp.csv"))
+
 plot_invgdp<- ggplot(data=states_investment_gdp_2123 %>%
                        filter(State==state_abbreviation) %>%
                        slice_max(order_by=gdp_lq,n=6),aes(y=reorder(Subcategory,gdp_lq),x=gdp_lq,fill=Subcategory)) +
@@ -254,14 +288,16 @@ state_man_total <- investment %>%
 
 region_abbrv<-states_simple %>%
   filter(abbr == state_abbreviation) 
+division_abbr<-census_divisions %>%
+  filter(State.Code==state_abbreviation)
 
 state_man <- facilities %>%
-  left_join(states_simple,by=c("State"="abbr") ) %>%
+  left_join(census_divisions,by=c("State"="State.Code") ) %>%
   mutate(date=as.Date(Announcement_Date),
          year=substr(date,1,4),
          post_IRA = ifelse(date>"2022-08-15",1,0)) %>%
   filter(Segment=="Manufacturing",
-         region.x %in% region_abbrv$region,
+         Division==division_abbr$Division,
          post_IRA=="1") %>%
   group_by(State,Technology) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
@@ -272,7 +308,8 @@ state_man<-state_man[1:3]
 #Wide format for stacked column chart in Datawrapper
 state_man_wide <- state_man %>%
   select(State,Total_Facility_CAPEX_Estimated,Technology) %>%
-  pivot_wider(names_from=Technology,values_from=Total_Facility_CAPEX_Estimated) 
+  pivot_wider(names_from=State,values_from=Total_Facility_CAPEX_Estimated) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_manufacturing_wide.csv"))
 
 #Stacked Column chart of clean energy manufacturing
 plot_manufacturing<-ggplot(data=state_man,aes(x=reorder(State,-Total_Facility_CAPEX_Estimated),y=Total_Facility_CAPEX_Estimated,fill=Technology)) +
@@ -285,6 +322,7 @@ plot_manufacturing<-ggplot(data=state_man,aes(x=reorder(State,-Total_Facility_CA
   scale_y_continuous(expand=c(0,0))
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=plot_manufacturing,width=8,height=6,units="in",dpi=300)
+
 #ANNOUNCED INVESTMENT
 #All Manufacturing Facilities
 facilities_man<-facilities %>%
@@ -873,3 +911,41 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_state_ira_plot", ".p
        dpi = 300)
   
   
+#Investment Announcements by Major Road
+road_counties<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
+
+facilities_roads <- facilities %>%
+  filter(!is.na(county_2020_geoid)) %>%
+  left_join(road_counties %>%
+              select(GEOID,FULLNAME,RTTYP) %>%
+              filter(RTTYP=="I"),by=c("county_2020_geoid"="GEOID")) %>%
+  distinct()
+
+facilities_roads_sum <- facilities_roads %>%
+  #filter(!is.na(FULLNAME))%>%
+  #dummy variable if FULLNAME is blank
+  mutate(road=ifelse(FULLNAME=="",0,1)) %>%
+  filter(Segment=="Manufacturing") %>%
+  group_by(road) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  group_by()%>%
+  mutate(share=round(Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated)*100,2)) %>%
+  arrange(desc(Total_Facility_CAPEX_Estimated))
+  
+facilities_I85<-facilities_roads %>%
+  filter(grepl("I- 85",FULLNAME)) 
+write.csv(facilities_I85,"C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/SC/facilities_I85.csv")
+
+
+man_roads<-cbp_2021 %>%
+  mutate(GEOID=as.numeric(paste0(STATE,COUNTY))) %>%
+  left_join(road_counties %>%
+              select(GEOID,FULLNAME,RTTYP) %>%
+              filter(RTTYP=="I"),by=c("GEOID"="GEOID")) %>%
+  distinct()%>%
+  filter(SECTOR=="31") %>%
+  group_by(abbr,FULLNAME) %>%
+  summarize_at(vars(EMP),sum,na.rm=T) %>%
+  ungroup()%>%
+  mutate(share=round(EMP/sum(EMP)*100,2)) %>%
+  arrange(desc(EMP))

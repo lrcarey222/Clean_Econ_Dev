@@ -80,8 +80,12 @@ write.csv(state_fedinv_map,paste0(output_folder,"/",state_abbreviation,"_state_f
 
 
 #Federal Tax Credit Incentives State-Level Estimates
-tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_category.csv',skip=2)
-tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_state.csv',skip=2)
+tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/public_investment_by_category.csv',skip=5)
+tax_inv_cat_tot <- tax_inv_cat%>% group_by(Segment,Category) %>%
+  summarize_at(vars(Total.Federal.Investment.2023USBn),sum,na.rm=T)
+tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/public_investment_by_state.csv',skip=5)
+tax_inv_state_tot <- tax_inv_state %>% group_by(State) %>%
+  summarize_at(vars(Total.Federal.Investment..2023.Billion.USD.),sum,na.rm=T)
 
 #45X
 fac_45x<-facilities %>%
@@ -90,14 +94,15 @@ fac_45x<-facilities %>%
                            "Wind",
                            "Critical Minerals",
                            "Batteries"),
-         Current_Facility_Status=="O") %>%
+         Current_Facility_Status=="O"
+)%>%
   group_by(State,Segment) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
   group_by(Segment) %>%
   mutate(cap_share=Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated)) %>%
-  left_join(tax_inv_cat %>% filter(Category=="Advanced Manufacturing Tax Credits"),by=c("Segment")) %>%
-  left_join(tax_inv_state %>% select(State,Total.Federal.Investment..2022.Million.USD.),by=c("State")) %>%
-  mutate(state_45x = Total.Federal.Investment.2022USBn*cap_share) 
+  left_join( tax_inv_cat_tot %>%
+              filter(Category=="Advanced Manufacturing Tax Credits"),by=c("Segment")) %>%
+  mutate(state_45x = Total.Federal.Investment.2023USBn*cap_share) 
 
 #45V & 45Q
 fac_45vq<-investment %>%
@@ -109,12 +114,12 @@ fac_45vq<-investment %>%
   summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
   group_by(Segment) %>%
   mutate(cap_share=Estimated_Actual_Quarterly_Expenditure/sum(Estimated_Actual_Quarterly_Expenditure)) %>%
-  left_join(tax_inv_cat %>% filter(Category=="Emerging Climate Technology Tax Credits"),by=c("Segment")) %>%
-  left_join(tax_inv_state %>% select(State,Total.Federal.Investment..2022.Million.USD.),by=c("State")) %>%
-  mutate(state_45vq = Total.Federal.Investment.2022USBn*cap_share) 
+  left_join(tax_inv_cat_tot %>% filter(Category=="Emerging Climate Technology Tax Credits"),by=c("Segment")) %>%
+  left_join(tax_inv_state_tot %>% select(State,Total.Federal.Investment..2023.Billion.USD.),by=c("State")) %>%
+  mutate(state_45vq = Total.Federal.Investment.2023USBn*cap_share) 
 
 #45
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/april_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2024.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -136,9 +141,9 @@ state_45 <- op_gen %>%
   summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
   ungroup() %>%
   mutate(share_mw=`Nameplate Capacity (MW)`/sum(`Nameplate Capacity (MW)`)) %>%
-  left_join(tax_inv_state %>% select(State,Total.Federal.Investment..2022.Million.USD.),by=c("Plant State"="State")) %>%
-  cbind(tax_inv_cat %>% filter(Category=="Clean Electricity Tax Credits")) %>%
-  mutate(state_45 = Total.Federal.Investment.2022USBn*share_mw)
+  left_join(tax_inv_state_tot %>% select(State,Total.Federal.Investment..2023.Billion.USD.),by=c("Plant State"="State")) %>%
+  cbind(tax_inv_cat_tot %>% filter(Category=="Clean Electricity Tax Credits")) %>%
+  mutate(state_45 = Total.Federal.Investment.2023USBn*share_mw)
 
 #48
 url <- 'https://www.eia.gov/electricity/monthly/xls/table_6_01_b.xlsx'
@@ -168,11 +173,11 @@ state_48 <- rooftop_state %>%
   select(State,ind_gen,com_gen,res_gen) %>%
   mutate(com_share=(ind_gen+com_gen)/sum((ind_gen+com_gen)),na.rm=T,
          res_share=res_gen/sum(res_gen),na.rm=T) %>%
-  left_join(tax_inv_state %>% select(State,Total.Federal.Investment..2022.Million.USD.),by=c("State")) %>%
-  cbind(tax_inv_cat %>% filter(Category=="Non-residential Distributed Energy Tax Credits")) %>%
-  left_join(tax_inv_cat %>% filter(Category=="Residential Energy & Efficiency Tax Credits"),by=c("Segment")) %>%
-  mutate(state_48_res = Total.Federal.Investment.2022USBn.y*(res_share)) %>%
-  mutate(state_48_com=  Total.Federal.Investment.2022USBn.x*(com_share))
+  left_join(tax_inv_state_tot %>% select(State,Total.Federal.Investment..2023.Billion.USD.),by=c("State")) %>%
+  cbind(tax_inv_cat_tot %>% filter(Category=="Non-residential Distributed Energy Tax Credits")) %>%
+  left_join(tax_inv_cat_tot %>% filter(Category=="Residential Energy & Efficiency Tax Credits"),by=c("Segment")) %>%
+  mutate(state_48_res = Total.Federal.Investment.2023USBn.y*(res_share)) %>%
+  mutate(state_48_com=  Total.Federal.Investment.2023USBn.x*(com_share))
 
 
 #zev
@@ -190,8 +195,8 @@ zev<-investment %>%
   summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
   group_by(Segment) %>%
   mutate(share_ev=Estimated_Actual_Quarterly_Expenditure/sum(Estimated_Actual_Quarterly_Expenditure)) %>%
-  left_join(tax_inv_cat %>% filter(Category=="Zero Emission Vehicle Tax Credits"),by=c("Segment")) %>%
-  mutate(state_zev = Total.Federal.Investment.2022USBn*share_ev)
+  left_join(tax_inv_cat_tot %>% filter(Category=="Zero Emission Vehicle Tax Credits"),by=c("Segment")) %>%
+  mutate(state_zev = Total.Federal.Investment.2023USBn*share_ev)
 
 #combine
 state_estimates<-state_45 %>%
@@ -202,16 +207,30 @@ state_estimates<-state_45 %>%
   left_join(state_48 %>% select(State,state_48_res,state_48_com),by=c("State")) %>%
   left_join(zev %>% select(State,state_zev),by=c("State")) %>%
   ungroup() %>%
-  select(-geometry,-Segment.x,-Segment.y) %>%
+  select(-Segment.x,-Segment.y) %>%
   mutate(across(where(is.numeric), ~replace_na(., 0))) %>%
   mutate(total=(state_45+state_45x+state_45vq+state_48_res+state_48_com+state_zev)) %>%
-  left_join(tax_inv_state %>% select(State,Total.Federal.Investment..2022.Million.USD.),by=c("State")) %>%
-  mutate("Clean Electricity Tax Credits"=state_45/total*Total.Federal.Investment..2022.Million.USD.,
-         "Advanced Manufacturing Tax Credits"=state_45x/total*Total.Federal.Investment..2022.Million.USD.,
-         "Emerging Climate Technology Tax Credits"=state_45vq/total*Total.Federal.Investment..2022.Million.USD.,
-         "Residential Energy & Efficiency Tax Credits"=state_48_res/total*Total.Federal.Investment..2022.Million.USD.,
-         "Non-residential Distributed Energy Tax Credits"=state_48_com/total*Total.Federal.Investment..2022.Million.USD.,
-         "Zero Emission Vehicle Tax Credits"=state_zev/total*Total.Federal.Investment..2022.Million.USD.)
+  left_join(tax_inv_state_tot %>% select(State,Total.Federal.Investment..2023.Billion.USD.),by=c("State")) %>%
+  mutate("Clean Electricity Tax Credits"=state_45/total*Total.Federal.Investment..2023.Billion.USD.,
+         "Advanced Manufacturing Tax Credits"=state_45x/total*Total.Federal.Investment..2023.Billion.USD.,
+         "Emerging Climate Technology Tax Credits"=state_45vq/total*Total.Federal.Investment..2023.Billion.USD.,
+         "Residential Energy & Efficiency Tax Credits"=state_48_res/total*Total.Federal.Investment..2023.Billion.USD.,
+         "Non-residential Distributed Energy Tax Credits"=state_48_com/total*Total.Federal.Investment..2023.Billion.USD.,
+         "Zero Emission Vehicle Tax Credits"=state_zev/total*Total.Federal.Investment..2023.Billion.USD.) %>%
+  mutate(total2=`Clean Electricity Tax Credits`+
+           `Advanced Manufacturing Tax Credits`+
+           `Emerging Climate Technology Tax Credits`+
+           `Residential Energy & Efficiency Tax Credits`+
+           `Non-residential Distributed Energy Tax Credits`+
+           `Zero Emission Vehicle Tax Credits`) 
+
+ggplot(data=state_estimates,aes(x=`Advanced Manufacturing Tax Credits`,y=state_45x))+
+  geom_point()+
+  #log x and y axis
+  #scale_x_log10()+
+  #scale_y_log10()+
+  geom_label(aes(label=State))+
+  theme_minimal()
 
 cat_estimate<- state_estimates %>%
   mutate(across(where(is.numeric),~sum(.)))
@@ -223,16 +242,18 @@ state_estimates2<-state_estimates %>%
          `Residential Energy & Efficiency Tax Credits`,
          `Non-residential Distributed Energy Tax Credits`,
          `Zero Emission Vehicle Tax Credits`) %>%
-  pivot_longer(cols=-State,names_to="Category",values_to="Federal Investment (millions 2022 USD)") %>%
-  left_join(tax_inv_state %>% select(State,State.GDP..2022.Million.USD.),by=c("State")) %>%
-  mutate("Federal Investment (millions 2022 USD)"=round(`Federal Investment (millions 2022 USD)`,2),
-         "State GDP (millions 2022 USD)"=round(State.GDP..2022.Million.USD.,2),
-         "Federal Investment (% of State GDP)"=round(`Federal Investment (millions 2022 USD)`/`State GDP (millions 2022 USD)`*100,2)) 
+  pivot_longer(cols=-State,names_to="Category",values_to="Federal Investment (Billions 2023 USD)") %>%
+  left_join(socioecon %>% filter(quarter=="2024-Q2"), by=c("State")) %>%
+  mutate("Federal Investment per Capita"=round(`Federal Investment (Billions 2023 USD)`*1000000000/population),
+         "Federal Investment (Billions 2023 USD)"=round(`Federal Investment (Billions 2023 USD)`,2),
+         "State GDP (Billions 2023 USD)"=round(real_gdp/1000,2),
+         "Federal Investment (% of State GDP)"=round(`Federal Investment (Billions 2023 USD)`/`State GDP (Billions 2023 USD)`*100,3)) %>%
+  select(-quarter,-real_gdp,-population)
 write.csv(state_estimates2,"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_taxcredits_estimate.csv")
 
 #Charts
 ggplot(data=state_estimates2) +
-  geom_col(aes(x=reorder(State,-`Federal Investment (millions 2022 USD)`),y=`Federal Investment (millions 2022 USD)`,fill=Category),position="stack") +
+  geom_col(aes(x=reorder(State,-`Federal Investment (Billions 2023 USD)`),y=`Federal Investment (Billions 2023 USD)`,fill=Category),position="stack") +
   coord_flip() +
   scale_fill_manual(values=rmi_palette) +
   labs(title = "Federal IRA Investment by State, Cateogry", 
@@ -260,76 +281,45 @@ ggplot(data=state_estimates2) +
 
 #Regional State Comparisons
 division_of_interest<-census_divisions %>%
-  filter(State.Code==state_abbreviation))
+  filter(State.Code==state_abbreviation)
 state_ira <- state_estimates2 %>%
   left_join(census_divisions,by=c("State"="State.Code")) %>%
-  
-  
+  filter(Division==division_of_interest$Division,
+         State != "DC") 
 
-  
-  
-  
-  
-  
+state_ira_dw <- state_ira %>%
+  select(State,Category,`Federal Investment (% of State GDP)`) %>%
+  pivot_wider(names_from=Category,values_from=`Federal Investment (% of State GDP)`) %>%
+  #new column of total of all numeric columns
+  mutate(total = rowSums(select(., `Clean Electricity Tax Credits`:`Zero Emission Vehicle Tax Credits`))) %>%
+  arrange(desc(total)) %>%
+write.csv(paste0(output_folder,"/",state_abbreviation,"_state_ira.csv"),row.names=F)
+
+ggplot(data=state_ira) +
+  geom_col(aes(x=reorder(State,-`Federal Investment (% of State GDP)`),y=`Federal Investment (% of State GDP)`,fill=Category),position="stack") +
+  coord_flip() +
+  scale_fill_manual(values=rmi_palette) +
+  labs(title = "Federal IRA Investment by State, Cateogry", 
+       subtitle = "Percentage of 2023 GDP",
+       x="State",
+       fill = "Tax Credit",
+       caption="Source: Clean Investment Monitor")+
+  scale_y_continuous(expand=c(0,0))+
+  theme_classic()+
+  theme(legend.position=c(0.8,0.8)) 
+
   
 #RMI Economic Tides Analysis - June 18 Data
   # Load necessary library
 library(readxl)
 
-# List of state abbreviations
-state_abbreviations <- c("AL", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY")
-
-# Initialize an empty list to store data frames
-data_frames <- list()
-
-# Loop through each state abbreviation
-for (state_abbr in state_abbreviations) {
-  # Construct the file path
-  file_path <- paste0('OneDrive - RMI/Documents - US Program/6_Projects/Sprint24/Analysis/IRA Downscaling/IRA Funding to states_ econ tides 2.0/June 18 data/ira_econ_tides/', state_abbr, '/Allstates_IRA/Allstates_IRA.xlsx')
-  
-  # Read the Excel file (assuming the data is on sheet 9)
-  data <- read_excel(file_path, sheet = 9)
-  
-  # Add a new column with the state abbreviation
-  data$State <- state_abbr
-  
-  # Append the data frame to the list
-  data_frames[[state_abbr]] <- data
-}
-
-# Combine all data frames into one
-ira_allstates <- do.call(rbind, data_frames)
-
-#clean Superfund
-ira_allstates <- ira_allstates %>%
-  select(State,Sector,Section,Provision,`CBO National Estimate ($)`,`CBO Downscaled State Estimate ($)`,`Climate-Aligned Estimate ($)`) 
-
-superfund_clean<-ira_allstates %>%
-  filter(Provision=="Superfund") %>%
-  mutate(state_share=`CBO Downscaled State Estimate ($)`/`CBO National Estimate ($)`,
-         national2=as.numeric("12411000000"),
-         superfund=national2*state_share) %>%
-    select(State,superfund,national2)
-
-ira_allstates <- ira_allstates %>%
-  left_join(superfund_clean, by = "State") %>%
-  mutate(
-    `CBO National Estimate ($)` = if_else(Provision == "Superfund", national2, `CBO National Estimate ($)`),
-    `CBO Downscaled State Estimate ($)` = if_else(Provision == "Superfund", superfund, `CBO Downscaled State Estimate ($)`),
-    `Climate-Aligned Estimate ($)` = if_else(Provision == "Superfund", superfund, `Climate-Aligned Estimate ($)`)
-  ) %>%
-  select(-superfund,-national2)  # Remove the temporary superfund column after update
-
-#Clean 45X
-ira_allstates <- ira_allstates %>%
-  mutate(`Climate-Aligned Estimate ($)`=if_else(Provision=="Advanced Manufacturing Production Credit",`Climate-Aligned Estimate ($)`*0.6,`Climate-Aligned Estimate ($)`))
-ira_allstates <-ira_allstates %>%
-  mutate(`Climate-Aligned Estimate ($)`=if_else(Provision=="Advanced Manufacturing Production Credit" & State=="NM",`Climate-Aligned Estimate ($)`/0.6/1.3*1.2,`Climate-Aligned Estimate ($)`))
-#Clean Energy Efficient Home Credit
-ira_allstates <- ira_allstates %>%
-  mutate(`Climate-Aligned Estimate ($)`=if_else(`Climate-Aligned Estimate ($)`<0,`CBO Downscaled State Estimate ($)`,`Climate-Aligned Estimate ($)`))
+ira_allstates<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Sprint24/Analysis/IRA Downscaling/IRA Funding to states_ econ tides 2.0/July 16 data/Analysis/allstates_output_formatted.csv')
 
 #Totals relative to population/gdp
+colnames(ira_allstates)[6]<-"CBO National Estimate ($)"
+colnames(ira_allstates)[7]<-"CBO Downscaled State Estimate ($)"
+colnames(ira_allstates)[8]<-"Climate-Aligned Estimate ($)"
+
 sum_ira_allstates<-ira_allstates %>%
   group_by(State) %>%
   summarize_at(vars(`CBO National Estimate ($)`,`CBO Downscaled State Estimate ($)`,`Climate-Aligned Estimate ($)`),sum,na.rm=T) %>%
@@ -356,8 +346,13 @@ state_abbr_ira <- ira_allstates %>%
   mutate(across(where(is.numeric), ~round(./1000000000, 3))) %>%
   mutate(share = `Climate-Aligned Estimate ($)` / sum(`Climate-Aligned Estimate ($)`))
 
+state_10ira<- state_abbr_ira %>%
+  slice_max(order_by=`Climate-Aligned Estimate ($)`,n=10) %>%
+  select(Provision,`CBO Downscaled State Estimate ($)`,`Climate-Aligned Estimate ($)`)
 
-state_10ira_plot <- ggplot(data=state_abbr_ira %>% slice_max(order_by=`Climate-Aligned Estimate ($)`,n=10)) +
+write.csv(state_10ira,paste0(output_folder,"/",state_abbreviation,"_state_10ira.csv"),row.names=F)
+
+state_10ira_plot <- ggplot(data=state_10ira) +
   geom_col(aes(x=reorder(Provision,`Climate-Aligned Estimate ($)`),y=`Climate-Aligned Estimate ($)`,fill=Sector),position="stack") +
   coord_flip() +
   scale_fill_manual(values=rmi_palette) +
@@ -426,6 +421,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_policy_radial", ".pn
 #Good Jobs First Data
 gjf<- read.csv("C:/Users/LCarey.RMI/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
 
+
 #State Totals by Awarding Agency
 gjf_stateagency <- gjf %>%
   filter(Location== state_name,
@@ -460,8 +456,18 @@ library(purrr)
 # URL of the page
 url <- "https://www.ncsl.org/fiscal/state-tax-actions-database"
 
-# Read the HTML content of the page
-webpage <- read_html(url)
+# Set additional headers to mimic a real browser
+headers <- c(
+  "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
+  "Accept" = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Encoding" = "gzip, deflate, br",
+  "Accept-Language" = "en-US,en;q=0.9"
+)
+
+response <- GET(url, add_headers(.headers = headers), timeout(120))
+
+# Read the HTML content from the response
+webpage <- read_html(response)
 
 # Extract tables from the webpage
 tables <- html_table(webpage, fill = TRUE)
@@ -510,8 +516,25 @@ sc_clim_taxchanges<-climate_taxes %>%
 
 dev_pol <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/dbo_Program.csv")
 
+keywords<- c("carbon","climate","emission",
+             "greenhouse","renewable","solar","wind",
+             "energy","fuel","gas","electric","vehicle",
+             "EV","transportation","manufacturing","job","jobs","oil","research","R&D","innovation","sustainable","building","industry","industrial")
+pattern <- paste0("(?i)\\b(", paste(keywords, collapse = "|"), ")\\b")
+
 climate_dev_pol <- dev_pol %>%
-  filter(grepl(pattern, ProgramDescription, ignore.case = TRUE))
+  # Extract all matching keywords as a list column
+  mutate(Keywords = str_extract_all(ProgramDescription, pattern)) %>%
+  # Keep only rows where at least one keyword was found
+  filter(lengths(Keywords) > 0) %>%
+  # Add new columns for the first two keywords and convert to sentence case
+  mutate(
+    Theme1 = map_chr(Keywords, ~ str_to_sentence(.x[1] %||% NA_character_)),  # First keyword in sentence case
+    Theme2 = map_chr(Keywords, ~ str_to_sentence(.x[2] %||% NA_character_))   # Second keyword in sentence case
+  ) %>%
+  # Replace any instance of "Job" with "Jobs" in Theme1
+  mutate(Theme1 = str_replace(Theme1, "\\bJob\\b", "Jobs")) %>%  
+  select(State,Program_Name,Theme1,Theme2,Program_Status,Agency,ProgramDescription,ProgramObjective,ProgramSpecifics,EligibilityRequirements,LegalCitation,Website1)
 
 climate_dev_pol_sum<-climate_dev_pol %>%
   filter(Program_Status=="Active")%>%
@@ -526,5 +549,20 @@ ggplot(data=climate_dev_pol_sum, aes(x=reorder(State,Program_Name),y=Program_Nam
   theme_classic()
 
 
+#policies in State of Interest
 state_climate_pol <- climate_dev_pol %>%
-  filter(State==state_name)
+  filter(State==state_name) %>%
+  arrange(Theme1)
+write.csv(state_climate_pol,paste0(output_folder,"/",state_abbreviation,"_state_climate_pol.csv"),row.names=F)
+
+state_climate_pol_sum<-state_climate_pol %>%
+  group_by(Theme1) %>%
+  summarize_at(vars(Program_Name),n_distinct)
+
+
+#Climate Legislation
+climate_leg<-read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/climate_leg.csv")
+
+climate_leg_state<-climate_leg %>%
+  filter(statename==state_name) %>%
+  select(statename,statustype,bill_id,bill_name,bill_description,bill_type_1,bill_type_2,issue_type_1,issue_type_2,source_link,sponsors_list)

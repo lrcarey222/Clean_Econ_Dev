@@ -16,7 +16,7 @@ region_id <- us_counties %>%
   filter(abbr == state_abbreviation) 
 
 #County Business Patterns
-cbp_2022 <- getCensus(
+cbp_2021 <- getCensus(
   name = "cbp",
   vars=c("STATE",
          "COUNTY",
@@ -28,36 +28,35 @@ cbp_2022 <- getCensus(
          "EMP",
          "PAYANN"),
   region = "county:*",
-  vintage = 2022)
+  vintage = 2021)
 
-cbp_22<-cbp_2022
+cbp_21<-cbp_2021
 
 #Join with State Abbreviations for state names etc
-cbp_22$state<-as.numeric(cbp_22$STATE)
-cbp_22<-left_join(states_simple,cbp_22 %>%
-                    mutate(state=as.numeric(STATE)),by=c("fips"="state"))
+cbp_21$state<-as.numeric(cbp_21$state)
+cbp_21<-left_join(states_simple,cbp_21,by=c("fips"="state"))
 
 #join with NAICS Codes to get industry descriptions
-cbp_22$naics2017<-as.numeric(cbp_22$NAICS2017)
+cbp_21$naics2017<-as.numeric(cbp_21$NAICS2017)
 #cbp_21 <-left_join(cbp_21,eti_long,by=c("naics2017"="6-Digit Code"))
 
 #Six Digit Level
-cbp_22_6d <- cbp_22 %>%
+cbp_21_6d <- cbp_21 %>%
   filter(INDLEVEL=="6")
 
 #Two Digit Level
-cbp22_2d <- cbp_22 %>%
+cbp21_2d <- cbp_21 %>%
   select(-fips) %>%
   mutate(state=as.numeric(STATE)) %>%
   filter(INDLEVEL=="2")  %>%
   mutate(FIPS=paste0(STATE, COUNTY)) %>%
   left_join(EAs,by=c("FIPS"="FIPS")) %>%
   left_join(naics2017 %>% mutate(naics2017=as.numeric(`2017 NAICS US   Code`)) %>%
-                                   select(naics2017,`2017 NAICS US Title`),by=c("naics2017"="naics2017")) %>%
+                                   select(naics2017,`2017 NAICS US Title`),by=c("NAICS2017"="naics2017")) %>%
   rename(naics_desc=`2017 NAICS US Title`)
 
 #Filter just for region of interest
-region_cbp_2d <- cbp22_2d %>%
+region_cbp_2d <- cbp21_2d %>%
   filter(abbr==state_abbreviation) %>%
   mutate(region_id=ifelse(fips %in% region_id$fips,1,0)) %>%
   mutate(code=ifelse(NAICS2017 %in% c("00","11","21","22","23","31-33","42","48-49","54"),NAICS2017,"Other")) %>%
@@ -72,7 +71,7 @@ region_totalemp<-region_cbp_2d %>%
          region_id==1) 
 
 #Calculate proportions
-total_emp <- cbp22_2d %>%
+total_emp <- cbp21_2d %>%
   filter(NAICS2017=="0")
 total_emp_nat<-cbp21_2d  %>%
   filter(NAICS2017=="0") %>%
@@ -91,7 +90,7 @@ fossil_codes <- tibble(
                   "Pipeline Transportation of Crude Oil",
                   "Pipeline Transportation of Natural Gas"))
 
-fossil_emp_national <- cbp_22 %>%
+fossil_emp_national <- cbp_21 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   group_by(fossil) %>%
   summarize_at(vars(EMP),sum,na.rm=T) %>%
@@ -99,7 +98,7 @@ fossil_emp_national <- cbp_22 %>%
   ungroup() %>%
   mutate(emp_share_national = EMP / EMP_nat)
 
-fossil_emp_county <- cbp_22 %>%
+fossil_emp_county <- cbp_21 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   filter(fossil==1) %>%
   group_by(abbr,full,STATE,COUNTY,fossil) %>%
@@ -159,10 +158,6 @@ fossil_emp_state <- fossil_emp_county %>%
   filter(full==state_name) %>%
   mutate(FIPS=paste0(STATE,COUNTY)) %>%
   left_join(county_labels,by=c("FIPS"="fips")) 
-
-
-
-
 
 
 #Diversity
