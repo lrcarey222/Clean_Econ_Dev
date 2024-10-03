@@ -15,8 +15,8 @@ setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "MT"  # Replace with any US state abbreviation
-state_name <- "Montana"  # Replace with the full name of any US state
+state_abbreviation <- "SC"  # Replace with any US state abbreviation
+state_name <- "South Carolina"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
 
@@ -44,11 +44,15 @@ region_counties<-us_counties %>%
   filter(fips %in% region_id$FIPS) %>%
   left_join(census_divisions,by=c("abbr"="State.Code","full"="State"))
 
+state_counties<-us_counties %>%
+  filter(abbr %in% state_abbreviation) %>%
+  left_join(census_divisions,by=c("abbr"="State.Code","full"="State")) %>%
+  select(Division,abbr,full,county,fips)
 
 
 #State Operating Generation Capacity
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/april_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2024.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -241,7 +245,7 @@ ggsave(file.path(output_folder, paste0("plot_elec_cap_1224", ".png")),
 states_gen <- op_gen %>%
   group_by(`Plant State`,`Operating Year`,Technology) %>%
   summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
-  left_join(states_simple,by=c("Plant State"="abbr"))
+  left_join(census_divisions,by=c("Plant State"="State.Code"))
 
 states_rengen <- states_gen %>%
   filter(`Operating Year` > 2012 & Technology %in% c("Conventional Hydroelectric",
@@ -254,44 +258,50 @@ states_rengen <- states_gen %>%
                                                      "Solar Thermal without Energy Storage",
                                                      "Offshore Wind Turbine")) %>%
   
-  group_by(region,full, `Operating Year`) %>%
+  group_by(Division,State, `Operating Year`) %>%
   summarize(`Nameplate Capacity (MW)` = sum(`Nameplate Capacity (MW)`, na.rm = TRUE)) %>%
-  complete(`Operating Year` = 2013:2023, fill = list(`Nameplate Capacity (MW)` = 0)) %>%
+  complete(`Operating Year` = 2013:2024, fill = list(`Nameplate Capacity (MW)` = 0)) %>%
   mutate(Year = make_date(`Operating Year`)) %>%
   mutate(cum_cap = cumsum(`Nameplate Capacity (MW)`)) %>%
-  group_by(region,full) %>%
-  mutate(cap_index_18 = 100*cum_cap/cum_cap[Year=="2022-01-01"]) %>%
-  mutate(rengrowth_18_23 = round(cap_index_18-100,1))
+  group_by(Division,State) %>%
+  mutate(cap_index_18 = 100*cum_cap/cum_cap[Year=="2018-01-01"]) %>%
+  mutate(rengrowth_18_23 = round(cap_index_18-100,1)) 
 
+region_abbrv<-census_divisions %>%
+  filter(State.Code == state_abbreviation) 
 
 plot_elec_2020index<-ggplot(data=states_rengen %>%
-                              filter(region == region_abbrv$region),
+                              filter(Division == region_abbrv$Division),
                             aes(x=Year,
                                 y=cap_index_18,
-                                group=full,
-                                color=full)) +
-  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$region), full != state_name), size = 1) +  # Plot other lines
-  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$region,), full == state_name), size = 2) +
+                                group=State,
+                                color=State)) +
+  geom_line(data = subset(states_rengen%>%filter(Division == region_abbrv$Division), State != state_name), size = 1) +  # Plot other lines
+  geom_line(data = subset(states_rengen%>%filter(Division == region_abbrv$Division,), State == state_name), size = 2) +
   scale_size_identity() +
   labs(title="Renewable Electricity Growth since 2022",
        subtitle="Cumulative Renewable Capacity Additions since 2012, indexed to Jan 2022",
        x="", y="Index (100=08-2020)",
        color="State")+
   theme_classic()+
-  scale_color_manual(values = rmi_palette)
+  scale_color_manual(values = expanded_palette)
 
-region_abbrv<-states_simple %>%
-  filter(abbr == state_abbreviation) 
+states_rengen_dw <- states_rengen %>%
+  ungroup() %>%
+  filter(Division == region_abbrv$Division) %>%
+  select(State,`Operating Year`,cap_index_18) %>%
+  pivot_wider(names_from=State,values_from = cap_index_18) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_rengen_18_23.csv"))
 
 #Chart: Renewable Electricity Growth since the IRA
 plot_elec_2020index<-ggplot(data=states_rengen %>%
-                              filter(region == region_abbrv$region),
+                              filter(region == region_abbrv$Division),
                             aes(x=Year,
                                 y=cap_index_18,
                                 group=full,
                                 color=full)) +
-  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$region), full != state_name), size = 1) +  # Plot other lines
-  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$region,), full == state_name), size = 2) +
+  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$Division), full != state_name), size = 1) +  # Plot other lines
+  geom_line(data = subset(states_rengen%>%filter(region == region_abbrv$Division,), full == state_name), size = 2) +
   scale_size_identity() +
   labs(title="Renewable Electricity Growth since 2022",
        subtitle="Cumulative Renewable Capacity Additions since 2012, indexed to Jan 2022",
@@ -312,6 +322,12 @@ plan_gen <- read_excel(file_path, sheet = 2,skip=2)
 abbr_plangen <- plan_gen %>%
   filter(`Plant State`== state_abbreviation) %>%
   mutate(Technology = ifelse(grepl("Natural Gas", Technology), "Natural Gas", Technology))
+
+abbr_plangen %>% 
+  group_by(Technology,Status) %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+    pivot_wider(names_from=Technology,values_from=`Nameplate Capacity (MW)`) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_plangen.csv"))
 
 planned_gen_plot<-ggplot(data=abbr_plangen,aes(x=reorder(Technology,-`Nameplate Capacity (MW)`),
                                                y=`Nameplate Capacity (MW)`,
@@ -504,12 +520,22 @@ EA_renshare <- opr_eas %>%
   arrange(desc(em_rate))
 
 write.csv(EA_renshare,"Downloads/EA_renshare.csv")
+
+division_abbrv<-census_divisions %>%
+  filter(State.Code==state_abbreviation)
+
 multi_region_id <- EAs %>% 
-  filter(`EA Name`==region_name)
+  left_join(counties %>% select(STATEFP, GEOID), by = c("FIPS" = "GEOID")) %>%
+  mutate(statefp = as.numeric(STATEFP)) %>%
+  left_join(states_simple, by = c("statefp" = "fips")) %>%
+  left_join(census_divisions, by = c("full" = "State")) %>%
+  filter(Division==division_abbr$Division) %>%
+  select(-geometry) %>%
+  distinct()
 
 #Regional EA Emissions 
 plot_data<- EA_renshare %>%
-  filter(region %in% multi_region_id$region) %>%
+  filter(`EA Name` %in% multi_region_id$`EA Name`) %>%
   mutate(region_id=as.factor(ifelse(`EA Name` %in% multi_region_id$`EA Name`,1,0))) %>%
   slice_min(em_rate,n=20)
 
@@ -614,6 +640,31 @@ ggplot(data=region_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) 
   theme_classic()+
   scale_fill_manual(values = rmi_palette)
 
+#State-Level Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates
+state_pop <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/demographics_baseline_state.csv")
+
+state_industrial <- county_elec_cons %>%
+  mutate(FIPS=paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7))) %>%
+  filter(Sector=="industrial",
+         FIPS %in% state_counties$fips) %>%
+  group_by(State.Name,Year,Sector,Source) %>%
+  summarize_at(vars(Consumption.MMBtu,Expenditure.US.Dollars),sum,na.rm=T) %>%
+  mutate(exp_cons=Expenditure.US.Dollars/Consumption.MMBtu) %>%
+  left_join(state_pop,by=c("State.Name"="State.Name","Year"="Year")) %>%
+  mutate(exp_pop=Expenditure.US.Dollars/Population.Counts.Counts)
+
+ggplot(data=state_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) +
+  geom_col(position='stack') +
+  labs(title=paste0("Industrial Energy Expenditure in ",state_name, "out to 2050"), 
+       subtitle="Modelled based on 2016 data",
+       y="$/MMBtu",
+       x="Year",
+       caption="Source:SLOPE") +
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  scale_fill_manual(values = rmi_palette)
+
+
 
 #Electricity Price in Industrial Sector - SEDS Data
 seds_all <- read.csv('https://www.eia.gov/state/seds/sep_update/Complete_SEDS_update.csv') #NB: BIG file
@@ -645,6 +696,14 @@ seds_elec_pric_ind <- seds_all %>%
   mutate(data_gdp = round(Data/Data_gdp*100,2)) %>%
   select(Region,Division,State,StateCode,Year,MSN, Description,Data,data_gdp)
 
+
+seds_elec_pric_ind %>%
+  filter(Division == region_division$Division,
+         StateCode != "DC",
+         MSN=="ESICD") %>%
+  select(StateCode,Year,Data) %>%
+  pivot_wider(names_from=StateCode,values_from=Data) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_ind_elec_prices.csv"))
 
 industrial_prices_plot<-ggplot() +
   geom_line(data=seds_elec_pric_ind %>%
@@ -684,6 +743,115 @@ industrial_exp_gdp_plot<-ggplot() +
   scale_y_continuous(expand = c(0,0))+
   scale_x_continuous(expand = c(0,0))+
   scale_color_manual(values = expanded_palette)
+
+
+region_division <- census_divisions %>%
+  filter(State.Code ==state_abbreviation)
+
+#State Sector Electricity Consumption
+seds_ind_eleccons <- seds_all %>%
+  filter(MSN %in% c("ESACP", #Electricity consumed by (sales to ultimate customers in) the transportation sector
+                    "ESCCP", #Electricity consumed by (sales to ultimate customers in) the commercial sector
+                    "ESICP", #Electricity consumed by (sales to ultimate customers in) the industrial sector
+                    "ESRCP"), #Electricity consumed by (sales to ultimate customers in) the residential sector
+         Year %in% 2012:2022) %>%
+  left_join(states_simple,by=c("StateCode"="abbr")) %>%
+  left_join(census_divisions, by=c("StateCode"="State.Code")) %>%
+  filter(Division==region_division$Division,
+         StateCode != "DC") %>%
+  group_by(StateCode,MSN) %>%
+  mutate(ind_index=100*Data/Data[Year==2012]) 
+
+#stacked column chart
+ggplot(data=seds_ind_eleccons %>% filter(StateCode==state_abbreviation),aes(x=Year,y=Data,fill=MSN)) +
+  geom_col(position='stack') +
+  labs(title=paste("Electricity Consumption by Sector in", state_name), 
+       x="Year", y="MWh",
+       caption="Source: EIA") +
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  scale_fill_manual(values = expanded_palette)
+
+seds_eleccons <- seds_ind_eleccons %>%
+  group_by(StateCode,Year) %>%
+  summarize_at(vars(Data),sum,na.rm=T) %>%
+  mutate(ind_index=100*Data/Data[Year==2012]) %>%
+  select(-Data) %>%
+  pivot_wider(names_from=StateCode,values_from=ind_index) %>%
+  write.csv(file.path(output_folder, paste0("seds_eleccons", ".csv")))
+
+#Total Energy Expenditure by Sector
+seds_pe <- seds_all %>%
+  #Residential
+  filter(MSN %in% c("CLRCV","NGRCV","PARCV","PARCV","GERCV","SORCV","WDRCV","ESRCV","LORCV","SFRCV",
+                    "CLCCV","NGCCV","PACCV","EMCCB","GECCV","HYCCB","SOCCV","WWCCV","WYCCV","ESCCV","LOCCV","SFCCV",
+                    "CLICV","NGICV","PAICV","BFLCV","EMICB","GEICV","HYICB","SOICV","WWICV","WYICV","ESICV","LOICV","SFINV",
+                    "CLACV","NGACV","PAACV","ESACV","LOACV"))%>%
+  mutate(Sector=ifelse(MSN %in% c("CLRCV","NGRCV","PARCV","PARCV","GERCV","SORCV","WDRCV","ESRCV","LORCV","SFRCV"),"Residential","")) %>%
+  #Commercial
+  mutate(Sector=ifelse(MSN %in% c("CLCCV","NGCCV","PACCV","EMCCB","GECCV","HYCCB","SOCCV","WWCCV","WYCCV","ESCCV","LOCCV","SFCCV"),"Commercial",Sector))%>%
+  #Industrial
+  mutate(Sector=ifelse(MSN %in% c("CLICV","NGICV","PAICV","BFLCV","EMICB","GEICV","HYICB","SOICV","WWICV","WYICV","ESICV","LOICV","SFINV"),"Industrial",Sector))%>%
+  #Transportation
+  mutate(Sector=ifelse(MSN %in% c("CLACV","NGACV","PAACV","ESACV","LOACV"),"Transportation",Sector)) %>%
+  filter(Year %in% 2012:2022) %>%
+  group_by(StateCode,Year,Sector) %>%
+  summarize_at(vars(Data),sum,na.rm=T) %>%
+  left_join(states_simple,by=c("StateCode"="abbr")) %>%
+  left_join(census_divisions, by=c("StateCode"="State.Code")) %>%
+  filter(Division==region_division$Division,
+         StateCode != "DC",
+         StateCode != "WV") %>%
+  left_join(seds_all %>% filter(MSN=="GDPRV"),by=c("Year"="Year","StateCode"="StateCode"), suffix = c("", "_gdp")) %>%
+  mutate(data_gdp = round(Data/Data_gdp*100,2)) %>%
+  group_by(StateCode,MSN) %>%
+  mutate(ind_index=100*Data/Data[Year==2012]) 
+
+ggplot(data=seds_pe %>% filter(Sector=="Industrial"),aes(x=Year,y=data_gdp,fill=StateCode)) +
+  geom_line() +
+  labs(title=paste("Energy Expenditure by Sector in", state_name), 
+       x="Year", y="MWh",
+       caption="Source: EIA") +
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  scale_fill_manual(values = expanded_palette)
+
+#Stacked Column Chart each state in Year 2022
+ggplot(data=seds_pe %>% filter(Year==2022),aes(x=StateCode,y=data_gdp,fill=Sector)) +
+  geom_col(position='stack') +
+  labs(title=paste("Energy Expenditure by Sector in", state_name), 
+       x="Year", y="MWh",
+       caption="Source: EIA") +
+  scale_y_continuous(expand = c(0,0))+
+  theme_classic()+
+  scale_fill_manual(values = expanded_palette)
+
+seds_pe_sector_dw<-seds_pe %>%
+  ungroup()%>%
+  filter(Year==2022) %>%
+  select(StateCode,Sector,data_gdp) %>%
+  pivot_wider(names_from=StateCode,values_from=data_gdp) %>%
+  write.csv(file.path(output_folder, paste0("seds_pe_sector", ".csv")))
+
+#Total Energy Consumption
+seds_energycons <- seds_all %>%
+  filter(MSN %in% c("FFTCB",
+                    "NUETB",
+                    "RETCB",
+                    "ELNIB",
+                    "ELISB"), 
+         Year %in% 2012:2022) %>%
+  left_join(states_simple,by=c("StateCode"="abbr")) %>%
+  left_join(census_divisions, by=c("StateCode"="State.Code")) %>%
+  filter(Division==region_division$Division,
+         StateCode != "DC") %>%
+  group_by(StateCode,Year) %>%
+  summarize_at(vars(Data),sum,na.rm=T) %>%
+  group_by(StateCode) %>%
+  mutate(ind_index=100*Data/Data[Year==2012]) %>%
+  select(-Data) %>%
+  pivot_wider(names_from=StateCode,values_from=ind_index) %>%
+  write.csv(file.path(output_folder, paste0("seds_energycons", ".csv")))
 
 #Electricity Imports & Exports
 seds_elec_impexp <- seds_all %>%

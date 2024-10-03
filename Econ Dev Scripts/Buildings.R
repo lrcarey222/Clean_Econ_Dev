@@ -29,7 +29,14 @@ temp_file <- tempfile(fileext = ".xlsx")
 GET(url = file_url, write_disk(temp_file, overwrite = TRUE))
 ggrf <- read_excel(temp_file, sheet = 4)
 
+ggrf<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/GGRF_Needs_by_county_Aug2023.csv')
+
+
 #Clean file
+colnames(ggrf)[3]<-"GGRF category"
+colnames(ggrf)[7]<-"Investment ($'000)"
+colnames(ggrf)[8]<-"Rooftop PV measure"
+
 ggrf_county <- ggrf %>%
   left_join(county_pop %>% select(STNAME,CTYNAME,STATE,COUNTY,POPESTIMATE2022),by=c("State"="STNAME","County"="CTYNAME")) %>%
   mutate(FIPS=paste0(sprintf("%02d", STATE), sprintf("%03d", COUNTY))) %>%
@@ -115,11 +122,20 @@ heatpump_ggrf <- ggrf_tech_period %>%
   pivot_wider(names_from="LIDC",values_from="investment")
 write.csv(heatpump_ggrf,'C:/Users/LCarey.RMI/Downloads/heatpump_ggrf.csv')
 
-
+#State EAs Investment by Tech and period
+ggrf_tech_state <- ggrf_tech %>%
+  filter(State==state_name) %>%
+  inner_join(county_pop %>% select(STNAME,CTYNAME,STATE,COUNTY,POPESTIMATE2022),by=c("State"="STNAME","County"="CTYNAME")) %>%
+  mutate(FIPS=paste0(sprintf("%02d", STATE), sprintf("%03d", COUNTY))) %>%
+  left_join(EAs,by=c("FIPS"="FIPS")) %>%
+  group_by(State,`EA Name`,Technology,Period) %>%
+  summarize_at(vars(investment),sum,na.rm=T) %>%
+  pivot_wider(names_from="Technology",values_from="investment")
+write.csv(ggrf_tech_state,'C:/Users/LCarey.RMI/Downloads/ggrf_tech_state.csv')
 
 
 #Rooftop Solar
-rooftop_county <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/techpot_baseline_county.csv")
+rooftop_county <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
 colnames(rooftop_county)[6]<-"potential_mwh"
 rooftop_county<-rooftop_county %>%
   mutate(statefp=substr(Geography.ID,2,3),
@@ -218,7 +234,7 @@ rooftop_state <- rooftop_state %>%
 
 
 #EPA Data
-epa_state <- read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/eGrid2022_data.xlsx",sheet=5, skip=1)
+epa_state <- read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eGrid2022_data.xlsx",sheet=5, skip=1)
 epa_state <- epa_state %>%
   select(PSTATABB,FIPSST,STNAMEPCAP,STNGENAN,STGENATH)
 

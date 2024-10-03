@@ -24,6 +24,16 @@ fed_rdd <- innov_state %>%
          lowc_rdd_gdp=(publicrd_lowcarbon+publicdemo_lowcarbon+publicseed_lowcarbon)/realgdp) %>%
   arrange(desc(total_lowc_share))
 
+division_of_interest<- census_divisions %>%
+  filter(State.Code==state_abbreviation) 
+
+division_rdd <- fed_rdd %>%
+  left_join(census_divisions,by=c("statecode"="State.Code")) %>%
+  filter(Division==division_of_interest$Division) 
+write.csv(division_rdd,paste0(output_folder,"/division_rdd.csv"))
+  
+
+
 write.csv(fed_rdd,paste0(output_folder,"/fed_rdd.csv"))
 
 fed_loc_rdd_plot<-ggplot(data=fed_rdd,aes(x=reorder(statecode,lowc_rdd_gdp),y=lowc_rdd_gdp,fill=lowc_rdd_gdp))+
@@ -69,6 +79,12 @@ fed_rdd_5_plot<-ggplot(data=fed_rdd_5,aes(x=Order,y=publicfund,fill=Sector))+
   theme_classic()+
   theme(legend.position="none")
 
+
+#State RDD Funding by Sector
+state_rdd<- fed_rdd_sector %>% filter(statecode==state_abbreviation,
+                          publicfund>0)
+
+
 fed_rdd_state_plot <- ggplot(data=fed_rdd_sector %>% filter(statecode==state_abbreviation,
                                                             publicfund>0),aes(x=reorder(Sector,publicfund),y=publicfund,fill=publicfund))+
   geom_col()+
@@ -109,6 +125,16 @@ patents <- innov_state %>%
   rename_with(~ sub("patents_", "", .), starts_with("patents")) %>%
   select(-all,-lowcarbon) %>%
   pivot_longer(cols=materials:wind,names_to="Sector",values_to="patents") 
+
+
+patents_division <- patents %>%
+  left_join(census_divisions,by=c("statecode"="State.Code")) %>%
+  filter(Division==division_of_interest$Division,
+         statecode != "DC") %>%
+  select(statename,Sector,patents) %>%
+  pivot_wider(names_from=statename,values_from=patents) 
+write.csv(patents_division,paste0(output_folder,"/patents_division.csv"))
+  
 
 patents_5<-patents %>%
   group_by(Sector) %>%

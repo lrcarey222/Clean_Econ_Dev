@@ -1,8 +1,8 @@
 #GDP R Script
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "NM"  # Replace with any US state abbreviation
-state_name <- "New Mexico"  # Replace with the full name of any US state
+state_abbreviation <- "SC"  # Replace with any US state abbreviation
+state_name <- "South Carolina"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username and update output folder for saved charts etc
 setwd("C:/Users/LCarey.RMI/")
@@ -54,6 +54,30 @@ gdp_state_total_map<-ggplot() +
         panel.background = element_rect(fill = "white", color = "white"))  # Sets panel background to white
 ggsave(file.path(output_folder, paste0(state_abbreviation,"_gdp_state_total_map", ".png")), 
        plot = gdp_state_total_map,width=8,height=6,units="in",dpi=300)
+
+
+#Regional GDP Growth Chart
+region_abbrv<-states_simple %>%
+  filter(abbr == state_abbreviation) 
+
+region_division <- census_divisions %>%
+  filter(State.Code ==state_abbreviation)
+
+state_gdp_index <- gdp_state_total %>%
+  right_join(states_simple,by=c("GeoName"="full")) %>%
+  left_join(census_divisions,by=c("GeoName"="State")) %>%
+  pivot_longer(cols = X1997:X2023, names_to = "Year", values_to = "GDP") %>%
+  mutate(Year = as.numeric(str_remove(Year, "X"))) %>%
+  group_by(GeoName) %>%
+  mutate(gdp_index_2013 = 100*GDP/GDP[Year=="2012"])%>%
+  filter(Division==region_division$Division,
+         State.Code != "DC",
+         Year>2011) %>%
+  ungroup() %>%
+  select(abbr,Year,gdp_index_2013) %>%
+  pivot_wider(names_from = abbr, values_from = gdp_index_2013) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_gdp_index.csv")) 
+  
 
 #Filter to 2 or 3-digit NAICS Level
 gdp_ind2 <- gdp_ind %>%
@@ -140,7 +164,7 @@ state_lq<-location_quotients %>%
 
 
 #Chart: State Location Quotient
-state_lq_plot<-ggplot(data=state_lq,aes(x=LQ,y=gdp_growth_1823,size=X2023,color=label)) +
+state_lq_plot<-ggplot(data= ,aes(x=LQ,y=gdp_growth_1823,size=X2023,color=label)) +
   geom_point(aes(fill=label),shape=21,color="black",stroke=0.5,alpha=0.75) +
   geom_text_repel(aes(label = ifelse(LQ>1,paste(Description,"= ", round(gdp_growth_1823,0),"% growth."),"")), 
                   box.padding = 0.5, 
@@ -249,25 +273,30 @@ dev.off()
 
 #For Clean Energy Industries
 clean_gdpind<-gdp_ind %>%
+  mutate(IndustryClassification_3=substr(IndustryClassification,1,3),
+         IndustryClassification_2=substr(IndustryClassification,1,2)) %>%
   left_join(eti_long %>% 
-              select(`3-Digit Code`,Sector) %>%
-              mutate(naics3=as.character(`3-Digit Code`)),by=c("IndustryClassification"="naics3")) %>%
+              select(`3-Digit Code`,Sector, Subsector,Technology) %>%
+              mutate(naics3=as.character(`3-Digit Code`)),by=c("IndustryClassification_3"="naics3")) %>%
   left_join(eti_long %>% 
-              select(`2-Digit Code`,Sector) %>%
-              mutate(naics2=as.character(`2-Digit Code`)),by=c("IndustryClassification"="naics2")) %>%
+              select(`2-Digit Code`,Sector,Subsector,Technology) %>%
+              mutate(naics2=as.character(`2-Digit Code`)),by=c("IndustryClassification_2"="naics2")) %>%
   mutate(sector=ifelse(is.na(Sector.x),Sector.y,Sector.x)) %>%
-  filter(!is.na(sector)) %>%
-  distinct(GeoName,IndustryClassification,Description,X2021,X2022,X2023,gdp_growth_1722,gdp_growth_1823,sector) %>%
+  mutate(subsector=ifelse(is.na(Subsector.x),Subsector.y,Subsector.x)) %>%
+  mutate(technology=ifelse(is.na(Technology.x),Technology.y,Technology.x)) %>%
+  filter(!is.na(sector),
+         sector != "Transition Enabling Sector") %>%
+  distinct(GeoName,IndustryClassification,Description,X2017,X2018,X2021,X2022,X2023,gdp_growth_1722,gdp_growth_1823,sector,subsector,technology) %>%
   mutate(gdp_2122=1-X2022/X2021)
 
 
 state_cleangdp<-clean_gdpind %>%
-  filter(GeoName==state_name) %>%
+  filter(GeoName==state_name) 
   
 
 state_lq_clean <-state_lq %>%
   filter(Description %in% clean_gdpind$Description) 
-state_lq_dirty<-state_lq %>%
+state_lq_dirty<- state_lq %>%
   filter(!(Description %in% clean_gdpind$Description))
 
 state_lq_clean_plot<-ggplot() +
@@ -299,15 +328,92 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_state_lq_clean_plot"
 
 #State 3-Digit Clean Energy Industries
 
-state_lq_clean <-state_lq_3 %>%
-  left_join(clean_gdpind %>% select(GeoName,Description,sector,X2021,gdp_2122),by=c("GeoName","Description")) %>%
-  mutate(gdp_contr=gdp_growth_1722/100*X2022) %>%
-  group_by(sector) %>%
-  summarize_at(vars(X2022,gdp_contr),sum,na.rm=T) %>%
-  ungroup() %>%
-  mutate(gdp_share=X2022/sum(X2022),
-         gdp_contr_share=gdp_contr/sum(gdp_contr)) 
+state_lq_clean_3 <-state_lq_3 %>%
+  inner_join(clean_gdpind %>% select(GeoName,Description,sector,subsector,X2021,gdp_2122),by=c("GeoName","Description")) %>%
+  mutate(gdp_contr=X2022-X2021) %>%
+  distinct(GeoName,Description,X2022,gdp_2122,gdp_growth_1722,LQ,gdp_contr,label)
   
+
+
+state_lq_clean3_plot<-ggplot() +
+  geom_point(data=state_lq_clean_3,aes(x=LQ,y=gdp_growth_1722,size=X2022,fill=label),shape=21,color="black",stroke=0.5,alpha=0.75) +
+  geom_text_repel(data=state_lq_clean_3 %>% filter(LQ>1),aes(x=LQ,y=gdp_growth_1722,label = Description), 
+                  box.padding = 0.2, 
+                  point.padding = 0.2, 
+                  segment.color = 'grey',
+                  size=3.5,
+                  color='black') +
+  labs(title=paste("Growth and Specialization in ",state_name," in clean energy-related industries."),
+       subtitle="Clean energy-related industries are defined as those with the potential to participate in the energy transition technology supply chain.",
+       y="GDP Growth (17-22)", x="Location Quotient",
+       caption="Source: BEA, Clean Growth Tool") +
+  geom_vline(xintercept = 1,color='darkgrey') +
+  geom_hline(yintercept= weighted.mean(state_lq$gdp_growth_1722,w=state_lq$X2022) ,color='darkgrey') +
+  theme_classic()+
+  scale_fill_manual(values = rmi_palette)+
+  scale_size(range = c(3, 20)) +  # Controlling the size of the bubbles
+  theme(legend.position="none")
+
+
+ggsave(file.path(output_folder, paste0(state_abbreviation,"_state_lq_clean3_plot", ".png")), 
+       plot = state_lq_clean3_plot,
+       width = 8,   # Width of the plot in inches
+       height = 8,   # Height of the plot in inches
+       dpi = 300)
+
+# Specify the output path and filename
+output_file <- file.path(output_folder, paste0(state_abbreviation, "_gdp3_treemap.png"))
+
+# Open a PNG device
+png(filename = output_file, width = 8, height = 8, units = 'in', res = 300)
+
+# Create the treemap
+treemap(
+  state_lq_clean_3,
+  index = c("label", "Description"),
+  vSize = "X2022",
+  vColor="label",
+  palette = rmi_palette,
+  title = paste0(state_name,"'s Clean Energy Economy by Industry Growth and Specialization"),
+  #caption = "Source: Bureau of Economic Analysis",
+  fontsize.title = 16,
+  fontsize.labels = 12,
+  align.labels = list(
+    c("left", "top"),
+    c("center", "center"),
+    fontface.labels = list(
+      2,  # Bold text for better visibility
+      1
+    ),
+    
+    fontsize.labels = list(
+      12,  # Bold text for better visibility
+      10
+    )
+  )
+)
+
+# Close the device
+dev.off()
+
+#Growth Chart
+clean_gdpgrowth <- ggplot(data=state_lq_clean_3,
+                          aes(x=reorder(Description,gdp_contr),y=gdp_contr))+
+  geom_bar(stat="identity",fill=rmi_palette[1],color='black')+
+  coord_flip()+
+  labs(title = paste("2021-2022 GDP Contribution from ", state_name,"'s Clean Energy Industries"),
+       x = "Industry",
+       y = "GDP Contribution ($m)",
+       subtitle = "Change in GDP by industry 2021-2022") +
+  theme_minimal()
+
+
+ggsave(file.path(output_folder, paste0(state_abbreviation,"_state_clean_gdp_contr_plot", ".png")), 
+       plot = clean_gdpgrowth,
+       width = 8,   # Width of the plot in inches
+       height = 8,   # Height of the plot in inches
+       dpi = 300)
+
 
 #Clean Location Quotients
 gdp_proportions_clean <- clean_gdpind %>%
@@ -359,4 +465,82 @@ top_sectors_plot<-ggplot(top_sectors, aes(x = reorder(sector, LQ), y = LQ, fill 
   theme(legend.position = c(0.8,0.25),
         plot.title = element_text(size = 14, face = "bold"),
         plot.subtitle = element_text(size = 12))
+
+
+
+#National Clean Energy Industry Comparison
+national_clean_gdp<-clean_gdpind %>%
+  filter(!is.na(sector),is.na(gdp_growth_1823)) %>%
+  group_by(GeoName) %>%
+  summarize_at(vars(X2017,X2021,X2022),sum,na.rm=T) %>%
+  mutate(gdp_1722=1-X2022/X2017,
+         gdp_2122=1-X2022/X2021) %>%
+  arrange(desc(gdp_2122))
+
+
+#Energy-Related GDP Growth Map
+us_states<-usmap::us_map(regions = "states")
+state_map_data <- left_join(us_states, national_clean_gdp, by = c("full" = "GeoName"))
+
+state_labels<-centroid_labels(regions = c("states"))
+state_labels <- state_labels %>%
+  left_join(gdp_state_total,by=c("full"="GeoName"))
+
+gdp_state_clean_map<-ggplot() +
+  geom_polygon(data = state_map_data, aes(x=x,y=y,group=group, fill = gdp_2122), color = "white") +
+  geom_text(data = state_labels, aes(x = x, y = y, label = abbr), size = 2, color = "black", fontface = "bold") +
+  scale_fill_gradient2(low="#F8931D",mid="white",high="#0989B1", midpoint=0, na.value = "grey90", name = "% Growth") +
+  labs(title = "Economic Growth in Clean Energy-Related Industries, by State", 
+       subtitle = "Percentage Growth, 2021-2022",
+       fill = "% Growth",
+       caption="Source: Bureau of Economic Analysis") +
+  theme(legend.position=c(0.9,0.1))+
+  theme_void() +
+  theme(plot.background = element_rect(fill = "white", color = "white"),  # Sets plot background to white
+        panel.background = element_rect(fill = "white", color = "white"))  # Sets panel background to white
+ggsave(file.path(output_folder, paste0(state_abbreviation,"_gdp_state_clean_map", ".png")), 
+       plot = gdp_state_clean_map,width=8,height=6,units="in",dpi=300)
+
+
+#State Population
+library(tidycensus)
+census_api_key('0b3d37ac56ab19c5a65cbc188f82d8ce5b36cfe6',install=T)
+
+years <- 2012:2023
+
+# Initialize an empty list to store data
+statepop_list <- list()
+
+# Loop over each year
+for (yr in years) {
+  statepop_year <- get_acs(geography = "state", 
+                           variable = "B01001_001",
+                           year = yr,
+                           survey = "acs5",
+                           geometry = FALSE)
+  statepop_year$year <- yr  # Add a year column to each dataset
+  statepop_list[[as.character(yr)]] <- statepop_year
+}
+
+# Combine all years' data into one data frame
+statepop <- bind_rows(statepop_list)
+
+
+region_division <- census_divisions %>%
+  filter(State.Code ==state_abbreviation)
+
+statepop_region<-statepop %>%
+  left_join(states_simple,by=c("NAME"="full")) %>%
+  left_join(census_divisions,by=c("NAME"="State")) %>%
+  filter(Division==region_division$Division,
+         State.Code!="DC") %>%
+  rename(pop=estimate) %>%
+  mutate(pop=as.numeric(pop)) %>%
+  group_by(abbr) %>%
+  mutate(pop_index=pop/pop[year==2012]*100) %>%
+  ungroup() %>%
+  select(abbr,year,pop_index) %>%
+  pivot_wider(names_from = abbr, values_from = pop_index) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_pop_index.csv"))
+  
 

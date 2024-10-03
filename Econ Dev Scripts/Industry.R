@@ -9,6 +9,7 @@ state_emit_map <- emit %>%
   mutate(direct_emit=as.numeric(gsub(",","",Total.reported.direct.emissions))) %>%
   filter(State==state_abbreviation) %>%
   select(Facility.Name,Latitude,Longitude,Industry.Type,direct_emit) 
+write.csv(state_emit_map,paste0(output_folder,"/",state_abbreviation,"_direct_emit.csv"))
 
 usa <- st_as_sf(maps::map("state", fill=TRUE, plot =FALSE))
 state_map_data<-usa %>%
@@ -87,6 +88,12 @@ state_directemit <- emit %>%
   left_join(us_directemit,by=c("Industry.Type")) %>%
   mutate(emit_lq = emit_share/US_emit_share) %>%
   arrange(desc(emit_lq))
+
+dw_data<-state_directemit_naics %>%
+  filter(State==state_abbreviation) %>%
+  slice_max(order_by=direct_emit,n=25) %>%
+  slice_max(order_by=emit_lq,n=10) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_direct_emit_lq.csv"))
 
 #State Largest Direct Emitters, relative to National Average
 directemit_lq_plot<-ggplot(data=state_directemit_naics %>%
