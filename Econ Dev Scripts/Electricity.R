@@ -1,4 +1,4 @@
-#Electricity Sector
+#Electricity Sector---------------------------
 #This script is used to generate the charts and maps for the electricity sector in the US
 
 #included in this script are:
@@ -15,8 +15,8 @@ setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "SC"  # Replace with any US state abbreviation
-state_name <- "South Carolina"  # Replace with the full name of any US state
+state_abbreviation <- "MT"  # Replace with any US state abbreviation
+state_name <- "South Montana"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
 
@@ -50,7 +50,7 @@ state_counties<-us_counties %>%
   select(Division,abbr,full,county,fips)
 
 
-#State Operating Generation Capacity
+#State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
 url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2024.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
@@ -316,7 +316,7 @@ ggsave(file.path(output_folder, paste0("plot_elec_2020index", ".png")),
        height = 8,   # Height of the plot in inches
        dpi = 300)  
 
-#Planned Generation
+#Planned Generation-------------------------
 plan_gen <- read_excel(file_path, sheet = 2,skip=2)
 
 abbr_plangen <- plan_gen %>%
@@ -360,10 +360,10 @@ abbr_tech_share <- op_gen %>%
 
 
 
-#County Plant-Level Generation
+#County Plant-Level Generation-----------------------------------------
 
 
-#NREL SLOPE Data - Energy Consumption by County and Region
+#NREL SLOPE Data - Energy Consumption by County and Region-------------------
 
 #Read in the NREL SLOPE Data
 county_elec_cons <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/energy_consumption_expenditure_business_as_usual_county.csv")
@@ -608,9 +608,9 @@ ren_gen_map<-ggplot() +
 #    panel.background = element_rect(fill = "white", color = "white"))
 
 
-#Industrial Electricity Prices
+##Industrial Electricity Prices-------------------------------------------------
 
-#Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates
+#Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates------------------------
 region_industrial <- county_elec_cons %>%
   mutate(FIPS=paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7))) %>%
   filter(Sector=="industrial",
@@ -640,7 +640,7 @@ ggplot(data=region_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) 
   theme_classic()+
   scale_fill_manual(values = rmi_palette)
 
-#State-Level Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates
+#State-Level Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates---------------------------
 state_pop <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/demographics_baseline_state.csv")
 
 state_industrial <- county_elec_cons %>%
@@ -666,7 +666,7 @@ ggplot(data=state_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) +
 
 
 
-#Electricity Price in Industrial Sector - SEDS Data
+#Electricity Price in Industrial Sector - SEDS Data-------------------------------------------
 seds_all <- read.csv('https://www.eia.gov/state/seds/sep_update/Complete_SEDS_update.csv') #NB: BIG file
 
 msn_descriptions <- data.frame(
@@ -748,7 +748,26 @@ industrial_exp_gdp_plot<-ggplot() +
 region_division <- census_divisions %>%
   filter(State.Code ==state_abbreviation)
 
-#State Sector Electricity Consumption
+
+#Monthly Industrial Electricity Prices---------------
+url <- 'https://www.eia.gov/electricity/data/eia861m/xls/sales_revenue.xlsx'
+destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
+file_path <- paste0(destination_folder, "eia_sales.xlsx")
+downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
+
+#EIA Sales
+eia_sales <- read_excel(file_path, sheet = 1,skip=2)
+
+#State Totals Industrial Prices
+ind_price_m <- eia_sales %>%
+  mutate(ind_price_m=`Cents/kWh...16`) %>%
+  select(State,Year,Month,ind_price_m)
+
+
+
+
+
+#State Sector Electricity Consumption-----------------------------------------
 seds_ind_eleccons <- seds_all %>%
   filter(MSN %in% c("ESACP", #Electricity consumed by (sales to ultimate customers in) the transportation sector
                     "ESCCP", #Electricity consumed by (sales to ultimate customers in) the commercial sector
@@ -780,7 +799,7 @@ seds_eleccons <- seds_ind_eleccons %>%
   pivot_wider(names_from=StateCode,values_from=ind_index) %>%
   write.csv(file.path(output_folder, paste0("seds_eleccons", ".csv")))
 
-#Total Energy Expenditure by Sector
+#Total Energy Expenditure by Sector---------------------------------------
 seds_pe <- seds_all %>%
   #Residential
   filter(MSN %in% c("CLRCV","NGRCV","PARCV","PARCV","GERCV","SORCV","WDRCV","ESRCV","LORCV","SFRCV",
@@ -833,7 +852,7 @@ seds_pe_sector_dw<-seds_pe %>%
   pivot_wider(names_from=StateCode,values_from=data_gdp) %>%
   write.csv(file.path(output_folder, paste0("seds_pe_sector", ".csv")))
 
-#Total Energy Consumption
+#Total Energy Consumption---------------------------------------
 seds_energycons <- seds_all %>%
   filter(MSN %in% c("FFTCB",
                     "NUETB",
@@ -853,7 +872,7 @@ seds_energycons <- seds_all %>%
   pivot_wider(names_from=StateCode,values_from=ind_index) %>%
   write.csv(file.path(output_folder, paste0("seds_energycons", ".csv")))
 
-#Electricity Imports & Exports
+#Electricity Imports & Exports--------------------------------------------
 seds_elec_impexp <- seds_all %>%
   filter(MSN %in% c("ELIMV", #Electricity import expenditure
                     "ELEXV"), #Electricity export expenditure
@@ -885,7 +904,7 @@ industrial_exp_gdp_plot<-ggplot() +
   scale_color_manual(values = expanded_palette)
 
 
-#Renewable Production by State
+#Renewable Production by State-----------------------------------------
 msn_descriptions <- data.frame(
   MSN=c("REPRB", #Renewable energy production
         "REACB", #Renewable energy sources consumed by the transportation sector
@@ -919,3 +938,4 @@ seds_ren_prod_plot<-ggplot(data=seds_ren_prod %>%
        caption="Source: Net Zero America (2021), Princeton University") +
   scale_y_continuous(expand = c(0,0))+
   theme_classic()
+
