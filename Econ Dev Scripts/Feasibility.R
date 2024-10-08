@@ -277,6 +277,27 @@ state_ranks <- msa_data %>%
 #County Level Feasibility
 cgt_county<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
 
+region_id <-region_id %>%
+  mutate(geoid=as.numeric(fips))
+
+region_county_feas<- cgt_county %>%
+  filter(county %in% region_id$geoid,
+         transition_sector_category %in% c("Transition Mineral and Metal Mining Sector",
+                                           "Buildings End-Use Sector",
+                                           "Industrial End-Use Sector",
+                                           "Transition Chemical, Mineral, and Metal Manufacturing Sector",
+                                           "Transportation End-Use Sector")) 
+
+region_top5<-region_county_feas %>%
+  #Weighted mean, grouped by county, of density, weighted by rca
+  #filter(rca>0) %>%
+  group_by(county_name) %>%
+  #summarize(across(density, 
+    #               weighted.mean, 
+     #              w = rca, 
+   #                na.rm = TRUE)) %>%
+  slice_max(order_by=density_county_perc,n=5)
+
 
 
 #I-85 Feasibility
@@ -322,19 +343,19 @@ state_feas_top5 <- feas_drivers %>%
   filter(aggregation_level.y=="2",
          transition_sector_category_id %in% c("8","2","4","5","9"),
          state_avb==state_abbreviation,
-         region=="EA") %>%
+         region=="MSA") %>%
   distinct(msa_name,naics_desc.x,density) %>%
   group_by(msa_name) %>%
-  slice_max(density,n=5)
+  slice_max(density,n=10)
 
 state_feas_drivers <- feas_drivers %>%
   left_join(naics_data,by=c("naics"="naics")) %>%
   filter(aggregation_level.y=="2",
          transition_sector_category_id %in% c("8","2","4","5","9"),
          state_avb==state_abbreviation,
-         region=="EA",
+         region=="MSA",
          contributor_in_tool=="TRUE",
-         rank_as_contributor_2>6) %>%
+         rank_as_contributor_2<6) %>%
   inner_join(state_feas_top5,by=c("msa_name","naics_desc.x","density"))%>%
   group_by(msa_name,naics_desc.x) %>%
   mutate(
@@ -348,6 +369,8 @@ state_feas_drivers <- feas_drivers %>%
     values_fn = list(naics_desc_2 = first) # Ensure that each cell only contains one value
   ) %>%
   arrange(msa_name)
+
+
 
 #Misc
 feasibility_naics<-naics_data %>%

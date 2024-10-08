@@ -1,7 +1,7 @@
 #Industry
 
 
-#Direct Emitters
+#Direct Emitters----------------------------------
 emit<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/direct_emitters.csv')
 
 #GGplot Map of Direct Emitters by industry in state_abbreviation
@@ -48,7 +48,7 @@ ggmap(base_map, darken = c(0.5, "white")) +
   theme(legend.position="bottom")
 
 
-#Emissions Location Quotient1
+#Emissions Location Quotient
 us_directemit_naics <- emit %>%
   mutate(US_direct_emit=as.numeric(gsub(",","",Total.reported.direct.emissions))) %>%
   group_by(Primary.NAICS.Code,Industry.Type) %>%
@@ -115,7 +115,7 @@ directemit_lq_plot<-ggplot(data=state_directemit_naics %>%
 ggsave(paste0(output_folder,"/",state_abbreviation,"_directemit_lq_plot.png"),plot=directemit_lq_plot,width=8,height=6,units="in",dpi=300)
 
 
-#Industry Energy Intensity
+#Industry Energy Intensity-------------------------------
 
 asm_2021 <- getCensus(
   name = "timeseries/asm/area2017",

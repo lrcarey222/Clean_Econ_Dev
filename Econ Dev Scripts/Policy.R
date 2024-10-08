@@ -1,7 +1,7 @@
 
 #POLICY!
 
-#Federal investments
+#Federal investments--------------
 url <- 'https://www.whitehouse.gov/wp-content/uploads/2023/11/Invest.gov_PublicInvestments_Map_Data_CURRENT.xlsx'
 temp_file <- tempfile(fileext = ".xlsx")
 GET(url = url, write_disk(temp_file, overwrite = TRUE))
@@ -76,7 +76,7 @@ state_fedinv_map <- fed_inv_map %>%
 write.csv(state_fedinv_map,paste0(output_folder,"/",state_abbreviation,"_state_fedinv_map.csv"),row.names=F)
 
 
-#Estimated Federal Tax Credits (from Clean Investment Monitor)
+#Estimated Federal Tax Credits (from Clean Investment Monitor)------------------
 
 
 #Federal Tax Credit Incentives State-Level Estimates
@@ -251,6 +251,7 @@ state_estimates2<-state_estimates %>%
   select(-quarter,-real_gdp,-population)
 write.csv(state_estimates2,"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_taxcredits_estimate.csv")
 
+
 #Charts
 ggplot(data=state_estimates2) +
   geom_col(aes(x=reorder(State,-`Federal Investment (Billions 2023 USD)`),y=`Federal Investment (Billions 2023 USD)`,fill=Category),position="stack") +
@@ -279,7 +280,12 @@ ggplot(data=state_estimates2) +
   theme(legend.position=c(0.8,0.8)) 
 
 
-#Regional State Comparisons
+#Regional State Comparisons for Datawrapper------------------
+state_estimates2<- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_taxcredits_estimate.csv")
+state_estimates2<-state_estimates2 %>%
+  rename("Federal Investment (% of State GDP)"=Federal.Investment....of.State.GDP.,
+         "Federal Investment (Billions 2023 USD)"=Federal.Investment..Billions.2023.USD.)
+
 division_of_interest<-census_divisions %>%
   filter(State.Code==state_abbreviation)
 state_ira <- state_estimates2 %>%
@@ -309,7 +315,7 @@ ggplot(data=state_ira) +
   theme(legend.position=c(0.8,0.8)) 
 
   
-#RMI Economic Tides Analysis - June 18 Data
+#RMI Economic Tides Analysis - June 18 Data---------------------
   # Load necessary library
 library(readxl)
 
@@ -341,7 +347,7 @@ sum_ira_allstates<-ira_allstates %>%
 
 #State of Interest largest IRA Provisions
 state_abbr_ira <- ira_allstates %>%
-  filter(State == state_abbreviation) %>%
+  filter(State == "NV") %>%
   arrange(desc(`Climate-Aligned Estimate ($)`)) %>%
   mutate(across(where(is.numeric), ~round(./1000000000, 3))) %>%
   mutate(share = `Climate-Aligned Estimate ($)` / sum(`Climate-Aligned Estimate ($)`))
@@ -369,7 +375,7 @@ state_10ira_plot <- ggplot(data=state_10ira) +
 ggsave(paste0(output_folder,"/",state_abbreviation,"_ira_provisions.png"),plot=state_10ira_plot,width=8,height=6,units="in",dpi=300)
 
 
-#State Climate and Clean Energy Policy
+#State Climate and Clean Energy Policy-----------------------------------------
 
 xchange <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
 xchange_pol_index <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange_climate_policy_index.csv")
@@ -387,36 +393,8 @@ state_totals <- xchange %>%
   summarize(total = sum(value)) %>%
   left_join(xchange_label %>% select(State,label), by = "State")
 
-policy_radial<-ggplot(xchange %>% filter(region %in% region_abbrv,
-                                         Topic != "total_climate") %>%
-                        left_join(xchange_label,by=c("State"="State")), 
-                      aes(x = State, y = value, fill = Topic)) +
-  geom_bar(stat = "identity", position = "stack", width = 1,
-           aes(alpha = ifelse(State != state_name, 0.6, 1))) +
-  coord_polar(start = 0) +
-  scale_fill_manual(values = rmi_palette) +  # Use custom color palette
-  scale_alpha_identity() +  # Ensure alpha is interpreted as given
-  geom_text(data = state_totals, aes(x = State, y = total+3, label = label), 
-            vjust = -0.5, hjust = 0.5, size = 3, color = "black",inherit.aes=F) +
-  labs(title = paste("Climate Policy Strength in the ", str_to_sentence(region_abbrv$region)),
-       subtitle = "The Total climate policy score is the sum of normalized indices for five policy areas.",
-       caption = "Source: Xchange Climate Policy Tracker",
-       x = NULL, 
-       y = NULL,
-       fill = "Policy Area") +
-  #facet_wrap(~ Topic) +  # Facet by State
-  theme_void() +
-  theme(legend.position = "right",
-        plot.title = element_text(size = 16, face = "bold"),
-        plot.subtitle = element_text(size = 14))
 
-ggsave(file.path(output_folder, paste0(state_abbreviation,"_policy_radial", ".png")),
-       plot = policy_radial,
-       width = 8,   # Width of the plot in inches
-       height = 8,   # Height of the plot in inches
-       dpi = 300)
-
-#Economic Development Incentives
+#Economic Development Incentives----------------------------------
 
 #Good Jobs First Data
 gjf<- read.csv("C:/Users/LCarey.RMI/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
