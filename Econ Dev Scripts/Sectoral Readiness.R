@@ -59,7 +59,7 @@ feas_simple <- cgt_county %>%
   select(state_name,ea,ea_name,county,county_name,industry_code,industry_desc,rca,density,density_county_perc,density_county_rank,pci,eci.x,37:65)
 
 
-##3 EV Supply Chain Feasibility-----------------------
+#3 EV Supply Chain Feasibility-----------------------
 road_counties<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
 road_counties <- road_counties %>%
   filter(RTTYP != "")
@@ -562,16 +562,111 @@ feas_h2feas_bins <- feas_simple_h2_bins %>%
 
 
 
+
 #6 Solar Readiness-------------
+
+
+#Utility Climate Goals
+crt<-read_excel("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/SEPA+Utility+Carbon-Reduction+Tracker+Dataset.xlsx",2)
+
+crt <- crt %>%
+  mutate(
+    `Attainment Year` = as.numeric(`Attainment Year`),
+    index_year = case_when(
+      `Attainment Year` > 2050 ~ 2,
+      `Attainment Year` > 2040 ~ 3,
+      `Attainment Year` > 2030 ~ 4,
+      `Attainment Year` > 2020 ~ 5,
+      TRUE ~ 1
+    ),
+    index_mand = ifelse(`Mandatory or Voluntary Target` == "Mandatory", 2, 1),
+    index_scope = case_when(
+      grepl("Scope 3", `Target Scope`) ~ 4,
+      grepl("Scope 2", `Target Scope`) ~ 3,
+      grepl("Scope 1", `Target Scope`) ~ 2,
+      TRUE ~ 1
+    )
+  ) %>%
+  mutate(
+    across(index_year:index_scope,
+           ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE))
+           )
+    ) %>%
+  mutate(util_index = rowSums(select(., index_year:index_scope), na.rm = TRUE)) %>%
+  select(`Utility/Entity`, `State(s)*`, util_index)
+
+# Join to find county-level data
+crt_processed <- crt %>%
+  mutate(utility = str_to_lower(`Utility/Entity`),
+         utility = gsub("electric", "", utility),
+         utility = gsub("city of", "", utility),
+         utility = gsub("cooperative", "", utility),
+         utility = gsub("coop", "", utility),
+         utility = gsub(" co", "", utility),
+         utility = gsub("utilities", "", utility),
+         utility = gsub("power", "", utility),
+         utility = gsub("gas &", "", utility),
+         utility = gsub("&", " ", utility),
+         utility = gsub("association", "", utility),
+         utility = gsub(", inc.", "", utility),
+         utility = gsub(", inc", "", utility),
+         utility = gsub(" inc", "", utility),
+         utility = gsub("department", "", utility),
+         utility = gsub("corporation", "", utility),
+         utility = gsub("- \\(.*?\\)", "", utility), # Remove "- ( )"
+         utility = str_trim(utility),
+         state = `State(s)*`) # Extract the state column
+
+matched_processed <- matched %>%
+  mutate(utility = str_to_lower(`NAME.x`),
+         utility = gsub("electric", "", utility),
+         utility = gsub("city of", "", utility),
+         utility = gsub("cooperative", "", utility),
+         utility = gsub("coop", "", utility),
+         utility = gsub(" co", "", utility),
+         utility = gsub("utilities", "", utility),
+         utility = gsub("association", "", utility),
+         utility = gsub("power", "", utility),
+         utility = gsub("light &", "", utility),
+         utility = gsub("gas &", "", utility),
+         utility = gsub("&", " ", utility),
+         utility = gsub(", inc.", "", utility),
+         utility = gsub(", inc", "", utility),
+         utility = gsub(" inc", "", utility),
+         utility = gsub("corporation", "", utility),
+         utility = gsub("department", "", utility),
+         utility = gsub("- \\(.*?\\)", "", utility), # Remove "- ( )"
+         utility = str_trim(utility), # Trim any leading or trailing spaces,
+         state = STATE) # Extract the state column
+
+# Use stringdist_left_join with additional condition on state
+crt_match <- stringdist_left_join(crt_processed,
+                                  matched_processed,
+                                  by = c("utility" = "utility", "state" = "state"),
+                                  method = "jw", # Jaro-Winkler distance for utility
+                                  max_dist = 0.15) # Adjust max_dist as needed
+na_count <- sum(is.na(crt_match$NAME.x))
+print(na_count)
+
+crt_match<-crt_match %>%
+  filter(!is.na(NAME.x)) %>%
+  group_by(GEOID) %>%
+  summarize_at(vars(util_index),mean,na.rm=T) 
 
 #Technical Potential
 tech_pot_solar <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
-tech_pot_solar <- tech_pot_solar %>%
-  filter(grepl("_pv",Technology)) %>%
+tech_pot_solar <- tech_pot %>%
+  filter(Technology=="utility_pv") %>%
   mutate(Geoid=as.numeric(paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7)))) %>%
   rename(tech_gen=Technical.Generation.Potential...MWh.MWh) %>%
   group_by(Geoid) %>%
-  summarize_at(vars(tech_gen),sum,na.rm=T) 
+  summarize_at(vars(tech_gen),sum,na.rm=T) %>%
+  left_join(counties %>%
+              mutate(GEOID=as.numeric(GEOID)) %>%
+              select(GEOID,ALAND),by=c("Geoid"="GEOID")) %>%
+  mutate(tech_gen=tech_gen/ALAND) %>%
+  select(-geometry)
+  
 
 #EA Solar Facilities
 solar_ea<-facilities %>%
@@ -616,7 +711,7 @@ feas_simple_solar <- feas_simple %>%
   left_join(solar_ea,by=c("ea_name"="EA Name")) %>%
   #select(state_name,ea,ea_name,county,county_name,rca,density,density_county_perc,density_county_rank,pci,eci.x,30:59) %>%
   #Add balancing authority generation data from EPA eGrid
-  left_join(matched_ba,by=c("ea_name"="EA Name")) %>%
+  #left_join(matched_ba,by=c("ea_name"="EA Name")) %>%
   #Add Xchange policy data
   left_join(xchange %>%
               filter(Policy %in% c("clean_electricity_policy_index")) %>%
@@ -625,18 +720,21 @@ feas_simple_solar <- feas_simple %>%
   select(-county)%>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   #Add Technical Generation Potential
-  left_join(tech_pot_county,by=c("county"="Geoid"))%>%
+  left_join(tech_pot_solar,by=c("county"="Geoid"))%>%
   distinct() %>%
   #Add Energy prices
   left_join(ea_energy_price,by=c("ea_name"="EA Name")) %>%
+  #Add Utility Climate Targets
+  left_join(crt_match %>%
+              mutate(GEOID=as.numeric(GEOID)),by=c("county"="GEOID")) %>%
   left_join(facilities %>% filter(Segment=="Energy and Industry",
                                   Technology %in% c("Solar")),
             by=c("county"="county_2020_geoid")) %>%
   mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated.y),0,Total_Facility_CAPEX_Estimated.y),
          Investment_Flag=ifelse(Total_Facility_CAPEX_Estimated.y > 0, 1, 0))  %>%
   distinct(state_name,ea,ea_name,county_name,density,
-           rca,Total_Facility_CAPEX_Estimated.x,
-           property_value_usd,tech_gen,BATHPR,ren_cagr_20_23,
+           rca,Total_Facility_CAPEX_Estimated.x,util_index,
+           property_value_usd,tech_gen,ren_cagr_20_23,
            clean_electricity_policy_index,price,cnbc_rank,Investment_Flag)
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
@@ -649,7 +747,8 @@ model_logistic <- glm(Investment_Flag ~ density +
                         Total_Facility_CAPEX_Estimated.x+
                         tech_gen +
                         property_value_usd +
-                        BATHPR +
+                        util_index+
+                       # BATHPR +
                         ren_cagr_20_23 +
                         clean_electricity_policy_index +
                         price +
@@ -664,28 +763,33 @@ exp(coef(model_logistic))
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_solar_model_ols <- feas_simple_solar %>%
+  right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
+  left_join(facilities %>% filter(Segment=="Energy and Industry",
+                                  Technology %in% c("Solar")),
+            by=c("county"="county_2020_geoid")) %>%
+  mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated)) %>%
   select(state_name,ea,ea_name,county_name,density,
          rca,Total_Facility_CAPEX_Estimated.x,
-         property_value_usd,tech_gen,BATHPR,ren_cagr_20_23,
+         property_value_usd,tech_gen,ren_cagr_20_23,util_index,
          clean_electricity_policy_index,price,cnbc_rank,Total_Facility_CAPEX_Estimated.y) %>%
   mutate(across(density:Total_Facility_CAPEX_Estimated.y, ~ scale(., center = TRUE, scale = TRUE)))
 
 # Run a OLS regression model to predict the probability of investment
 model_ols <- lm(Total_Facility_CAPEX_Estimated.y ~ density + 
-                  rca +
+                  #rca +
                   #Total_Facility_CAPEX_Estimated.x+
                   tech_gen +
-                  property_value_usd +
-                  BATHPR +
+                  #property_value_usd +
+                  #BATHPR +
                   ren_cagr_20_23 +
+                  util_index+
                   clean_electricity_policy_index +
-                  price +
+                  #price +
                   cnbc_rank, 
                 data = feas_simple_solar_model_ols)
 
 # View the summary of the logistic regression model
 summary(model_ols)
-exp(coef(model_logistic))
 
 feas_simple_solar_index<-feas_simple_solar %>%
   mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
@@ -694,20 +798,21 @@ feas_simple_solar_index<-feas_simple_solar %>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   distinct() %>%
   mutate(solar_feas = 
-           #1.6*coalesce(density, 0) +
-           0.02*coalesce(rca, 0) +
-           0.277*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
-           0.04*coalesce(property_value_usd, 0) +
-           0.21*coalesce(tech_gen,0)+
-           -0.04*coalesce(price,0)+
-           -0.03*coalesce(BATHPR, 0) +
+           2*coalesce(density, 0) +
+           #0.02*coalesce(rca, 0) +
+           #1.277*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
+           #0.04*coalesce(property_value_usd, 0) +
+           1.75*coalesce(tech_gen,0)+
+           1.5*coalesce(util_index,0)+
+           1.7*coalesce(price,0)+
+           #-0.03*coalesce(BATHPR, 0) +
            #0.05*coalesce(1 - BANBC2E, 0) +
-           0.09*coalesce(ren_cagr_20_23, 0)+
-           -0.05*coalesce(clean_electricity_policy_index,0)+
-           0.09*coalesce(1 - cnbc_rank, 0)
+           #0.09*coalesce(ren_cagr_20_23, 0)+
+           1.8*coalesce(clean_electricity_policy_index,0)+
+           0.8*coalesce(1 - cnbc_rank, 0)
   ) %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
-  select(state_name,ea,ea_name,county_name,density,solar_feas,rca,Total_Facility_CAPEX_Estimated.x,property_value_usd,tech_gen,BATHPR,ren_cagr_20_23,clean_electricity_policy_index,price,cnbc_rank) %>%
+  select(state_name,ea,ea_name,county_name,density,solar_feas,rca,Total_Facility_CAPEX_Estimated.x,property_value_usd,tech_gen,ren_cagr_20_23,clean_electricity_policy_index,price,cnbc_rank) %>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   distinct()
 
@@ -719,10 +824,10 @@ write.csv(feas_simple_solar,'C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US P
 #Checking against investment data
 feas_simple_solar_bins <-feas_simple_solar %>%
   
-  #left_join(facilities %>% filter(Segment=="Energy and Industry",
-  #                              Technology %in% c("Solar")),
-  #       by=c("county"="county_2020_geoid")) %>%
-  #mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated)) %>%
+  left_join(facilities %>% filter(Segment=="Energy and Industry",
+                                Technology %in% c("Solar")),
+         by=c("county"="county_2020_geoid")) %>%
+  mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated)) %>%
   mutate(density_bin=ntile(density,n=10),
          solar_feas_bin=ntile(solar_feas,n=10))
 
@@ -733,6 +838,165 @@ feas_density_bins <- feas_simple_solar_bins %>%
 
 feas_solarfeas_bins <- feas_simple_solar_bins %>%
   group_by(solar_feas_bin) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
+  mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
+
+
+#7 Wind Readiness-------------
+
+#Technical Potential
+tech_pot <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
+tech_pot_wind <- tech_pot %>%
+  filter(Technology=="land_based_wind") %>%
+  mutate(Geoid=as.numeric(paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7)))) %>%
+  rename(tech_gen=Technical.Generation.Potential...MWh.MWh) %>%
+  group_by(Geoid) %>%
+  summarize_at(vars(tech_gen),sum,na.rm=T) %>%
+  left_join(counties %>%
+              mutate(GEOID=as.numeric(GEOID)) %>%
+              select(GEOID,ALAND),by=c("Geoid"="GEOID")) %>%
+  mutate(tech_gen=tech_gen/ALAND) 
+
+#EA Wind Facilities
+wind_ea<-facilities %>%
+  filter(Segment=="Energy and Industry",
+         Technology %in% c("Wind")) %>%
+  left_join(EAs,by=c("county_2020_geoid"="fips")) %>%
+  group_by(`EA Name`) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)
+
+
+
+feas_simple_wind <- feas_simple %>%
+  filter(industry_desc %in% c("Wind Electric Power")) %>%
+  left_join(wind_ea,by=c("ea_name"="EA Name")) %>%
+  #select(state_name,ea,ea_name,county,county_name,rca,density,density_county_perc,density_county_rank,pci,eci.x,30:59) %>%
+  #Add balancing authority generation data from EPA eGrid
+  #left_join(matched_ba,by=c("ea_name"="EA Name")) %>%
+  #Add Xchange policy data
+  left_join(xchange %>%
+              filter(Policy %in% c("clean_electricity_policy_index")) %>%
+              select(State,Policy,value) %>%
+              pivot_wider(names_from=Policy,values_from=value),by=c("state_name"="State")) %>%
+  select(-county)%>%
+  right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
+  #Add Technical Generation Potential
+  left_join(tech_pot_wind,by=c("county"="Geoid"))%>%
+  distinct() %>%
+  #Add Utility Targets 
+  left_join(crt_match %>%
+              mutate(GEOID=as.numeric(GEOID)),
+            by=c("county"="GEOID")) %>%
+  #Add Energy prices
+  left_join(ea_energy_price,by=c("ea_name"="EA Name")) %>%
+  left_join(facilities %>% filter(Segment=="Energy and Industry",
+                                  Technology %in% c("Wind"),
+                                  Subcategory=="Onshore Wind Turbine"),
+            by=c("county"="county_2020_geoid")) %>%
+  mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated.y),0,Total_Facility_CAPEX_Estimated.y),
+         Investment_Flag=ifelse(Total_Facility_CAPEX_Estimated.y > 0, 1, 0))  %>%
+  distinct(state_name,ea,ea_name,county_name,density,
+           rca,Total_Facility_CAPEX_Estimated.x,util_index,
+           property_value_usd,tech_gen,ren_cagr_20_23,
+           clean_electricity_policy_index,price,cnbc_rank,Investment_Flag,Total_Facility_CAPEX_Estimated.y)
+
+# Standardize columns 
+feas_simple_wind_model <- feas_simple_wind %>%
+  mutate(across(density:cnbc_rank, ~ scale(., center = TRUE, scale = TRUE)))
+
+# Run a logistic regression model to predict the probability of investment
+model_logistic <- glm(Investment_Flag ~ density + 
+                        #rca +
+                        #Total_Facility_CAPEX_Estimated.x+
+                        tech_gen +
+                        property_value_usd +
+                        #BATHPR +
+                        ren_cagr_20_23 +
+                        util_index+
+                        clean_electricity_policy_index +
+                        price +
+                        cnbc_rank, 
+                      data = feas_simple_wind_model, 
+                      family = binomial)
+
+# View the summary of the logistic regression model
+summary(model_logistic)
+exp(coef(model_logistic))
+
+
+# Standardize columns from density to Total_Facility_CAPEX_Estimated.y
+feas_simple_wind_model_ols <- feas_simple_wind %>%
+  select(state_name,ea,ea_name,county_name,density,
+         rca,Total_Facility_CAPEX_Estimated.x,util_index,
+         property_value_usd,tech_gen,ren_cagr_20_23,
+         clean_electricity_policy_index,price,cnbc_rank,Total_Facility_CAPEX_Estimated.y) %>%
+  mutate(across(density:Total_Facility_CAPEX_Estimated.y, ~ scale(., center = TRUE, scale = TRUE)))
+
+# Run a OLS regression model to predict the probability of investment
+model_ols <- lm(Total_Facility_CAPEX_Estimated.y ~ density + 
+                  rca +
+                  #Total_Facility_CAPEX_Estimated.x+
+                  tech_gen +
+                  util_index+
+                  property_value_usd +
+                  #BATHPR +
+                  ren_cagr_20_23 +
+                  clean_electricity_policy_index +
+                  price +
+                  cnbc_rank, 
+                data = feas_simple_solar_model_ols)
+
+# View the summary of the logistic regression model
+summary(model_ols)
+exp(coef(model_logistic))
+
+feas_simple_wind_index<-feas_simple_wind %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
+  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+  #select(-county)%>%
+  right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
+  distinct() %>%
+  mutate(wind_feas = 
+           1.4*coalesce(density, 0) +
+           12.3*coalesce(rca, 0) +
+           #0.277*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
+           0.75*coalesce(1-property_value_usd, 0) +
+           2*coalesce(tech_gen,0)+
+           #0.04*coalesce(price,0)+
+           #0.03*coalesce(BATHPR, 0) +
+           #0.05*coalesce(1 - BANBC2E, 0) +
+           #0.09*coalesce(ren_cagr_20_23, 0)+
+           1.3*coalesce(clean_electricity_policy_index,0)+
+           1.8*coalesce(util_index,0)+
+           1.4*coalesce(1 - cnbc_rank, 0)
+  ) %>%
+  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+  select(state_name,ea,ea_name,county_name,density,wind_feas,rca,Total_Facility_CAPEX_Estimated.x,property_value_usd,tech_gen,util_index,ren_cagr_20_23,clean_electricity_policy_index,price,cnbc_rank) %>%
+  right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
+  distinct()
+
+feas_simple_wind<-feas_simple_wind %>%left_join(feas_simple_wind_index %>%
+                                                    select(county,county_name,wind_feas),by=c("county_name"="county_name")) 
+
+write.csv(feas_simple_solar,'C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/feas_simple_solar.csv',row.names=FALSE)
+
+#Checking against investment data
+feas_simple_wind_bins <-feas_simple_wind %>%
+  
+  #left_join(facilities %>% filter(Segment=="Energy and Industry",
+  #                              Technology %in% c("Solar")),
+  #       by=c("county"="county_2020_geoid")) %>%
+  #mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated)) %>%
+  mutate(density_bin=ntile(density,n=10),
+         wind_feas_bin=ntile(wind_feas,n=10))
+
+feas_density_bins <- feas_simple_wind_bins %>%
+  group_by(density_bin) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
+  mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
+
+feas_wind_bins <- feas_simple_wind_bins %>%
+  group_by(wind_feas_bin) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
   mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
 

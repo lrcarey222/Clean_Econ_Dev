@@ -52,7 +52,7 @@ state_counties<-us_counties %>%
 
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/august_generator2024.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -79,8 +79,9 @@ op_gen_with_county <- st_join(op_gen_sf, counties)
 EA_gen <- op_gen_with_county %>%
   mutate(fips=as.numeric(GEOID)) %>%
   inner_join(EAs,by=c("fips"="fips")) %>%
+  mutate(`EA Name`=ifelse(fips %in% region_id$geoid,"Great Falls, MT",`EA Name`)) %>%
   filter(Status=="(OP) Operating") %>%
-  group_by(region,full,`EA Name`,`Operating Year`,Technology) %>%
+  group_by(`EA Name`,`Operating Year`,Technology) %>%
   summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) 
 
 region_rengen <- EA_gen %>%
@@ -111,8 +112,6 @@ rengen_share <- region_rengen %>%
   filter(full==state_name) %>%
   group_by(tech) %>%
   mutate(share=round(`Nameplate Capacity (MW)`/sum(`Nameplate Capacity (MW)`),1)) 
-
-
 
 
 
@@ -346,6 +345,56 @@ ggsave(file.path(output_folder, paste0("planned_gen_plot", ".png")),
        width = 8,   # Width of the plot in inches
        height = 8,   # Height of the plot in inches
        dpi = 300)  
+
+
+plan_gen_clean <- plan_gen %>% 
+  filter(!is.na(Latitude) & !is.na(Longitude))
+plan_gen_sf <- st_as_sf(plan_gen_clean, coords = c("Longitude", "Latitude"), crs = 4326)
+plan_gen_sf <- st_transform(plan_gen_sf, crs = st_crs(counties))
+
+plan_gen_with_county <- st_join(plan_gen_sf, counties)
+
+
+
+#Capacity Additions and Plans by Balancing Authority-------------
+op_gen_ba<-op_gen %>%
+  rename(Year=`Operating Year`) %>%
+  filter(Year>1990) %>%
+  group_by(`Balancing Authority Code`,`Year`,Technology) %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+  rbind(plan_gen %>%
+          rename(Year=`Planned Operation Year`) %>%
+          group_by(`Balancing Authority Code`,Year,Technology) %>%
+          summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T)) %>%
+  mutate(tech = case_when(
+    Technology=="Natural Gas Steam Turbine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combined Cycle" ~ "Natural Gas",
+    Technology=="Natural Gas Internal Combustion Engine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combustion Turbine" ~ "Natural Gas",
+    Technology=="Conventional Steam Coal" ~ "Coal",
+    Technology=="Conventional Hydroelectric" ~ "Hydro",
+    Technology=="Onshore Wind Turbine" ~ "Wind",
+    Technology=="Batteries" ~ "Storage",
+    Technology=="Solar Photovoltaic" ~ "Solar",
+    Technology=="Solar Thermal with Energy Storage" ~ "Solar",
+    Technology=="Hydroelectric Pumped Storage" ~ "Hydro",
+    Technology=="Geothermal" ~ "Geothermal",
+    Technology=="Wood/Wood Waste Biomass"~"Biomass"
+  )) %>%
+  select(-Technology) %>%
+  group_by(`Balancing Authority Code`,`Year`,tech) %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+  group_by(`Balancing Authority Code`,tech)
+
+op_gen_ba_wide<-op_gen_ba %>%
+  filter(Year>2009,
+         `Balancing Authority Code`=="NWMT") %>%
+  ungroup() %>%
+  select(-`Balancing Authority Code`) %>%
+  pivot_wider(names_from=Year, values_from=`Nameplate Capacity (MW)`) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_op_gen_ba.csv"))
+
+
 
 
 #State Share of National Total Capacity by Technology
@@ -939,3 +988,53 @@ seds_ren_prod_plot<-ggplot(data=seds_ren_prod %>%
   scale_y_continuous(expand = c(0,0))+
   theme_classic()
 
+#Generation Potential--------------------------------
+tech_pot <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
+tech_pot_wind <- tech_pot %>%
+  filter(grepl("wind",Technology)) %>%
+  mutate(Geoid=as.numeric(paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7)))) %>%
+  rename(tech_gen=Technical.Generation.Potential...MWh.MWh) %>%
+  group_by(Geoid) %>%
+  summarize_at(vars(tech_gen),sum,na.rm=T) 
+
+#Wind by State
+state_tech_pot_wind <- tech_pot_wind %>%
+  left_join(counties %>% mutate(geoid=as.numeric(GEOID)) %>% select(STATEFP, geoid), by = c("Geoid" = "geoid")) %>%
+  mutate(statefp = as.numeric(STATEFP)) %>%
+  left_join(states_simple, by = c("statefp" = "fips")) %>%
+  group_by(full) %>%
+  summarize_at(vars(tech_gen),sum,na.rm=T) %>%
+  arrange(desc(tech_gen))
+
+#wind by Economic Area
+ea_tech_pot_wind <- tech_pot_wind %>%
+  left_join(EAs,by=c("Geoid"="fips")) %>%
+  mutate(`EA Name`=ifelse(Geoid %in% region_id$geoid,"Great Falls, MT",`EA Name`)) %>%
+  group_by(`EA Name`) %>%
+  summarize_at(vars(tech_gen),sum,na.rm=T) %>%
+  arrange(desc(tech_gen))
+
+ea_wind<- op_gen_with_county %>%
+  st_drop_geometry() %>%
+  filter(Technology=="Onshore Wind Turbine",
+         Status=="(OP) Operating") %>%
+  select(GEOID,`Nameplate Capacity (MW)`) %>%
+  mutate(Geoid=as.numeric(GEOID)) %>%
+  left_join(EAs,by=c("Geoid"="fips")) %>%
+  mutate(`EA Name`=ifelse(Geoid %in% region_id$geoid,"Great Falls, MT",`EA Name`)) %>%
+  group_by(`EA Name`) %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+  arrange(desc(`Nameplate Capacity (MW)`)) %>%
+  left_join(ea_tech_pot_wind,by=c("EA Name"="EA Name")) 
+
+write.csv(ea_wind,"Downloads/ea_wind.csv")
+
+ggplot(data=ea_wind, aes(x=tech_gen,y=`Nameplate Capacity (MW)`,label=`EA Name`)) +
+  geom_point() +
+  geom_text_repel() +
+  labs(title=paste("Wind Generation Potential vs. Installed Capacity"), 
+       x="Technical Generation Potential (MWh)",
+       y="Installed Capacity (MW)",
+       caption="Source: NREL") +
+  theme_classic()
+  

@@ -6,6 +6,8 @@
 #3. Clean Energy Facility announcement before/after IRA within Region
 #4. Announced Investments by Segment, Technology within States, Economic Areas and MSAs
 
+
+#Cleaning and Setting up--------------------------------------
 # State Variable - Set this to the abbreviation of the state you want to analyze
 state_abbreviation <- "SC"  # Replace with any US state abbreviation
 state_name <- "South Carolina"  # Replace with the full name of any US state
@@ -43,7 +45,7 @@ tech_mapping<-left_join(tech_mapping,naics2022 %>% select("2022 NAICS Code",
 
 
 
-#National Trends
+#National Trends------------------------------------------
 
 #Total Investment by Year
 investment_year<-investment %>% 
@@ -71,7 +73,7 @@ investment_segment<-investment %>%
   mutate(share=Estimated_Actual_Quarterly_Expenditure /sum(Estimated_Actual_Quarterly_Expenditure ))
 
 
-#Cumulative Growth
+#Cumulative Growth------------------------------------------
 
 #Top 10 Technologies in latest quarter
 investment_10 <- investment %>%
@@ -113,7 +115,7 @@ investment_growth_wide<-investment_growth %>% #wide format for Datawrapper
 
 
 
-#State Clean Energy Investment  - Clean Investment Monitor
+#State Clean Energy Investment  - Clean Investment Monitor-------------------------------------------
 #Total Clean Investment within Division
 division_abbr<-census_divisions %>%
   filter(State.Code==state_abbreviation) 
@@ -147,7 +149,7 @@ top_technologies <-investment %>%
   distinct() %>%
   mutate(top=1) # Get unique top technologies by state and segment
 
-#Quarterly Investment by State and Industry
+#Quarterly Investment by State and Industry------------------------------------------
 states_investment_quarterly <- investment %>%
   filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
   mutate(industry=ifelse(Segment=="Manufacturing",paste0(Technology," Manufacturing"),Technology)) %>%
@@ -190,7 +192,7 @@ state_inv_ira<-states_investment_quarterly %>%
   summarize_at(vars(Value,inv_gdp),sum,na.rm=T)
 
 
-#Investment Location Quotient - i.e. specialization in investment by State
+#Investment Location Quotient - i.e. specialization in investment by State-----------------------------------
 #National
 investment_gdp_2123<- investment %>%
   filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
@@ -323,7 +325,7 @@ plot_manufacturing<-ggplot(data=state_man,aes(x=reorder(State,-Total_Facility_CA
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=plot_manufacturing,width=8,height=6,units="in",dpi=300)
 
-#ANNOUNCED INVESTMENT
+#ANNOUNCED INVESTMENT-------------------------------------------------
 #All Manufacturing Facilities
 facilities_man<-facilities %>%
   filter(Segment=="Manufacturing") 
@@ -387,7 +389,7 @@ facilities_state_status<-facilities %>%
   arrange(desc(total_inv_b))
 
 
-#Breaking out Solar, Wind, Battery Supply chains
+#Solar, Wind, Battery Supply chains---------------------------------------
 supply_chains <- facilities %>%
   filter(Segment=="Manufacturing") %>%
   mutate(date=as.Date(Announcement_Date),
@@ -437,20 +439,20 @@ batteries_sc <- supply_chains %>%
   write.csv('Downloads/batteries_sc.csv')
 
 
-#County-Level Data
+#County-Level Data-------------------------------------------------------
 
 #Take Latitude & Longitude of Projects and match to Counties
-facilities_sf <- st_as_sf(facilities, coords = c("Longitude", "Latitude"), crs = 4326)
-options(tigris_class = "sf") # Ensure tigris returns simple features (sf) objects
-us_counties <- counties()
-us_counties <- st_transform(us_counties, st_crs(facilities_sf))
-facilities_with_counties <- st_join(facilities_sf, us_counties)
-facilities$County <- facilities_with_counties$NAME
-facilities$statefp<-as.numeric(facilities_with_counties$STATEFP)
-facilities$countyfp<-as.numeric(facilities_with_counties$COUNTYFP)
-facilities$geoid<-paste0(facilities$statefp,facilities$countyfp)
-county_stats$geoid<-paste0(county_stats$STATE,county_stats$county)
-facilities<-left_join(facilities,county_cbsa,by=c("statefp"="FIPS.State.Code","countyfp"="FIPS.County.Code"))
+# facilities_sf <- st_as_sf(facilities, coords = c("Longitude", "Latitude"), crs = 4326)
+# options(tigris_class = "sf") # Ensure tigris returns simple features (sf) objects
+# us_counties <- counties()
+# us_counties <- st_transform(us_counties, st_crs(facilities_sf))
+# facilities_with_counties <- st_join(facilities_sf, us_counties)
+# facilities$County <- facilities_with_counties$NAME
+# facilities$statefp<-as.numeric(facilities_with_counties$STATEFP)
+# facilities$countyfp<-as.numeric(facilities_with_counties$COUNTYFP)
+# facilities$geoid<-paste0(facilities$statefp,facilities$countyfp)
+# county_stats$geoid<-paste0(county_stats$STATE,county_stats$county)
+# facilities<-left_join(facilities,county_cbsa,by=c("statefp"="FIPS.State.Code","countyfp"="FIPS.County.Code"))
 
 
 
@@ -474,8 +476,11 @@ facilities_msa_tech <- facilities %>%
 
 #Technology Announcements by EA
 facilities_EA_tech <- facilities %>%
-  inner_join(EAs,by=c("fips"="fips")) %>%
+  inner_join(EAs,by=c("county_2020_geoid"="fips")) %>%
   mutate(announce_year=substr(Announcement_Date,1,4)) %>%
+  mutate(`EA Name`=ifelse(county_2020_geoid %in% region_id$geoid,"Great Falls, MT",`EA Name`)) 
+
+facilities_EA_tech_tot<- facilities_EA_tech %>%
   #filter(Current_Facility_Status != "C" & announce_year %in% c("2022","2023")) %>%
   group_by(`EA Name`,Segment,Technology) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)%>%

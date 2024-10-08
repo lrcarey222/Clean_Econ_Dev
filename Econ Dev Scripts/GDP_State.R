@@ -1,14 +1,14 @@
 #GDP R Script
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "SC"  # Replace with any US state abbreviation
-state_name <- "South Carolina"  # Replace with the full name of any US state
+state_abbreviation <- "MT"  # Replace with any US state abbreviation
+state_name <- "Montana"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username and update output folder for saved charts etc
 setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
-#GDP by Industry
+#GDP by Industry----------------------------
 url <- "https://apps.bea.gov/regional/zip/SAGDP.zip"
 temp_zip <- tempfile(fileext = ".zip")
 download(url, temp_zip, mode = "wb")

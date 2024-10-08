@@ -6,6 +6,10 @@ setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 
+#Set State of Interest
+state_name <- "Montana"
+state_abbreviation <- "MT"
+
 
 # Libraries
 library(bea.R)

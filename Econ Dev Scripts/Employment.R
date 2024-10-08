@@ -7,16 +7,22 @@
 
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "NM"  # Replace with any US state abbreviation
-state_name <- "New Mexico"  # Replace with the full name of any US state
+state_abbreviation <- "MT"  # Replace with any US state abbreviation
+state_name <- "Montana"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
+
+great_falls<-EAs %>%
+  filter(`EA Name`=="Great Falls, MT"|
+           County %in% c("Judith Basin County, MT",
+                         "Fergus County, MT",
+                         "Lewis and Clark County, MT"))
 
 #Make a region_id for your state/region of interest
 region_id <- us_counties %>%
-  filter(abbr == state_abbreviation) 
+  filter(fips %in% great_falls$FIPS) 
 
-#County Business Patterns
-cbp_2021 <- getCensus(
+#County Business Patterns-------------------------------
+cbp_2022 <- getCensus(
   name = "cbp",
   vars=c("STATE",
          "COUNTY",
@@ -28,35 +34,39 @@ cbp_2021 <- getCensus(
          "EMP",
          "PAYANN"),
   region = "county:*",
-  vintage = 2021)
+  vintage = 2022)
 
-cbp_21<-cbp_2021
+cbp_22<-cbp_2022
 
 #Join with State Abbreviations for state names etc
-cbp_21$state<-as.numeric(cbp_21$state)
-cbp_21<-left_join(states_simple,cbp_21,by=c("fips"="state"))
+cbp_22$state<-as.numeric(cbp_22$state)
+cbp_22<-left_join(states_simple,cbp_22,by=c("fips"="state"))
 
 #join with NAICS Codes to get industry descriptions
-cbp_21$naics2017<-as.numeric(cbp_21$NAICS2017)
-#cbp_21 <-left_join(cbp_21,eti_long,by=c("naics2017"="6-Digit Code"))
+cbp_22$naics2017<-as.numeric(cbp_22$NAICS2017)
+#cbp_22 <-left_join(cbp_22,eti_long,by=c("naics2017"="6-Digit Code"))
 
 #Six Digit Level
-cbp_21_6d <- cbp_21 %>%
+cbp_22_6d <- cbp_22 %>%
   filter(INDLEVEL=="6")
 
+#Six Digit Level
+cbp_22_4d <- cbp_22 %>%
+  filter(INDLEVEL=="4")
+
 #Two Digit Level
-cbp21_2d <- cbp_21 %>%
+cbp22_2d <- cbp_22 %>%
   select(-fips) %>%
   mutate(state=as.numeric(STATE)) %>%
   filter(INDLEVEL=="2")  %>%
   mutate(FIPS=paste0(STATE, COUNTY)) %>%
   left_join(EAs,by=c("FIPS"="FIPS")) %>%
-  left_join(naics2017 %>% mutate(naics2017=as.numeric(`2017 NAICS US   Code`)) %>%
+  left_join(naics2017 %>% mutate(naics2017=(`2017 NAICS US   Code`)) %>%
                                    select(naics2017,`2017 NAICS US Title`),by=c("NAICS2017"="naics2017")) %>%
   rename(naics_desc=`2017 NAICS US Title`)
 
 #Filter just for region of interest
-region_cbp_2d <- cbp21_2d %>%
+region_cbp_2d <- cbp22_2d %>%
   filter(abbr==state_abbreviation) %>%
   mutate(region_id=ifelse(fips %in% region_id$fips,1,0)) %>%
   mutate(code=ifelse(NAICS2017 %in% c("00","11","21","22","23","31-33","42","48-49","54"),NAICS2017,"Other")) %>%
@@ -71,14 +81,19 @@ region_totalemp<-region_cbp_2d %>%
          region_id==1) 
 
 #Calculate proportions
-total_emp <- cbp21_2d %>%
-  filter(NAICS2017=="0")
-total_emp_nat<-cbp21_2d  %>%
-  filter(NAICS2017=="0") %>%
+total_emp <- cbp22_2d %>%
+  filter(NAICS2017=="00")
+total_emp_nat<-cbp22_2d  %>%
+  filter(NAICS2017=="00") %>%
   summarize_at(vars(EMP),sum,na.rm=T) %>%
   ungroup() 
 
-#Fossil Fuel Employment
+total_emp_region <- total_emp %>%
+  filter(FIPS %in% region_id$fips) %>%
+  summarize_at(vars(EMP),sum,na.rm=T) %>%
+  ungroup()
+
+#Fossil Fuel Employment--------------------------
 fossil_codes <- tibble(
   NAICS_code = c(211, 2121, 213111, 213112, 213113, 32411, 4861, 4862),
   Description = c("Oil and Gas Extraction",
@@ -90,7 +105,7 @@ fossil_codes <- tibble(
                   "Pipeline Transportation of Crude Oil",
                   "Pipeline Transportation of Natural Gas"))
 
-fossil_emp_national <- cbp_21 %>%
+fossil_emp_national <- cbp_22 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   group_by(fossil) %>%
   summarize_at(vars(EMP),sum,na.rm=T) %>%
@@ -98,7 +113,7 @@ fossil_emp_national <- cbp_21 %>%
   ungroup() %>%
   mutate(emp_share_national = EMP / EMP_nat)
 
-fossil_emp_county <- cbp_21 %>%
+fossil_emp_county <- cbp_22 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
   filter(fossil==1) %>%
   group_by(abbr,full,STATE,COUNTY,fossil) %>%
@@ -160,8 +175,8 @@ fossil_emp_state <- fossil_emp_county %>%
   left_join(county_labels,by=c("FIPS"="fips")) 
 
 
-#Diversity
-emp_proportions <- cbp21_2d %>%
+#Diversity------------------------
+emp_proportions <- cbp22_2d %>%
   left_join(total_emp %>% select(STATE,COUNTY,full,EMP), by = c("full"="full","STATE"="STATE","COUNTY"="COUNTY"), suffix = c("", "_total")) %>%
   mutate(FIPS=paste0(STATE,COUNTY))%>%
   select(FIPS,full,SECTOR,EMP,EMP_total) %>%
@@ -189,7 +204,56 @@ location_quotients_county <- emp_proportions %>%
   mutate(LQ = emp_share / emp_share_national,
          weighted_LQ = LQ * emp_share)  # Weighting by regional share
 
-# Compute the Hachman index
+#Region Location Quotients
+location_quotients_region <- cbp_22 %>%
+  mutate(FIPS=paste0(STATE,COUNTY))%>%
+  filter(SECTOR != "00",
+         FIPS %in% region_id$fips,
+         INDLEVEL=="3") %>%
+  group_by(NAICS2017) %>%
+  summarize_at(vars(EMP),sum,na.rm=T) %>%
+  mutate(emp_total=total_emp_region$EMP,
+         emp_share=EMP/emp_total) %>%
+  left_join(cbp_22 %>%
+              filter(SECTOR != "00") %>%
+              select(NAICS2017, EMP) %>%
+              group_by(NAICS2017) %>%
+              summarize_at(vars(EMP),sum,na.rm=T) %>%
+              ungroup()%>%
+              mutate(emp_share_national = EMP / sum(EMP, na.rm = TRUE)), by = c("NAICS2017")) %>%
+  mutate(LQ = emp_share / emp_share_national) %>%
+  left_join(naics2017 %>%
+              select(`2017 NAICS US   Code`,
+                     `2017 NAICS US Title`),by=c("NAICS2017"="2017 NAICS US   Code")) 
+
+lq_region_clean <- location_quotients_region %>%
+  mutate(naics2017=as.numeric(NAICS2017)) %>%
+  inner_join(eti_long,by=c("naics2017"="3-Digit Code"))
+
+write.csv(lq_region_clean,paste0(output_folder,"/",state_abbreviation,"_lq_region.csv"))
+
+
+
+# National-level proportions
+national_proportions <- emp_proportions %>%
+  ungroup() %>%
+  select(SECTOR, EMP) %>%
+  filter(SECTOR != "00") %>%
+  group_by(SECTOR) %>%
+  summarize_at(vars(EMP),sum,na.rm=T) %>%
+  ungroup()%>%
+  mutate(emp_share_national = EMP / sum(EMP, na.rm = TRUE))
+
+#Location Quotients
+location_quotients_county <- emp_proportions %>%
+  left_join(national_proportions, by = c("SECTOR")) %>%
+  filter(SECTOR != "00") %>%
+  mutate(LQ = emp_share / emp_share_national,
+         weighted_LQ = LQ * emp_share)  # Weighting by regional share
+
+
+
+# Compute the Hachman index-----------------------------
 hachman_indices_county <- location_quotients_county %>%
   filter(full==state_name) %>%
   #mutate(region_id=ifelse(GEOID %in% region_counties$fips,1,0)) %>% # Identify the region of interest
@@ -231,7 +295,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_hachman_map_county",
        dpi = 300)
 
 
-#Quarterly Census of Employment and Wages
+#Quarterly Census of Employment and Wages------------------------------------
 
 #2018:2023 data for industries in Clean Investment MOnitor
 #Fastest:
@@ -438,7 +502,7 @@ ggplot(data=solar_spec,aes(x=date,y=emplvl,color=State.Name))+
   geom_line()
 
 
-#Latest Employment - all industries
+#Latest Employment - all industries-------------------------------
 
 eti_long<-left_join(eti_long,naics2022 %>% select("2022 NAICS Code",
                                                   "2022 NAICS Title",
@@ -511,7 +575,7 @@ state_spec_1 <- state_emp %>%
                        tech))
 write.csv(state_spec_1,'C:/Users/LCarey.RMI/Downloads/state_spec_1.csv')
 
-#DOE Energy EMployment Report
+#DOE Energy EMployment Report------------------------------------------------
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/'
 file_path <- paste0(destination_folder, "USEER 2024 Public Data.xlsx")
 
