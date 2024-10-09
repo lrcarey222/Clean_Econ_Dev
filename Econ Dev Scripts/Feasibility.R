@@ -274,7 +274,7 @@ state_ranks <- msa_data %>%
                 mean,na.rm=T)) 
 
 
-#County Level Feasibility
+#County Level Feasibility-----------------------------------
 cgt_county<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
 
 region_id <-region_id %>%
@@ -300,7 +300,35 @@ region_top5<-region_county_feas %>%
 
 
 
-#I-85 Feasibility
+#Congressional District Feasibility-----------------------------------
+# Read the .txt file using the appropriate delimiter
+cd_county <- read.delim('https://www2.census.gov/geo/docs/maps-data/data/rel2020/cd-sld/tab20_cd11820_county20_natl.txt', sep = "|", header = TRUE)
+
+cd_county <- cd_county %>%
+  rename(cd_name=NAMELSAD_CD118_20,
+         geoid_cd=GEOID_CD118_20,
+         geoid=GEOID_COUNTY_20,
+         county_name=NAMELSAD_COUNTY_20) %>%
+  select(geoid_cd,cd_name,geoid,county_name) 
+
+cd_feas<-cgt_county %>%
+  filter(transition_sector_category %in% c("Transition Mineral and Metal Mining Sector",
+                                           "Buildings End-Use Sector",
+                                           "Industrial End-Use Sector",
+                                           "Transition Chemical, Mineral, and Metal Manufacturing Sector",
+                                           "Transportation End-Use Sector"),
+         aggregation_level=="4") %>%
+  group_by(state_name,county,county_name,primary_transition_products_technologies) %>%
+  summarize(density=mean(density,na.rm=T)) %>%
+  left_join(cd_county,by=c("county"="geoid")) %>%
+  left_join(county_gdp,by=c("county"="fips")) %>%
+  mutate(gdp=as.numeric(X2022,na.rm=T)) %>%
+  group_by(state_name,geoid_cd,cd_name,primary_transition_products_technologies) %>%
+  #Weighted mean of density, weighted by gdp
+  summarize(density=mean(density,na.rm=T)) 
+
+
+#I-85 Feasibility------------------------------
 road_counties<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
 
 feasibility_roads <- cgt_county %>%
@@ -333,7 +361,7 @@ write.csv(feasibility_I85,paste0(output_folder,"/",state_abbreviation,"_feasibil
 
 
 
-#Feasibility Drivers
+#Feasibility Drivers---------------------------------
 feas_drivers<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/tech_feas_drivers.csv')
 feas_drivers<-right_join(feas_drivers,states_msa %>% 
                            mutate(msa=as.numeric(cbsa)),by=c("msa"="msa"))
@@ -390,3 +418,8 @@ feasibility_naics<-naics_data %>%
 ben<-feasibility_naics %>% 
   filter(grepl("Wenatchee",msa_name),
          grepl("Nonferrous",naics_desc)) 
+
+msa_rank <- msa_data %>%
+  filter(region=="EA") %>%
+  select(-inv_description,-right_to_work) %>%
+  mutate(across(jobs:cnbc_rank,~rank(-.))) 

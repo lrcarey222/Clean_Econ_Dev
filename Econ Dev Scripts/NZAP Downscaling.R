@@ -1,8 +1,8 @@
 #Net Zero America Downscaling
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "NM"  # Replace with any US state abbreviation
-state_name <- "New Mexico"  # Replace with the full name of any US state
+state_abbreviation <- "MT"  # Replace with any US state abbreviation
+state_name <- "Montana"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 region_abbrv <- states_simple %>% filter(abbr == state_abbreviation)
 
@@ -18,7 +18,7 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 #Use County Business Patterns Census Data for Employment figures at county level
-cbp_2021 <- getCensus(
+cbp_2022 <- getCensus(
   name = "cbp",
   vars=c("STATE",
          "COUNTY",
@@ -31,22 +31,22 @@ cbp_2021 <- getCensus(
          "PAYANN"),
   region = "county:*",
   vintage = 2021)
-cbp_21<-cbp_2021
+cbp_22<-cbp_2022
 
 #Join with State Abbreviations for state names etc
-cbp_21$state<-as.numeric(cbp_21$state)
-cbp_21<-left_join(states_simple,cbp_21,by=c("fips"="state"))
+cbp_22$state<-as.numeric(cbp_22$state)
+cbp_22<-left_join(states_simple,cbp_22,by=c("fips"="state"))
 
 #join with NAICS Codes to get industry descriptions
-cbp_21$NAICS2017<-as.numeric(cbp_21$NAICS2017)
-cbp_21 <-left_join(cbp_21,eti,by=c("NAICS2017"="6-Digit Code"))
+cbp_22$NAICS2017<-as.numeric(cbp_22$NAICS2017)
+cbp_22 <-left_join(cbp_22,eti,by=c("NAICS2017"="6-Digit Code"))
 
 #Six Digit Level
-cbp_21 <- cbp_21 %>%
+cbp_22 <- cbp_22 %>%
   filter(INDLEVEL=="6")
 
 #Two Digit Level
-cbp21_2d <- cbp_2021 %>%
+cbp22_2d <- cbp_2022 %>%
   mutate(state=as.numeric(state)) %>%
   filter(INDLEVEL=="2")  %>%
   mutate(FIPS=paste0(STATE, COUNTY)) %>%
@@ -55,7 +55,7 @@ cbp21_2d <- cbp_2021 %>%
   rename(naics_desc=`2017 NAICS US Title`)
 
 #Filter just for region of interest
-region_cbp_2d <- cbp21_2d %>%
+region_cbp_2d <- cbp22_2d %>%
   filter(STATE==states_simple$fips[states_simple$abbr==state_abbreviation]) %>%
   mutate(region_id=ifelse(fips %in% region_id$fips,1,0)) %>%
   mutate(code=ifelse(NAICS2017 %in% c("00","11","21","22","23","31-33","42","48-49","54"),NAICS2017,"Other")) %>%
@@ -104,7 +104,7 @@ ea_eleccons <- county_eleccons %>% #group by Economic Area
 region_eleccons<-county_eleccons %>%
   filter(abbr== state_abbreviation) %>%
   mutate(region_id=ifelse(FIPS %in% region_id$fips,1,0)) %>%
-  group_by(`EA Name`,region_id) %>%
+  group_by(region_id) %>%
   summarize_at(vars(Consumption.MMBtu),sum,na.rm=T) %>%
   ungroup() %>%
   mutate(share=Consumption.MMBtu/sum(Consumption.MMBtu,na.rm=T)) %>%
@@ -130,6 +130,7 @@ op_gen_with_county <- st_join(op_gen_sf, counties)
 EA_gen <- op_gen_with_county %>%
   mutate(fips=as.numeric(GEOID)) %>%
   inner_join(EAs,by=c("fips"="fips")) %>%
+  mutate(`EA Name`=ifelse(fips %in% region_id$fips,region_name,`EA Name`)) %>%
   filter(Status=="(OP) Operating") %>% #Only Operating Plants
   left_join(states_simple, by=c("Plant State"="abbr")) %>%
   group_by(region,full,`EA Name`,`Operating Year`,Technology) %>%
@@ -160,11 +161,28 @@ region_rengen <- EA_gen %>%
 #mutate(Year = make_date(`Operating Year`)) %>%
 
 #Share of Generating Capacity in Region of Interest
-rengen_share <- region_rengen %>%
-  mutate(region_of_interest=ifelse(`EA Name`==region_name,1,0)) %>%
-  filter(full==state_name) %>%
-  group_by(tech) %>%
-  mutate(share=round(`Nameplate Capacity (MW)`/sum(`Nameplate Capacity (MW)`),1)) 
+rengen_share <- op_gen_with_county %>%
+  mutate(fips=as.numeric(GEOID)) %>%
+  mutate(region_of_interest=ifelse(fips %in% region_id$fips,1,0)) %>%
+  filter(`Plant State`==state_abbreviation) %>%
+  mutate(tech = case_when( #Group similar technologies
+    Technology=="Natural Gas Steam Turbine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combined Cycle" ~ "Natural Gas",
+    Technology=="Natural Gas Internal Combustion Engine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combustion Turbine" ~ "Natural Gas",
+    Technology=="Conventional Steam Coal" ~ "Coal",
+    Technology=="Conventional Hydroelectric" ~ "Hydro",
+    Technology=="Onshore Wind Turbine" ~ "Wind",
+    Technology=="Batteries" ~ "Storage",
+    Technology=="Solar Photovoltaic" ~ "Solar",
+    Technology=="Solar Thermal with Energy Storage" ~ "Solar",
+    Technology=="Hydroelectric Pumped Storage" ~ "Hydro",
+    Technology=="Geothermal" ~ "Geothermal",
+    Technology=="Wood/Wood Waste Biomass"~"Biomass"
+  )) %>%
+  group_by(tech,region_of_interest) %>%
+  summarize(capacity=sum(`Nameplate Capacity (MW)`,na.rm=T)) %>%
+  mutate(share=round(capacity/sum(capacity),1)) 
 
 
 #Net Zero Scenario - Net Zero America
@@ -272,13 +290,13 @@ nza_cap_inv <- nza_states %>%
   mutate(variable_name=gsub("Capital invested - ","",variable_name),
          variable_name=gsub(" - Base","",variable_name)) %>%
   ungroup() %>%
-  select(State.Code,variable_name,scenario,`2025`,`2030`,`2035`,`2040`,`2045`,`2050`) %>%
+  select(State.Code,variable_name,scenario,unit,`2025`,`2030`,`2035`,`2040`,`2045`,`2050`) %>%
   pivot_longer(cols=c(`2025`,`2030`,`2035`,`2040`,`2045`,`2050`),names_to="year",values_to="Value") %>%
-  mutate(variable=ifelse(grepl("Biomass",variable_name),"Biomass",variable_name)) 
-  #left_join(rengen_share  %>%
-   #           filter(region_of_interest==1) %>%
-    #          select(tech,share),by=c("variable"="tech")) %>%
-  #mutate(Value_region=Value*share) 
+  mutate(variable=ifelse(grepl("Biomass",variable_name),"Biomass",variable_name))  %>%
+  left_join(rengen_share  %>%
+             filter(region_of_interest==1) %>%
+           select(tech,share),by=c("variable"="tech")) %>%
+  mutate(Value_region=Value*share) 
 
 plot_nza_ren_capinv<-ggplot(data=nza_cap_inv,aes(x=year,y=Value,fill=variable_name)) +
   geom_col(position='stack') +
@@ -427,3 +445,37 @@ plot_nza_avoideddeaths<-ggplot(data=nza_avoideddeaths %>% filter(scenario=="E+")
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"plot_nza_avoideddeaths.png"),plot=plot_nza_avoideddeaths,width=8,height=6,units="in",dpi=300)
 
+#EVs
+nza_evs <- nza_states %>%
+  filter(State.Code==state_abbreviation) %>%
+  filter(filter_level_3 == "Vehicle stocks") %>%
+  filter(grepl("EV",variable_name)) %>%
+  #mutate(variable_name=gsub("Final energy use - ","",variable_name)) %>%
+  ungroup() %>%
+  select(State.Code,variable_name,scenario,`2025`,`2030`,`2035`,`2040`,`2045`,`2050`) %>%
+  pivot_longer(cols=c(`2025`,`2030`,`2035`,`2040`,`2045`,`2050`),names_to="year",values_to="Value") %>%
+  mutate(share=region_eleccons$share) %>%
+  mutate(Value_region=Value*share) 
+
+nza_co2pipes <- nza_states %>%
+  filter(State.Code==state_abbreviation) %>%
+  filter(filter_level_3 == "CO2 pipelines",
+         unit=="km") %>%
+  filter(grepl("All",variable_name)) %>%
+  #mutate(variable_name=gsub("Final energy use - ","",variable_name)) %>%
+  ungroup() %>%
+  select(State.Code,variable_name,scenario,`2025`,`2030`,`2035`,`2040`,`2045`,`2050`) %>%
+  pivot_longer(cols=c(`2025`,`2030`,`2035`,`2040`,`2045`,`2050`),names_to="year",values_to="Value") %>%
+  mutate(share=region_eleccons$share) %>%
+  mutate(Value_region=Value*share) 
+
+nza_spaceheat <- nza_states %>%
+  filter(State.Code==state_abbreviation) %>%
+  filter(filter_level_3 == "Sales of space heating units") %>%
+  filter(grepl("All",variable_name)) %>%
+  #mutate(variable_name=gsub("Final energy use - ","",variable_name)) %>%
+  ungroup() %>%
+  select(State.Code,variable_name,scenario,`2025`,`2030`,`2035`,`2040`,`2045`,`2050`) %>%
+  pivot_longer(cols=c(`2025`,`2030`,`2035`,`2040`,`2045`,`2050`),names_to="year",values_to="Value") %>%
+  mutate(share=region_eleccons$share) %>%
+  mutate(Value_region=Value*share) 

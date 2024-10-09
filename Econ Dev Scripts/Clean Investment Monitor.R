@@ -654,7 +654,15 @@ facilities_EA_total <- facilities_EA_total %>%
   mutate(region="EA") 
 
 
-#Federal Tax Credit Incentives State-Level Estimates
+#Congressional Districts-----------------------------------------
+facilities_cd <- facilities %>%
+  group_by(State,CD118_2022_Name,Segment,Technology) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  left_join(tech_mapping,by=c("Segment"="Segment","Technology"="Technology")) %>%
+
+
+
+#Federal Tax Credit Incentives State-Level Estimates----------------------------------
 tax_inv_cat<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_category.csv',skip=2)
 tax_inv_state<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_state.csv',skip=2)
 
