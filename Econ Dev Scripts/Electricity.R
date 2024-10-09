@@ -539,11 +539,12 @@ weighted_sum_func <- function(x, w) {
 }
 
 
-#SUmmarize at Economic Area Level
+#Summarize at Economic Area Level
 opr_eas <- matched %>%
   mutate(fips=as.numeric(GEOID)) %>%
   left_join(EAs,by=c("fips"="fips")) %>%
   filter(!is.na(`EA Name`)) %>%
+  mutate(`EA Name`=ifelse(fips %in% region_id$FIPS,"Great Falls, MT",`EA Name`)) %>%
   distinct(`EA Name`,id,NAME.x,NET_GEN,CUSTOMERS) %>%
   left_join(epa_gen_opr,by=c("id"="OPRCODE")) %>%
   filter(!is.na(total_gen)) %>%
@@ -564,7 +565,7 @@ EA_renshare <- opr_eas %>%
          em_rate=PLCO2AN/total_gen) %>%
   left_join(ea_eleccons,by=c("EA Name"="EA Name")) %>%
   left_join(EAs,by=c("EA Name"="EA Name")) %>%
-  distinct(region,`EA Name`,total_gen,ren_mix,noncomb_mix,em_rate) %>%
+  distinct(`EA Name`,total_gen,ren_mix,noncomb_mix,em_rate) %>%
   mutate(em_rate_bin = ntile(em_rate, 5)) %>%
   arrange(desc(em_rate))
 
@@ -578,7 +579,7 @@ multi_region_id <- EAs %>%
   mutate(statefp = as.numeric(STATEFP)) %>%
   left_join(states_simple, by = c("statefp" = "fips")) %>%
   left_join(census_divisions, by = c("full" = "State")) %>%
-  filter(Division==division_abbr$Division) %>%
+  filter(Division==division_abbrv$Division) %>%
   select(-geometry) %>%
   distinct()
 
@@ -586,7 +587,9 @@ multi_region_id <- EAs %>%
 plot_data<- EA_renshare %>%
   filter(`EA Name` %in% multi_region_id$`EA Name`) %>%
   mutate(region_id=as.factor(ifelse(`EA Name` %in% multi_region_id$`EA Name`,1,0))) %>%
-  slice_min(em_rate,n=20)
+  #slice_min(em_rate,n=20) %>%
+  mutate(region_of_interest=ifelse(`EA Name` == region_name,region_name,""))
+write.csv(plot_data,"Downloads/plot_data.csv")
 
 #Column Chart for Emissions Rate of Utilities within EA
 plot_EA_renshare<-ggplot(data=,plot_data, aes(x=reorder(`EA Name`,-em_rate),y=em_rate,fill=region_id)) +
