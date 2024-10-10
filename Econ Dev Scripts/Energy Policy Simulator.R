@@ -1,11 +1,11 @@
 #Energy Policy Simulator
 
-#Load Master Libraries
+#Load Master Libraries-------------------------------
 eps_bau_master<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps_bau_master.csv")
 eps_ndc_master<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps_ndc_master.csv")
 
 
-#Clean Files
+#Clean Files----------------------------------------
 eps_bau <- eps_bau_master %>%
   separate(Time, into = c("var1", "rest"), sep = "\\[", remove = FALSE) %>%
   separate(rest, into = c("var2", "var3"), sep = ",", fill = "right") %>%
@@ -22,7 +22,7 @@ eps_bau <- eps_bau_master %>%
          Value=as.numeric(Value),
          scenario="BAU") %>%
   left_join(census_divisions,by=c("state"="State.Code")) %>%
-  select(Region,Division,State,state,var1,var2,var3,var4,Year,Value)
+  select(Region,Division,State,state,var1,var2,var3,var4,Year,Value,scenario)
 
 eps_ndc <- eps_ndc_master %>%
   separate(Time, into = c("var1", "rest"), sep = "\\[", remove = FALSE) %>%
@@ -40,17 +40,12 @@ eps_ndc <- eps_ndc_master %>%
          Value=as.numeric(Value),
          scenario="NDC") %>%
   left_join(census_divisions,by=c("state"="State.Code")) %>%
-  select(Region,Division,State,state,var1,var2,var3,var4,Year,Value)
+  select(Region,Division,State,state,var1,var2,var3,var4,Year,Value,scenario)
 
-##Energy Policy Simulator--------------------------------------------------
-#Electricity Capacity, Generation, and Demand
-#Read from Raw Data
-eps_elec_bau<- read.csv(paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/",state_abbreviation,"-Electricity Generation, Capacity, and Demand - Generation.csv"))
-eps_elec_NDC<- read.csv(paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/",state_abbreviation,"MT-Electricity Generation, Capacity, and Demand - Generation - NDC.csv"))
+eps<-rbind(eps_bau,eps_ndc)
 
-#Remove all instances of '..terawatt.hours..TWh....year.' from column names
-names(eps_elec_bau) <- gsub("\\.{2,}terawatt\\.hours\\.{2,}TWh\\.{2,}year\\.", "", names(eps_elec_bau))
-names(eps_elec_NDC) <- gsub("\\.{2,}terawatt\\.hours\\.{2,}TWh\\.{2,}year\\.", "", names(eps_elec_NDC))
+#Electricity Capacity, Generation, and Demand------------------------------------------
+
 
 #Add scenario column, rowbind, and pivot long
 eps_elec<-eps_elec_bau %>%
@@ -120,7 +115,7 @@ eps_elec_index <- eps_elec %>%
   pivot_wider(names_from=Source,values_from=Generation) %>%
   write.csv(file.path(output_folder, paste0("eps_elec_index", ".csv")))
 
-#Demand by Sector
+#Demand by Sector-----------------------------------------------
 eps_elec_demand<- read.csv(paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/",state_abbreviation," - BAU - Electricity Demand by Sector.csv"))
 names(eps_elec_demand) <- gsub("\\.{2,}terawatt\\.hours\\.{2,}TWh\\.{2,}year\\.", "", names(eps_elec_demand))
 
@@ -139,7 +134,7 @@ eps_demand_bau <- eps_elec_demand %>%
   pivot_wider(names_from=Sector,values_from=Demand) %>%
   write.csv(file.path(output_folder, paste0("eps_demand_bau", ".csv")))
 
-#Car Sales
+#Car Sales-------------------------------------------------
 eps_car_sales<- read.csv(paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/",state_abbreviation," - BAU - Sales - Cars and SUVs.csv"))
 names(eps_car_sales) <- gsub("\\.Vehicle\\.{2,}million\\.vehicles\\.{2,}year\\.", "", names(eps_car_sales))
 names(eps_car_sales) <- gsub("\\.", " ", names(eps_car_sales))
@@ -158,3 +153,76 @@ eps_cars_bau <- eps_car_sales %>%
   filter(Vehicle %in% top_change_cars) %>%
   pivot_wider(names_from=Vehicle,values_from=Sales) %>%
   write.csv(file.path(output_folder, paste0("eps_cars_bau", ".csv")))
+
+
+#BAU v NDC Charts----------------
+
+#Creates two wide csv files for BAU and NDC by Year, for time series charts in Datawrapper
+bau_ndc_wide <- function(var) {
+  # Process for BAU
+  eps %>%
+    filter(scenario=="BAU",
+           var1 == var,
+           state == state_abbreviation) %>%
+    mutate(var2=gsub("sector","",var2),
+           var2=str_to_sentence(var2)) %>%
+    select(var2,Year,Value) %>%
+    pivot_wider(names_from = var2, values_from = Value) %>%
+    write.csv(file.path(output_folder, paste0(var, "_bau", ".csv")))
+  
+  # Process for NDC
+  eps %>%
+    filter(scenario=="NDC",
+           var1 == var,
+           state == state_abbreviation) %>%
+    mutate(var2=gsub("sector","",var2),
+           var2=str_to_sentence(var2)) %>%
+    select(var2,Year,Value) %>%
+    pivot_wider(names_from = var2, values_from = Value) %>%
+    write.csv(file.path(output_folder, paste0(var, "_ndc", ".csv")))
+}
+
+#Creates one csv file comparing 2024-2050 % change for BAU and NDC
+bau_ndc_perc_diff <- function(var) {
+  # Percentage change 2024-2050
+  eps %>%
+    filter(Year %in% c("2024","2050"),
+           var1 == var,
+           state == state_abbreviation) %>%
+    mutate(var2=gsub("sector","",var2),
+           var2=str_to_sentence(var2)) %>%
+    select(scenario,var2,Year,Value) %>%
+    pivot_wider(names_from = Year, values_from = Value) %>%
+    mutate(change=round((`2050`-`2024`)/`2024`*100,2)) %>%
+    select(scenario,var2,change) %>%
+    pivot_wider(names_from = scenario, values_from = change) %>%
+    write.csv(file.path(output_folder, paste0(var, "_percdiff", ".csv")))
+  
+}
+
+#Creates one csv file comparing 2024-2050 absolute change for BAU and NDC
+bau_ndc_abs_diff <- function(var) {
+  # Percentage change 2024-2050
+  eps %>%
+    filter(Year %in% c("2024","2050"),
+           var1 == var,
+           state == state_abbreviation) %>%
+    mutate(var2=gsub("sector","",var2),
+           var2=str_to_sentence(var2)) %>%
+    select(scenario,var2,Year,Value) %>%
+    pivot_wider(names_from = Year, values_from = Value) %>%
+    mutate(change=(`2050`-`2024`)) %>%
+    filter(change != 0) %>%
+    select(scenario,var2,change) %>%
+    pivot_wider(names_from = scenario, values_from = change) %>%
+    write.csv(file.path(output_folder, paste0(var, "_absdiff", ".csv")))
+  
+}
+
+# Example usage:
+bau_ndc_wide("Output Process Emissions in CO2e by Industry")
+bau_ndc_perc_diff("Output Process Emissions in CO2e by Industry")
+bau_ndc_abs_diff("Output Electricity Generation by Type")
+
+
+

@@ -7,7 +7,7 @@ state_name <- "South Carolina"  # Replace with the full name of any US state
 #Set the Working Directory to your Username
 setwd("C:/Users/LCarey.RMI/")
 
-#Load Latest Clean Growth Tool Data
+#Load Latest Clean Growth Tool Data-----------------------------
 cgt<-readRDS('OneDrive - RMI/Documents/Data/Raw Data/acre_tool_final_data_042624')
 
 msa_data<-cgt$msa_data
@@ -17,7 +17,7 @@ states_msa<-cgt$states_msa
 naics6d_data<-cgt$naics6d_data
 transition<-cgt$transition_sector_data
 
-#Combine and Clean Data
+#Combine and Clean Data-----------------------------------------
 feasibility<-naics_data %>%
   select(transition_sector_category_id,naics,naics_desc) %>%
   right_join(transition,by=c("transition_sector_category_id"="transition_sector_category_id")) %>%
@@ -32,7 +32,7 @@ feasibility<-naics_data %>%
   mutate(feas_industry_percentile=percent_rank(density)) %>%
   distinct()
 
-#State Average
+#State Average---------------------------------------
 ea_pop <- county_pop %>%
   select(STATE,COUNTY,POPESTIMATE2022) %>%
   mutate(FIPS=paste0(sprintf("%02d", STATE), sprintf("%03d", COUNTY)),
@@ -138,7 +138,7 @@ state_feas_plot2<-ggplot(data=state_feas_msa %>% filter(state_avb==state_abbrevi
 ggsave(paste0(output_folder,"/",state_abbreviation,"_feasibility_industry.png"),plot=state_feas_plot2,width=8,height=6,units="in",dpi=300)
 
 
-#NAICS Code Feasibility
+#NAICS Code Feasibility------------------------------------
 feasibility_naics<-naics_data %>%
   select(transition_sector_category_id,naics,naics_desc) %>%
   right_join(transition,by=c("transition_sector_category_id"="transition_sector_category_id")) %>%
@@ -213,7 +213,7 @@ state_feasnaics_plot<-ggplot(data=state_feas_naics %>% filter(state_avb==state_a
 ggsave(paste0(output_folder,"/",state_abbreviation,"_feasibility.png"),plot=state_feas_plot,width=8,height=6,units="in",dpi=300)
 
 
-#EA Feasibility
+#EA Feasibility---------------------------------------
 EA_table_5<-feasibility %>%
   filter(region=="EA",
          transition_sector_category %in% c("Energy End-Use Sector" ,
@@ -234,6 +234,19 @@ state_EA_table<-EA_table_5 %>%
   filter(state_avb ==state_abbreviation)
 
 write.csv(state_EA_table,paste0(output_folder,"/",state_abbreviation,"_EA_table.csv"),row.names=F)
+
+EA_chart<-feasibility %>%
+  filter(region=="EA",
+         # transition_sector_category %in% c("Transition Mineral and Metal Mining Sector",
+         #                                   "Industrial End-Use Sector",
+         #                                   "Transition Chemical, Mineral, and Metal Manufacturing Sector",
+         #                                   "Buildings End-Use Sector",
+         #                                   "Transportation End-Use Sector")
+         ) %>%
+  mutate(EA_Name=gsub(" \\(EA\\)","",msa_name)) %>%
+  filter(EA_Name==region_name) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_EA_chart.csv"),row.names=F)
+
 
 
 #MSA Feasibility
@@ -287,6 +300,12 @@ region_county_feas<- cgt_county %>%
                                            "Industrial End-Use Sector",
                                            "Transition Chemical, Mineral, and Metal Manufacturing Sector",
                                            "Transportation End-Use Sector")) 
+
+region_chart<- region_county_feas %>%
+  group_by(transition_sector_category,primary_transition_products_technologies) %>%
+  summarize(across(c(density,pci),mean,na.rm=T)) %>%
+  mutate(Transition_Sector=gsub(" Sector","",transition_sector_category)) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_region_chart.csv"),row.names=F)
 
 region_top5<-region_county_feas %>%
   #Weighted mean, grouped by county, of density, weighted by rca

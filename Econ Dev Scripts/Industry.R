@@ -4,7 +4,7 @@
 #Direct Emitters----------------------------------
 emit<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/direct_emitters.csv')
 
-#GGplot Map of Direct Emitters by industry in state_abbreviation
+#GGplot Map of Direct Emitters by industry in state_abbreviation---------------
 state_emit_map <- emit %>%
   mutate(direct_emit=as.numeric(gsub(",","",Total.reported.direct.emissions))) %>%
   filter(State==state_abbreviation) %>%
@@ -48,7 +48,7 @@ ggmap(base_map, darken = c(0.5, "white")) +
   theme(legend.position="bottom")
 
 
-#Emissions Location Quotient
+#Emissions Location Quotient---------------------
 us_directemit_naics <- emit %>%
   mutate(US_direct_emit=as.numeric(gsub(",","",Total.reported.direct.emissions))) %>%
   group_by(Primary.NAICS.Code,Industry.Type) %>%
@@ -117,7 +117,7 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_directemit_lq_plot.png"),pl
 
 #Industry Energy Intensity-------------------------------
 
-asm_2021 <- getCensus(
+asm_2022 <- getCensus(
   name = "timeseries/asm/area2017",
   vars=c("STATE",
          "NAICS2017",
@@ -131,16 +131,22 @@ asm_2021 <- getCensus(
          "CSTELEC",
          "CSTFU",
          "ELECPCH"),
-  region = "us:*")
+  region = "state:*")
 
 states<-us_map("states")
-
-asm_21<-asm_2021 %>%
+asm_22<-asm_2022 %>%
   left_join(states %>% 
               distinct(fips,abbr,full),by=c("STATE"="fips")) %>%
   left_join(naics2017 %>%
               select(`2017 NAICS US   Code`,`2017 NAICS US Title`),by=c("NAICS2017"="2017 NAICS US   Code")) %>%
-  filter(INDLEVEL=="6") %>%
+  #filter(INDLEVEL=="6") %>%
   mutate(across(c(EMP,VALADD,RCPTOT,CSTELEC,CSTFU,ELECPCH),as.numeric)) %>%
   mutate(energy_intensity=(CSTELEC+CSTFU)/RCPTOT,
-         elec_intensity=CSTELEC/RCPTOT) 
+         elec_intensity=CSTELEC/RCPTOT) %>%
+  filter(energy_intensity != 0)
+
+asm_dw<- asm_22 %>% 
+  left_join(census_divisions,by=c("abbr"="State.Code")) %>%
+  filter(YEAR=="2021",
+         Region==division_of_interest$Region)  %>%
+  write.csv(paste0(output_folder,"/asm_dw.csv"))

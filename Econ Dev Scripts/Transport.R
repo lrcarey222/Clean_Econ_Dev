@@ -8,7 +8,7 @@ region_id <- us_counties %>%
 
 #EV Registrations by State
 #Check for latest data here: https://afdc.energy.gov/data/categories/maps-data-categories?sort=most+recent
-url <- 'https://afdc.energy.gov/files/u/data/data_source/10962/10962-ev-registration-counts-by-state_6-11-24.xlsx?d9ade1eda8'
+url <- 'https://afdc.energy.gov/files/u/data/data_source/10962/10962-ev-registration-counts-by-state_9-06-24.xlsx?12518e7893'
 dest_file <- tempfile(fileext = ".xlsx")
 download.file(url, destfile = dest_file, mode = "wb")
 data <- read_excel(dest_file,skip=2)
@@ -29,6 +29,24 @@ evs_state <- evs_state %>%
 #States include CA,CO,CT,ME,MN,MT,NJ,NM,NY,NC,OR,TN,TX,VA,VT,WA
 evs_county <- read.csv(paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/",state_abbreviation,"_EV_Registrations.csv"))
 
+#Model and Make
+evs_model<-evs_county %>%
+  filter(County %in% region_id$county) %>%
+  mutate(model_make=paste0(Vehicle.Make, " ", Vehicle.Model),
+         year=format(as.Date(Registration.Date,"%d/%m/%Y"),"%Y")) %>%
+  group_by(year,Vehicle.Make) %>%
+  summarize(count=sum(Vehicle.Count,na.rm=T))  
+top_models <- evs_model %>%
+  filter(year=="2023") %>%
+  slice_max(count, n=5) 
+evs_model <- evs_model %>%
+  mutate(top=ifelse(Vehicle.Make %in% top_models$Vehicle.Make,Vehicle.Make,"Others")) %>%
+  group_by(year,top) %>%
+  summarize(count=sum(count,na.rm=T)) %>%
+  pivot_wider(names_from=year,values_from=count)
+
+write.csv(evs_model,paste0(output_folder,"/evs_model.csv"))
+
 #If the EV registration is by zip code
 zip_county_ev <- zip_code_db %>% 
   filter(state == state_abbreviation) %>%
@@ -37,12 +55,16 @@ zip_county_ev <- zip_code_db %>%
   left_join(region_id %>% select(fips, county), by="county")
   
 
-state_evs_county<-zip_county_ev %>% #or just evs_county if originally by county
+state_evs_county<-evs_county %>% #or just evs_county if originally by county
   group_by(State,County) %>%
   summarize(total=sum(Vehicle.Count,na.rm=T)) %>%
-  left_join(county_pop %>% filter(STNAME==state_name) %>% select(CTYNAME,POPESTIMATE2022),by=c("County"="CTYNAME")) %>%
-  mutate(ev_cap=total/POPESTIMATE2022) 
-
+  left_join(county_pop %>% filter(STNAME==state_name) %>% 
+              select(COUNTY,CTYNAME,POPESTIMATE2022),by=c("County"="CTYNAME")) %>%
+  mutate(ev_cap=total/POPESTIMATE2022,
+         region=ifelse(County %in% region_id$county,"Region","Other"),
+         County=gsub(" County","",County)
+         ) 
+write.csv(state_evs_county,paste0(output_folder,"/state_evs_county.csv"))
 
 #EV Charging Stations, by State
 url <-'https://afdc.energy.gov/files/docs/historical-station-counts.xlsx?year=2023'
