@@ -393,6 +393,16 @@ state_totals <- xchange %>%
   summarize(total = sum(value)) %>%
   left_join(xchange_label %>% select(State,label), by = "State")
 
+#Divisional Policy comparison
+division_xchange <- xchange %>%
+  left_join(census_divisions, by = c("abbr" = "State.Code")) %>%
+  filter(Division == division_of_interest$Division) %>%
+  group_by(State.x,Topic) %>%
+  summarize(value=sum(value,na.rm=T)) %>%
+  pivot_wider(names_from=Topic,values_from=value) %>%
+  write.csv(paste0(output_folder,"/",state_abbreviation,"_division_xchange.csv"),row.names=F)
+
+
 
 #Economic Development Incentives----------------------------------
 
@@ -428,7 +438,7 @@ gjf_meaningful_1923 <- gjf %>%
   arrange(desc(subs_share))
 
 
-#State Taxes
+#State Taxes-----------------------------------------
 library(rvest)
 library(purrr)
 # URL of the page
@@ -490,7 +500,7 @@ sc_clim_taxchanges<-climate_taxes %>%
 
 
 
-#Climate/Clean ENergy/Manufacturing Incentive Policies
+#Climate/Clean ENergy/Manufacturing Incentive Policies------------------------------------------
 
 dev_pol <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/dbo_Program.csv")
 
@@ -538,7 +548,7 @@ state_climate_pol_sum<-state_climate_pol %>%
   summarize_at(vars(Program_Name),n_distinct)
 
 
-#Climate Legislation
+#Climate Legislation------------------------------------
 climate_leg<-read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/climate_leg.csv")
 
 climate_leg_state<-climate_leg %>%

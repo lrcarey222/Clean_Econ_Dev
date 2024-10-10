@@ -17,7 +17,7 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 
-#Use County Business Patterns Census Data for Employment figures at county level
+#Use County Business Patterns Census Data for Employment figures at county level--------------------------------
 cbp_2022 <- getCensus(
   name = "cbp",
   vars=c("STATE",
@@ -69,7 +69,7 @@ region_totalemp<-region_cbp_2d %>%
   filter(code=="00",
          region_id==1) 
 
-#NREL SLOPE Data - Energy COnsumption by County and Region
+#NREL SLOPE Data - Energy COnsumption by County and Region-----------------------------------
 
 #Read in the NREL SLOPE Data
 county_elec_cons <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/energy_consumption_expenditure_business_as_usual_county.csv")
@@ -111,7 +111,7 @@ region_eleccons<-county_eleccons %>%
   filter(region_id==1)
 
 
-#EIA Data - Electricity Capacity by County and Region
+#EIA Data - Electricity Capacity by County and Region-------------------------------
 url <- 'https://www.eia.gov/electricity/data/eia860m/xls/april_generator2024.xlsx' #Check for Updated Data
 destination_folder<-"Downloads/"
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
@@ -185,7 +185,7 @@ rengen_share <- op_gen_with_county %>%
   mutate(share=round(capacity/sum(capacity),1)) 
 
 
-#Net Zero Scenario - Net Zero America
+#Net Zero Scenario - Net Zero America----------------------------------------
 file_url <- 'https://netzeroamerica.princeton.edu/data/nzap-data.csv'
 temp_file <- tempfile(fileext = ".csv")
 GET(url = file_url, write_disk(temp_file, overwrite = TRUE))
@@ -206,7 +206,7 @@ nza_states<-nzap %>%
   filter(!is.na(State.Code)) %>%
   mutate(scenario = factor(scenario, levels = c("REF", "E+", "E+RE+")))
 
-#Jobs by Economic Sector
+#Jobs by Economic Sector----------------------------------------
 nza_jobs_econ <- nza_states %>%
   ungroup()%>%
   filter(State.Code==state_abbreviation) %>%
@@ -250,7 +250,7 @@ plot_nza_jobs_econ<-ggplot(data=nza_jobs_econ, aes(x=year,y=Value,fill=variable_
 ggsave(paste0(output_folder,"/",state_abbreviation,"_nza_jobs_econ.png"),plot=plot_nza_jobs_econ,width=8,height=6,units="in",dpi=300)
 
 
-#Jobs by Resource Sector
+#Jobs by Resource Sector---------------------------------
 nza_jobs_resource <- nza_states %>%
   ungroup()%>%
   filter(State.Code==state_abbreviation) %>%
@@ -282,7 +282,7 @@ plot_nza_jobs_resource<-ggplot(data=nza_jobs_resource_region, aes(x=year,y=Value
 ggsave(paste0(output_folder,"/",state_abbreviation,"_nza_jobs_resource.png"),plot=plot_nza_jobs_resource,width=8,height=6,units="in",dpi=300)
 
 
-#Capital Invested in Electricity Generation Chart
+#Capital Invested in Electricity Generation Chart----------------------------------------
 nza_cap_inv <- nza_states %>%
   filter(State.Code==state_abbreviation) %>%
   filter(filter_level_3=="Capital invested" ) %>%
@@ -347,7 +347,7 @@ plot_nza_ren_cap<-ggplot(data=nza_capacity,aes(x=year,y=Value_region,fill=variab
 
 
 
-#Final Energy USe Chart
+#Final Energy USe Chart-----------------------------------
 nza_final_energyuse <- nza_states %>%
   filter(State.Code==state_abbreviation) %>%
   filter(filter_level_2=="Overview",
@@ -375,7 +375,7 @@ plot_nza_finalenergyuse<-ggplot(data=nza_final_energyuse,aes(x=year,y=Value,fill
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"_final_energyuse.png"),plot=plot_nza_finalenergyuse,width=8,height=6,units="in",dpi=300)
 
-#Energy Production
+#Energy Production--------------------------------
 nza_energy_production<- nzap %>%
   #filter(scenario %in% c("REF","E+","E+RE+")) %>%
   drop_na(value) %>%
@@ -420,7 +420,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_plot_nza_energyprod"
 
 
 
-#Cumulative Avoided premature deaths
+#Cumulative Avoided premature deaths-------------------------------------------
 nza_avoideddeaths <- nza_states %>%
   filter(State.Code==state_abbreviation) %>%
   filter(grepl("Cumulative avoided premature deaths from air pollution",variable_name)) %>%
@@ -445,7 +445,7 @@ plot_nza_avoideddeaths<-ggplot(data=nza_avoideddeaths %>% filter(scenario=="E+")
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"plot_nza_avoideddeaths.png"),plot=plot_nza_avoideddeaths,width=8,height=6,units="in",dpi=300)
 
-#EVs
+#EVs-----------------------------------------
 nza_evs <- nza_states %>%
   filter(State.Code==state_abbreviation) %>%
   filter(filter_level_3 == "Vehicle stocks") %>%
