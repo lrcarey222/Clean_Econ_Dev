@@ -544,3 +544,26 @@ statepop_region<-statepop %>%
   write.csv(paste0(output_folder,"/",state_abbreviation,"_pop_index.csv"))
   
 
+#County Population
+county_pop <- county_pop %>%
+  mutate(fips = as.numeric(sprintf("%02d%03d", STATE, COUNTY))) %>%
+  left_join(EAs, by=c("fips"="fips")) 
+
+region_pop <- county_pop %>%
+  left_join(states_simple, by = c("STNAME" = "full")) %>%
+  left_join(census_divisions, by = c("abbr" = "State.Code")) %>%
+  mutate(`EA Name` = ifelse(FIPS %in% great_falls$FIPS, "Great Falls, MT", `EA Name`)) %>%
+  filter(
+    Division == region_division$Division,
+         STNAME != "District of Columbia",
+         !is.na(`EA Name`)) %>%
+  group_by(`EA Name`) %>%
+  summarize(across(c(POPESTIMATE2023, NATURALCHG2020:NATURALCHG2023, NETMIG2020:NETMIG2023), sum, na.rm = TRUE)) %>%
+  ungroup() %>%
+  rowwise() %>%
+  mutate(natural = sum(c_across(NATURALCHG2020:NATURALCHG2023))/POPESTIMATE2023*100,
+         netmig = sum(c_across(NETMIG2020:NETMIG2023))/POPESTIMATE2023*100,
+         total = natural + netmig) %>%
+  select(`EA Name`, natural, netmig, total) %>%
+  arrange(desc(total))
+write.csv(region_pop, paste0(output_folder, "/", state_abbreviation, "_region_pop.csv"))
