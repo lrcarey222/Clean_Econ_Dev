@@ -8,13 +8,26 @@ url <- 'https://cdn.sanity.io/files/03hnmfyj/production/77717b609392dedba6f8ba31
 temp_file <- tempfile(fileext = ".xlsx")
 GET(url = url, write_disk(temp_file, overwrite = TRUE))
 innov_state <- read_excel(temp_file, sheet = 3)  # 'sheet = 1' to read the first sheet
+innov_metro <- read_excel(temp_file, sheet = 4)  # 'sheet = 1' to read the first sheet
 innov_vars<- read_excel(temp_file, sheet = 1,skip=58)  # 'sheet = 1' to read the first sheet
 
-#Federal RD&D Expenditure
+#Federal RD&D Expenditure----------------------------------
 
 fed_rdd <- innov_state %>%
   select(year,statecode,statename,publicrdd_all,publicrd_lowcarbon,publicdemo_lowcarbon,publicseed_lowcarbon,realgdp,population) %>%
   group_by(statecode,statename) %>%
+  summarize(across(c(publicrdd_all,publicrd_lowcarbon,publicdemo_lowcarbon,publicseed_lowcarbon,realgdp),sum,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(rd_share=publicrd_lowcarbon/publicrdd_all*100,
+         demo_share=publicdemo_lowcarbon/publicrdd_all*100,
+         seed_share=publicseed_lowcarbon/publicrdd_all*100,
+         total_lowc_share=(publicrd_lowcarbon+publicdemo_lowcarbon+publicseed_lowcarbon)/publicrdd_all,
+         lowc_rdd_gdp=(publicrd_lowcarbon+publicdemo_lowcarbon+publicseed_lowcarbon)/realgdp) %>%
+  arrange(desc(total_lowc_share))
+
+fed_rdd_metro <- innov_metro %>%
+  select(year,metropolitandivisioncode,metropolitandivisiontitle,publicrdd_all,publicrd_lowcarbon,publicdemo_lowcarbon,publicseed_lowcarbon,realgdp,population) %>%
+  group_by(metropolitandivisioncode,metropolitandivisiontitle) %>%
   summarize(across(c(publicrdd_all,publicrd_lowcarbon,publicdemo_lowcarbon,publicseed_lowcarbon,realgdp),sum,na.rm=T)) %>%
   ungroup() %>%
   mutate(rd_share=publicrd_lowcarbon/publicrdd_all*100,
@@ -80,7 +93,7 @@ fed_rdd_5_plot<-ggplot(data=fed_rdd_5,aes(x=Order,y=publicfund,fill=Sector))+
   theme(legend.position="none")
 
 
-#State RDD Funding by Sector
+#State RDD Funding by Sector--------------------------------------------
 state_rdd<- fed_rdd_sector %>% filter(statecode==state_abbreviation,
                           publicfund>0)
 
@@ -115,7 +128,7 @@ fed_rdd_sector_plot <- ggplot(data=fed_rdd_sector,aes(x=reorder(Sector,publicfun
   theme_classic()+
   theme(legend.position="none")
 
-#Patents
+#Patents--------------------------------------------------
 
 patents <- innov_state %>%
   select(year,statecode,statename,starts_with("patents")) %>%
@@ -170,7 +183,7 @@ patents_state_plot <- ggplot(data=patents %>% filter(statecode==state_abbreviati
 ggsave(paste0(output_folder,"/",state_abbreviation,"_patents_state_plot.png"),plot=patents_state_plot,width=6,height=8,units="in",dpi=300)
 
 
-#VC
+#VC-----------------------------------------------------
 
 vc <- innov_state %>%
   select(year,statecode,statename,starts_with("vcinvestments")) %>%

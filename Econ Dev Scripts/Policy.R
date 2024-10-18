@@ -7,7 +7,7 @@ temp_file <- tempfile(fileext = ".xlsx")
 GET(url = url, write_disk(temp_file, overwrite = TRUE))
 fed_inv <- read_excel(temp_file, sheet = 4)  # 'sheet = 1' to read the first sheet
 
-#Total expenditure by program
+#Total expenditure by program-------------------------------------
 program_spend <- fed_inv %>%
   filter(Category=="Clean Energy, Buildings, and Manufacturing") %>%
   mutate(`Funding Amount` = as.numeric(`Funding Amount`)) %>%
@@ -17,7 +17,7 @@ program_spend <- fed_inv %>%
   mutate(share=round(`Funding Amount`/sum(`Funding Amount`)*100,3)) %>%
   arrange(desc(`Funding Amount`)) 
 
-#State of Interest investment by program
+#State of Interest investment by program----------------------------------------
 state_spend <- fed_inv %>%
   mutate(`Funding Amount` = as.numeric(`Funding Amount`)) %>%
   filter(Category=="Clean Energy, Buildings, and Manufacturing") %>%
@@ -76,6 +76,72 @@ state_fedinv_map <- fed_inv_map %>%
 write.csv(state_fedinv_map,paste0(output_folder,"/",state_abbreviation,"_state_fedinv_map.csv"),row.names=F)
 
 
+#BIL-----------------------------
+bil<-fed_inv %>% 
+  filter(`Funding Source`=="BIL") %>%
+  mutate(`Funding Amount` = as.numeric(`Funding Amount Excluding Loans`)) %>%
+  group_by(State) %>%
+  summarize_at(vars(`Funding Amount`),sum,na.rm=T) %>%
+  ungroup() %>%
+  left_join(socioecon %>%
+              filter(quarter=="2024-Q1") %>%
+              select(StateName,real_gdp,population),by=c("State"="StateName")) %>%
+  filter(!is.na(real_gdp)) %>%
+  mutate(share_bil=round(`Funding Amount`/sum(`Funding Amount`)*100,3),
+         share_gdp=round(real_gdp/sum(real_gdp,na.rm=T)*100,3),
+         gdp_cap=real_gdp/population,
+         share_pop=population/sum(population)*100,
+         lq=share_bil/share_gdp,
+         lq2=share_bil/share_pop)
+
+ggplot(data=bil,aes(y=share_bil,x=share_gdp,size=`Funding Amount`))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  labs(title="BIL Federal Funding",
+       subtitle="Share of BIL investment in states",
+       x="Share of BIL Funding",
+       y="Share of GDP")+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = 1, vjust = 0.5),  # Center the plot title
+        plot.subtitle = element_text(hjust = 1, vjust = 0.5),
+        legend.position="none")+  # Center the plot subtitle
+annotate("text", y = max(bil$share_bil) * 0.8, x = max(bil$share_gdp) * 0.9,
+         label = cor_text3, size = 5, hjust = 1) +  # Add the correlation text
+  geom_text_repel(aes(label=State), size=3)  # Add state labels with geom_text_repel
+
+#IRA_CHIPS-----------------------------
+ira_chips<-fed_inv %>% 
+  filter(`Funding Source` %in% c("CHIPS")) %>%
+  mutate(`Funding Amount` = as.numeric(`Funding Amount Excluding Loans`)) %>%
+  group_by(State) %>%
+  summarize_at(vars(`Funding Amount`),sum,na.rm=T) %>%
+  ungroup() %>%
+  left_join(socioecon %>%
+              filter(quarter=="2024-Q1") %>%
+              select(StateName,real_gdp,population),by=c("State"="StateName")) %>%
+  filter(!is.na(real_gdp)) %>%
+  mutate(share_irachips=round(`Funding Amount`/sum(`Funding Amount`)*100,3),
+         share_gdp=round(real_gdp/sum(real_gdp,na.rm=T)*100,3),
+         gdp_cap=real_gdp/population,
+         share_pop=population/sum(population)*100,
+         lq=share_irachips/share_gdp,
+         lq2=share_irachips/share_pop)
+
+ggplot(data=ira_chips,aes(y=share_irachips,x=share_gdp,size=`Funding Amount`))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  labs(title="CHIPS Federal Funding",
+       subtitle="Share of CHIPS investment in states",
+       y="Share of CHIPS Funding",
+       x="Share of GDP")+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = 1, vjust = 0.5),  # Center the plot title
+        plot.subtitle = element_text(hjust = 1, vjust = 0.5),
+        legend.position="none")+  # Center the plot subtitle
+  annotate("text", y = max(ira_chips$share_irachips) * 0.8, x = max(ira_chips$share_gdp) * 0.9,
+           label = cor_text2, size = 5, hjust = 1) +  # Add the correlation text
+  geom_text_repel(aes(label=State), size=3)  # Add state labels with geom_text_repel
+
 #Estimated Federal Tax Credits (from Clean Investment Monitor)------------------
 
 
@@ -85,7 +151,33 @@ tax_inv_cat_tot <- tax_inv_cat%>% group_by(Segment,Category) %>%
   summarize_at(vars(Total.Federal.Investment.2023USBn),sum,na.rm=T)
 tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/public_investment_by_state.csv',skip=5)
 tax_inv_state_tot <- tax_inv_state %>% group_by(State) %>%
-  summarize_at(vars(Total.Federal.Investment..2023.Billion.USD.),sum,na.rm=T)
+  summarize_at(vars(Total.Federal.Investment..2023.Billion.USD.),sum,na.rm=T) %>%
+  left_join(socioecon %>%
+              filter(quarter=="2024-Q1") %>%
+              select(State,real_gdp,population),by=c("State"="State")) %>%
+  filter(!is.na(real_gdp)) %>%
+  mutate(share_ira=round(Total.Federal.Investment..2023.Billion.USD./sum(Total.Federal.Investment..2023.Billion.USD.)*100,3),
+         share_gdp=round(real_gdp/sum(real_gdp,na.rm=T)*100,3),
+         gdp_cap=real_gdp/population,
+         share_pop=population/sum(population)*100,
+         lq=share_ira/share_gdp,
+         lq2=share_ira/share_pop)
+
+
+ggplot(data=tax_inv_state_tot, aes(y=share_ira, x=share_gdp, size=Total.Federal.Investment..2023.Billion.USD.)) +
+  geom_point() +
+  geom_smooth(method="lm", se=F) +
+  labs(title="IRA Federal Funding",
+       subtitle="Share of IRA investment in states",
+       y="Share of IRA Funding",
+       x="Share of GDP") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 1, vjust = 0.5),  # Center the plot title
+        plot.subtitle = element_text(hjust = 1, vjust = 0.5),
+        legend.position="none") +  # Center the plot subtitle
+  annotate("text", x = max(tax_inv_state_tot$share_ira) * 0.8, y = max(tax_inv_state_tot$share_gdp) * 0.9,
+           label = cor_text, size = 5, hjust = 1) +  # Add the correlation text
+  geom_text_repel(aes(label=State), size=3)  # Add state labels with geom_text_repel
 
 #45X
 fac_45x<-facilities %>%

@@ -473,7 +473,10 @@ facilities_msa_tech <- facilities %>%
   mutate(msa_name=paste0(CBSA.Title," (MSA)")) %>%
   mutate(industry=ifelse(Segment=="Manufacturing",paste0(Technology," Manufacturing"),Technology)) %>%
   select(-CBSA.Title)
-
+facilities_feas<-facilities %>%
+  select(State,county_2020_geoid,Company,Segment,Technology,Total_Facility_CAPEX_Estimated) %>%
+  left_join(cgt_county %>%
+              select(county,density),by=c("county_2020_geoid"="county"))
 #Technology Announcements by EA
 facilities_EA_tech <- facilities %>%
   inner_join(EAs,by=c("county_2020_geoid"="fips")) %>%
@@ -652,6 +655,43 @@ facilities_EA_total <- facilities_EA_total %>%
   mutate(top50=ifelse(Relative_Rank<51,`EA Name`,"")) %>%
   mutate(msa_name=paste0(`EA Name`," (EA)")) %>%
   mutate(region="EA") 
+
+#Politics
+facilities_pres <- facilities %>%
+  select(Announcement_Date,State, county_2020_geoid, Company, Segment, Technology, Total_Facility_CAPEX_Estimated) %>%
+  left_join(pres_2020 %>% select(county_fips, demshare), by = c("county_2020_geoid" = "county_fips")) %>%
+  left_join(pres_2020_state %>% select(state_po, demshare_state), by = c("State" = "state_po")) %>%
+  mutate(
+    state_status = case_when(
+      demshare_state < 0.4 ~ "Heavily Republican",
+      demshare_state >= 0.4 & demshare_state < 0.475 ~ "Lean Republican",
+      demshare_state >= 0.475 & demshare_state < 0.525 ~ "Swing",
+      demshare_state >= 0.525 & demshare_state < 0.6 ~ "Lean Democrat",
+      demshare_state >= 0.6 ~ "Heavily Democrat"
+    ),
+    county_status = case_when(
+      demshare < 0.4 ~ "Heavily Republican",
+      demshare >= 0.4 & demshare < 0.475 ~ "Lean Republican",
+      demshare >= 0.475 & demshare < 0.525 ~ "Swing",
+      demshare >= 0.525 & demshare < 0.6 ~ "Lean Democrat",
+      demshare >= 0.6 ~ "Heavily Democrat"
+    )
+  ) %>%
+  mutate(date=as.Date(Announcement_Date),
+         year=substr(date,1,4),
+         post_IRA = ifelse(date>"2022-08-15",1,0)) 
+
+
+facility_pres_county<-facilities_pres %>%
+  group_by(Segment,post_IRA,county_status) %>%
+  summarize(total=sum(Total_Facility_CAPEX_Estimated,na.rm=T)) %>%
+  mutate(share=total/sum(total)*100)
+
+
+facility_pres_state<-facilities_pres %>%
+  group_by(Segment,post_IRA,state_status) %>%
+  summarize(total=sum(Total_Facility_CAPEX_Estimated,na.rm=T)) %>%
+  mutate(share=total/sum(total)*100)
 
 
 #Congressional Districts-----------------------------------------
