@@ -37,7 +37,7 @@ transition<-cgt$transition_sector_data
 
 #2.2 Combine and Clean Data---------------------
 
-cgt_county<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
+cgt_county<-read.csv('C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
 
 #Vitality Stats----------
   acs_5yr_22<- getCensus(
@@ -69,6 +69,43 @@ acs_5yr_22<-acs_5yr_22 %>%
   mutate(fips=paste(state,county)) %>%
   mutate(geoid=gsub(" ","",fips)) %>%
   mutate(fips=as.numeric(geoid))
+
+#County Employment Stats
+
+#County Business Patterns-------------------------------
+cbp_2022 <- getCensus(
+  name = "cbp",
+  vars=c("STATE",
+         "COUNTY",
+         "NAICS2017",
+         "SECTOR",
+         "SUBSECTOR",
+         "INDLEVEL",
+         "ESTAB",
+         "EMP",
+         "PAYANN"),
+  region = "county:*",
+  vintage = 2022)
+
+cbp_22<-cbp_2022
+
+#Policy
+xchange <- read.csv("OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
+
+
+#Property Values----------
+county_prop <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/county_property_values.csv")
+
+
+#Renewable Generation Potential
+tech_pot_county <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
+tech_pot_county <- tech_pot_county %>%
+  mutate(Geoid=as.numeric(paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7)))) %>%
+  rename(tech_gen=Technical.Generation.Potential...MWh.MWh) %>%
+  group_by(Geoid) %>%
+  summarize_at(vars(tech_gen),sum,na.rm=T) 
+
+#Simplified County Level Feasibility---------------------------
 
 feas_simple <- cgt_county %>%
   filter(aggregation_level=="2",
@@ -104,9 +141,10 @@ feas_simple <- cgt_county %>%
 
 
 #3 EV Supply Chain Feasibility-----------------------
+#Understanding Correlation 
 cgt_ev<-cgt_county %>%
   select(county,county_name,industry_desc,aggregation_level,density)%>%
-  filter(aggregation_level=="2") %>%
+  filter(aggregation_level=="4") %>%
   left_join(facilities %>% 
               filter(Segment=="Manufacturing",
                      Technology %in% c("Zero Emission Vehicles")) %>%
@@ -117,7 +155,8 @@ cgt_ev<-cgt_county %>%
   summarize(correlation = cor(density, Total_Facility_CAPEX_Estimated, use = "complete.obs")) %>%
   arrange(desc(correlation))
 
-road_counties<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
+#Interstate highway
+road_counties<-read.csv('C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/us_counties_major_roads.csv') 
 road_counties <- road_counties %>%
   filter(RTTYP != "")
 
@@ -141,30 +180,30 @@ ev_facilities_ea<-facilities %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)
 
 #CNBC Business rankings
-cnbc <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/cnbc_bus_rankings.csv")
+cnbc <- read.csv("C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/cnbc_bus_rankings.csv")
 colnames(cnbc)[1]<-"cnbc_rank"
 colnames(cnbc)[2]<-"state"
 cnbc<-cnbc %>%
-  rename(workforce=WORK..FORCEÂ.,
-         infrastructure=INFRA..STRUCTUREÂ.,
-         business_cost=COST.OF.DOING.BUSINESSÂ.,
-         economy=ECONOMYÂ.,
-         quality_life=LIFE..HEALTH...INCLUSIONÂ.,
-         education=EDUCATIONÂ.,
-         technology=TECHN...INNOVATIONÂ.,
-         business_friendliness=BUSINESS.FRIENDLI..NESSÂ.,
-         access_capital=ACCESS.TO.CAPITALÂ.,
-         cost_living=COST.OF.LIVINGÂ.)
+  rename(workforce=WORK..FORCE.,
+         infrastructure=INFRA..STRUCTURE.,
+         business_cost=COST.OF.DOING.BUSINESS.,
+         economy=ECONOMY.,
+         quality_life=LIFE..HEALTH...INCLUSION.,
+         education=EDUCATION.,
+         technology=TECHN...INNOVATION.,
+         business_friendliness=BUSINESS.FRIENDLI..NESS.,
+         access_capital=ACCESS.TO.CAPITAL.,
+         cost_living=COST.OF.LIVING.)
 
 #Population Density
-popdens <- st_read("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Shapefiles/US Counties Population and Density/County.shp")
+popdens <- st_read("OneDrive - RMI/Documents/Data/US Maps etc/Shapefiles/US Counties Population and Density/County.shp")
 
 popdens <- popdens %>%
   as.data.frame() %>%
   select(GEOID,B01001_cal)
 
 #Politics
-pres <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Politics/Presidential_County/countypres_2000-2020.csv")
+pres <- read.csv("OneDrive - RMI/Documents/Data/US Maps etc/Politics/Presidential_County/countypres_2000-2020.csv")
 pres_2020<-pres %>%
   spread(party,candidatevotes) %>%  
   group_by(year,office,state_po,county_fips) %>%
@@ -183,6 +222,7 @@ pres_2020_state<-pres %>%
   ungroup() %>%
   left_join(states_simple,by=c("state_po"="abbr"))
 
+#Putting it all together
 feas_simple_ev <- feas_simple %>%
   #mutate(right_to_work=ifelse(right_to_work=="Yes",1,0),
    #      right_to_work=ifelse(is.na(right_to_work),0,right_to_work)) %>%
@@ -239,8 +279,8 @@ model <- glm(Investment_Flag ~ density +
                PropertyValueUSD +
                demshare+
                demshare_state+
-               #popdens+
-               eci.x+
+               popdens+
+               #eci.x+
                county_gdp+
                #Total_Facility_CAPEX_Estimated.x+
                worker_pay+
@@ -749,16 +789,7 @@ matched_ba<- matched %>%
   summarize(across(where(is.numeric), 
                    ~ weighted.mean(., w = total_gen, na.rm = TRUE)))  
 
-#Policy
-xchange <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
 
-#Renewable Generation Potential
-tech_pot_county <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
-tech_pot_county <- tech_pot_county %>%
-  mutate(Geoid=as.numeric(paste0(substr(Geography.ID,2,3),substr(Geography.ID,5,7)))) %>%
-  rename(tech_gen=Technical.Generation.Potential...MWh.MWh) %>%
-  group_by(Geoid) %>%
-  summarize_at(vars(tech_gen),sum,na.rm=T) 
 
 
 
