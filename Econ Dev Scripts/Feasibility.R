@@ -5,7 +5,7 @@ state_abbreviation <- "SC"  # Replace with any US state abbreviation
 state_name <- "South Carolina"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username
-setwd("C:/Users/LCarey.RMI/")
+setwd("C:/Users/LCarey/")
 
 #Load Latest Clean Growth Tool Data-----------------------------
 cgt<-readRDS('OneDrive - RMI/Documents/Data/Raw Data/acre_tool_final_data_042624')
@@ -288,7 +288,7 @@ state_ranks <- msa_data %>%
 
 
 #County Level Feasibility-----------------------------------
-cgt_county<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
+cgt_county<-read.csv('C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
 
 region_id <-region_id %>%
   mutate(geoid=as.numeric(fips))
