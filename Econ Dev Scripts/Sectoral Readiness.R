@@ -291,10 +291,10 @@ model <- glm(Investment_Flag ~ density +
                road+
                #demshare+
                #workforce+
-               infrastructure
+               #infrastructure
                #business_cost+
                #economy+
-               #cnbc_rank
+               cnbc_rank
                #pov_rate+
                #emp_pop+
                #med_house_inc+
@@ -361,7 +361,7 @@ feas_simple_ev_index<-feas_simple_ev %>%
 
 write.csv(feas_simple_ev_index %>%
             #mutate(ev_clus=ifelse(Total_Facility_CAPEX_Estimated>0,1,0)) %>%
-            select(state_name,ea,ea_name,county,county_name,density,ev_supply_chain_feas),'C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/feas_simple_ev.csv',row.names=FALSE)
+            select(state_name,ea,ea_name,county,county_name,density,ev_supply_chain_feas),'C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/feas_simple_ev.csv',row.names=FALSE)
 
 #compare with facilities data
 feas_simple_ev_bins <-feas_simple_ev %>%
@@ -385,6 +385,10 @@ feas_evfeas_bins <- feas_simple_ev_bins %>%
   group_by(ev_supply_chain_feas_bin) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
   mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T)*100)
+
+ggplot(data=feas_evfeas_bins, aes(x=ev_supply_chain_feas_bin, y=Total_Facility_CAPEX_Estimated.y)) +
+  geom_col() +
+  theme_minimal()
 
 
 #State Average

@@ -91,6 +91,50 @@ gdp_ind3<-gdp_ind %>%
                                         "61,62","71,72","51","52","53","56","62","71","72"),
          LineCode<83) 
 
+
+#National Clean Energy Economy
+gdp_energyeconomy<-gdp_ind3 %>% 
+  filter(is.na(Region)) %>% 
+  mutate(X2023=as.numeric(X2023)) %>%
+  mutate(energyeconomy=ifelse(IndustryClassification %in% c("212","22","23","321","327","331","332","333","334","335","3361-3363","325","481","484"),"Clean Energy Economy","Other"))
+gdp_energyeconomy_total<-gdp_energyeconomy %>%
+  group_by(energyeconomy) %>%
+  summarize_at(vars(X2023),sum,na.rm=T)%>%
+  mutate(share=X2023/sum(X2023)*100)
+
+#Treemap
+output_file <- file.path(output_folder, paste0("_gdp3_treemap.png"))
+png(filename = output_file, width = 8, height = 8, units = 'in', res = 300)
+
+treemap(
+  gdp_energyeconomy,
+  index = c("energyeconomy", "Description"),
+  vSize = "X2023",
+  vColor="label",
+  palette = rmi_palette,
+  title = paste0("US Economy"),
+  #caption = "Source: Bureau of Economic Analysis",
+  fontsize.title = 16,
+  fontsize.labels = 12,
+  align.labels = list(
+    c("left", "top"),
+    c("center", "center"),
+    fontface.labels = list(
+      2,  # Bold text for better visibility
+      1
+    ),
+    
+    fontsize.labels = list(
+      12,  # Bold text for better visibility
+      10
+    )
+  )
+)
+
+# Close the device
+dev.off()
+
+
 #2-Digit NAICS: Calculate State and Local Shares for LQ Calculations
 total_gdp_by_year <- gdp_ind2 %>%
   mutate(across(all_of(year_cols), ~ as.numeric(gsub(",", "", .)))) %>%

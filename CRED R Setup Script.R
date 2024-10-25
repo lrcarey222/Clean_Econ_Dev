@@ -1,14 +1,11 @@
 #Generic Setup for CRED analysis
-
-
-#Set the Working Directory to your Username and update output folder for saved charts etc
-setwd("C:/Users/LCarey.RMI/")
-output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
-
-
 #Set State of Interest
 state_name <- "Montana"
 state_abbreviation <- "MT"
+
+#Set the Working Directory to your Username and update output folder for saved charts etc
+setwd("C:/Users/LCarey/")
+output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 
 # Libraries
@@ -41,7 +38,7 @@ library(grDevices)
 library(officer)
 library(rvg)
 library(jsonlite)
-library(blsAPI)
+#library(blsAPI)
 library(ggrepel)
 library(fuzzyjoin)
 library(tigris)
@@ -74,7 +71,9 @@ Sys.setenv(CENSUS_KEY='0b3d37ac56ab19c5a65cbc188f82d8ce5b36cfe6')
 #Google API
 register_google(key ="AIzaSyBQFZhv1jZWHejy4BCdI5kb3JN8zfO62Wc")
 #BLS API
-bls_api_key("c5294b721a354d5da7727fc5e7a1bf30")
+#bls_api_key("c5294b721a354d5da7727fc5e7a1bf30")
+#BEA API
+beaKey <- "B163ADB6-C048-4D1F-A065-33D642873C1B"
 
 
 #Geographies
@@ -91,7 +90,7 @@ county_cbsa <- county_cbsa %>%
   mutate(fips = as.numeric(paste0(FIPS.State.Code, sprintf("%03d", as.numeric(FIPS.County.Code)))))
 county_pop<-read.csv('https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv')
 
-EAs<-read_excel("RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Reference Data/BEA Economic Areas and Counties.xls",2)
+EAs<-read_excel("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/BEA Economic Areas and Counties.xls",2)
 EAs<-EAs %>%
   mutate(fips=as.numeric(FIPS))
 EA_gdp <- EAs %>%

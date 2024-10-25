@@ -13,7 +13,7 @@ state_abbreviation <- "SC"  # Replace with any US state abbreviation
 state_name <- "South Carolina"  # Replace with the full name of any US state
 
 #Set the Working Directory to your Username
-setwd("C:/Users/LCarey.RMI/")
+setwd("C:/Users/LCarey/")
 
 #Create output folder and update
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
@@ -81,17 +81,18 @@ investment_10 <- investment %>%
   mutate(Segment = recode(Segment, "energyandindustry" = "Energy & Industry",
                           "manufacturing" = "Manufacturing",
                           "retail" = "Retail")) %>%
-  #rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
-  filter(quarter=="2024-Q1") %>%
-  group_by(Segment,Technology) %>%
+  rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
+  filter(quarter=="2024-Q2") %>%
+  group_by(Segment,Technology,Subcategory) %>%
   summarize(across(Value,sum,na.rm=T)) %>%
   ungroup() %>%
   mutate(Sector=paste0(Segment,"-",Technology)) %>%
+  group_by(Segment) %>%
   slice_max(order_by=Value,n=10)
 
 investment_growth <-investment %>%
   filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
-  #rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
+  rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
   mutate(Segment = recode(Segment, "energyandindustry" = "Energy & Industry",
                           "manufacturing" = "Manufacturing",
                           "retail" = "Retail")) %>%
@@ -110,10 +111,40 @@ investment_growth <-investment %>%
   filter(Sector %in% investment_10$Sector) 
 
 investment_growth_wide<-investment_growth %>% #wide format for Datawrapper
+  filter(Segment=="Energy and Industry",
+         Technology %in% c("Solar","Wind","Storage","Nuclear")) %>%
+  select(Technology,inv_index_ira,quarter) %>%
+  pivot_wider(names_from=Technology,values_from=inv_index_ira) %>%
+  write.csv('Downloads/in_elect.csv')
+
+#Cumulative Growth in Subcategories
+investment_growth_sub <- investment %>%
+  filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal", "Natural gas processing")) %>%
+  rename(Value = Estimated_Actual_Quarterly_Expenditure) %>%
+  mutate(Segment = recode(Segment, 
+                          "energyandindustry" = "Energy & Industry",
+                          "manufacturing" = "Manufacturing",
+                          "retail" = "Retail")) %>%
+  mutate(year_quarter = yq(quarter)) %>%
+  group_by(Segment, Technology, Subcategory, quarter, year_quarter) %>%
+  summarize_at(vars(Value), sum, na.rm = TRUE) %>%
+  group_by(Segment, Technology, Subcategory) %>%
+  mutate(Value = replace_na(Value, 0)) %>%
+  mutate(yoy_growth = (Value / lag(Value, n = 4) - 1) * 100) %>%
+  mutate(yoy_growth_moving_avg = rollmean(yoy_growth, 4, align = 'right', na.pad = TRUE)) %>%
+  arrange(year_quarter) %>%
+  mutate(cum_inv = cumsum(Value)) %>%
+  filter(any(quarter == "2022-Q2")) %>%  # Ensure 2022-Q2 exists
+  mutate(inv_index_ira = 100 * cum_inv / cum_inv[quarter == "2022-Q2"]) %>% #Index to IRA
+  ungroup() %>%
+  mutate(Sector=paste0(Technology,"-",Subcategory)) %>%
+  #filter(Sector %in% investment_10$Sector)  %>% #wide format for Datawrapper
+  filter(Segment=="Retail",
+         #Technology %in% c("Solar","Wind","Storage","Nuclear")
+         ) %>%
   select(Sector,inv_index_ira,quarter) %>%
-  pivot_wider(names_from=Sector,values_from=inv_index_ira) 
-
-
+  pivot_wider(names_from=Sector,values_from=inv_index_ira) %>%
+  write.csv('Downloads/ind_retail.csv')
 
 #State Clean Energy Investment  - Clean Investment Monitor-------------------------------------------
 #Total Clean Investment within Division
@@ -473,10 +504,7 @@ facilities_msa_tech <- facilities %>%
   mutate(msa_name=paste0(CBSA.Title," (MSA)")) %>%
   mutate(industry=ifelse(Segment=="Manufacturing",paste0(Technology," Manufacturing"),Technology)) %>%
   select(-CBSA.Title)
-facilities_feas<-facilities %>%
-  select(State,county_2020_geoid,Company,Segment,Technology,Total_Facility_CAPEX_Estimated) %>%
-  left_join(cgt_county %>%
-              select(county,density),by=c("county_2020_geoid"="county"))
+
 #Technology Announcements by EA
 facilities_EA_tech <- facilities %>%
   inner_join(EAs,by=c("county_2020_geoid"="fips")) %>%
