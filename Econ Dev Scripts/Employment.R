@@ -297,82 +297,207 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_hachman_map_county",
 
 #Quarterly Census of Employment and Wages------------------------------------
 
-#2018:2023 data for industries in Clean Investment MOnitor
+#2018:2024 data for industries in Clean Investment MOnitor
 #Fastest:
 cim_qcew <- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/QCEW.csv')
+tech_mapping$`6-Digit Code`<-as.character(tech_mapping$`6-Digit Code`)
 
-#Latest (but very slow)
+# Initialize empty data frame for results
 cim_qcew <- data.frame()
 
-# Loop for years before 2022 - note use of NAICS2017 codes
+# Filter out any NA or empty codes in tech_mapping
+industry_codes <- tech_mapping$`6-Digit Code`[!is.na(tech_mapping$`6-Digit Code`) & tech_mapping$`6-Digit Code` != ""]
+
+# Loop through years, quarters, and industry codes
 for (year in c('2018', '2019', '2020', '2021')) {
-  
-  # Loop over each quarter
   for (quarter in c('1', '2', '3', '4')) {
-    
-    # Loop over each industry
-    for (industry_code in tech_mapping$`6-Digit Code`) {
+    for (industry_code in industry_codes) {
       
-      # Pull data for the current combination of year, quarter, and industry
-      current_data <- blsQCEW(method = 'Industry',
-                              year = year,
-                              quarter = quarter,
-                              industry = industry_code)
+      # Try-catch to handle potential errors
+      current_data <- tryCatch({
+        # Pull data for the current combination
+        blsQCEW(method = 'Industry', year = year, quarter = quarter, industry = industry_code)
+      }, error = function(e) {
+        message("Error with year: ", year, ", quarter: ", quarter, ", industry: ", industry_code)
+        return(NULL)  # Return NULL if there's an error
+      })
       
-      # Append the current data to the overall data frame
-      cim_qcew <- rbind(cim_qcew, current_data)
+      # Append data only if the request was successful
+      if (!is.null(current_data)) {
+        cim_qcew <- bind_rows(cim_qcew, current_data)
+      }
       
+      # Pause to avoid hitting rate limits
+      Sys.sleep(1)
     }
   }
 }
 
-# Loop for years 2022 and first three quarters of 2023 - note use of NAICS2022 codes
-for (year in c('2022', '2023','2024')) {
+cim_qcew2<-data.frame()
+# Initialize the result data frame
+cim_qcew2 <- data.frame()
+
+# Load necessary library for bind_rows
+library(dplyr)
+
+# Filter out any NA or blank codes in tech_mapping
+industry_codes <- tech_mapping$`2022 NAICS Code`[!is.na(tech_mapping$`2022 NAICS Code`) & tech_mapping$`2022 NAICS Code` != ""]
+industry_codes <- tech_mapping %>%
+  distinct(`4-Digit Code`) %>%
+  filter(!is.na(`4-Digit Code`))
+
+
+# Diagnostic Loop for years 2022 and 2023 with NAICS2022 codes
+for (year in c('2018','2019','2020','2021','2022','2023', '2024')) {
   
-  # Determine quarters to loop over based on the year
-  quarters <- if (year == '2024') c('1') else c('1', '2', '3', '4')
+  # Determine quarters based on the year
+  quarters <- if (year == '2024') c('1', '2') else c('1', '2', '3', '4')
   
-  # Loop over each quarter
   for (quarter in quarters) {
     
-    # Loop over each industry for years 2022 and first three quarters of 2023
-    for (industry_code in tech_mapping$`2022 NAICS Code`) {
+    for (industry_code in industry_codes$`4-Digit Code`) {
       
-      # Pull data for the current combination of year, quarter, and industry
-      current_data <- blsQCEW(method = 'Industry',
-                              year = year,
-                              quarter = quarter,
-                              industry = industry_code)
+      # Print diagnostic message for the current iteration
+      cat("Processing Year:", year, "| Quarter:", quarter, "| Industry Code:", industry_code, "\n")
       
-      # Append the current data to the overall data frame
-      cim_qcew <- rbind(cim_qcew, current_data)
+      # Attempt to pull data with error handling
+      current_data <- tryCatch({
+        
+        # Pull data for the current combination
+        blsQCEW(method = 'Industry', year = year, quarter = quarter, industry = industry_code)
+        
+      }, error = function(e) {
+        
+        # Print error message for diagnostics
+        message("Error with Year:", year, ", Quarter:", quarter, ", Industry Code:", industry_code)
+        message("Error details: ", e$message)
+        
+        # Print traceback if available to capture additional details
+        traceback()
+        
+        return(NULL)  # Return NULL if there's an error
+      })
       
+      # Check if current_data is NULL (failed API call)
+      if (is.null(current_data)) {
+        message("Skipped Year:", year, "| Quarter:", quarter, "| Industry Code:", industry_code, " due to error.")
+      } else {
+        # Append the current data to the overall data frame if successful
+        cim_qcew2 <- bind_rows(cim_qcew2, current_data)
+      }
+      
+      # Pause to avoid hitting rate limits
+      Sys.sleep(1)
     }
   }
 }
 
+cim_qcew3<-data.frame()
+# Total manufacturing
+for (year in c('2018','2019','2020','2021','2022','2023', '2024')) {
+  
+  # Determine quarters based on the year
+  quarters <- if (year == '2024') c('1', '2') else c('1', '2', '3', '4')
+  
+  for (quarter in quarters) {
+    
+    for (industry_code in '1013') {
+      
+      # Print diagnostic message for the current iteration
+      cat("Processing Year:", year, "| Quarter:", quarter, "| Industry Code:", industry_code, "\n")
+      
+      # Attempt to pull data with error handling
+      current_data <- tryCatch({
+        
+        # Pull data for the current combination
+        blsQCEW(method = 'Industry', year = year, quarter = quarter, industry = industry_code)
+        
+      }, error = function(e) {
+        
+        # Print error message for diagnostics
+        message("Error with Year:", year, ", Quarter:", quarter, ", Industry Code:", industry_code)
+        message("Error details: ", e$message)
+        
+        # Print traceback if available to capture additional details
+        traceback()
+        
+        return(NULL)  # Return NULL if there's an error
+      })
+      
+      # Check if current_data is NULL (failed API call)
+      if (is.null(current_data)) {
+        message("Skipped Year:", year, "| Quarter:", quarter, "| Industry Code:", industry_code, " due to error.")
+      } else {
+        # Append the current data to the overall data frame if successful
+        cim_qcew3 <- bind_rows(cim_qcew3, current_data)
+      }
+      
+      # Pause to avoid hitting rate limits
+      Sys.sleep(1)
+    }
+  }
+}
+
+# Print completion message
+cat("Data collection loop completed.\n")
+
+cim_qcew2<-cim_qcew2 %>% 
+  select(area_fips,
+         industry_code,
+         year,qtr,month1_emplvl,
+         month2_emplvl,
+         month3_emplvl)
+
+cim_qcew <- cim_qcew %>%
+  select(area_fips,
+         industry_code,
+         year,qtr,month1_emplvl,
+         month2_emplvl,
+         month3_emplvl) %>%
+  filter(year != "2023") %>%
+  rbind(cim_qcew2)
 
 
 # US Total Employment
-cim_qcew_us <- cim_qcew %>%
+cim_qcew_us <- cim_qcew2 %>%
+  rbind(cim_qcew3) %>%
   filter(area_fips == "US000") %>%
-  select(3,6,7,10:12) %>%
+  #select(3,6,7,10:12) %>%
   pivot_longer(cols = c(month1_emplvl, month2_emplvl, month3_emplvl), 
                names_to = "month",
                values_to = "emplvl") %>%
   mutate(date = as.Date(paste0(year, "-", sprintf("%02d", qtr *3-(3-as.integer(gsub("\\D", "", month)))), "-01"))) %>%
-  left_join(tech_mapping,by=c("industry_code"="6-Digit Code")) %>%
-  left_join(tech_mapping,by=c("industry_code"="2022 NAICS Code")) %>%
-  mutate(Segment=ifelse(is.na(Segment.x),Segment.y,Segment.x),
-         Technology=ifelse(is.na(Technology.x),Technology.y,Technology.x)) %>%
-  mutate(technology=ifelse(Segment=="Manufacturing",paste0(Technology," ",Segment),Technology)) %>%
-  distinct(date,technology,industry_code,emplvl)
+  left_join(tech_mapping %>%
+              select(`4-Digit Code`,`4-Digit Description`) %>%
+              mutate(`4-Digit Code`=as.numeric(`4-Digit Code`)),by=c("industry_code"="4-Digit Code")) %>%
+  #left_join(tech_mapping,by=c("industry_code"="2022 NAICS Code")) %>%
+  #mutate(tech=ifelse(is.na(tech.x),tech.y,tech.x),
+   #      tech=ifelse(is.na(tech.y),tech.x,tech)) %>%
+  group_by(date,industry_code,`4-Digit Description`) %>%
+  summarize_at(vars(emplvl),sum,na.rm=T) %>%
+  filter(!is.na(industry_code))
+
+ggplot(data=cim_qcew_us,aes(x=date,y=emplvl,color=industry_code))+
+  geom_line()+
+  theme_minimal()
 
 cim_qcew_us_tech <- cim_qcew_us %>%
-  group_by(date,technology) %>%
-  summarize_at(vars(emplvl),sum,na.rm=T) %>%
-  group_by(technology) 
-#mutate(ira_index = 100*emplvl/emplvl[date=="2022-08-01"]) 
+  mutate(date = as.Date(date)) %>%
+  group_by(industry_code, `4-Digit Description`) %>%
+  mutate(
+    emplvl_q4 = rollmean(emplvl, 4, align = 'right', fill = NA),
+    ira_index = 100 * emplvl_q4 / emplvl_q4[date == "2022-08-01"],
+    yoy_growth = (emplvl / lag(emplvl, n = 4) - 1) * 100,
+    yoy_growth_moving_avg = rollmean(yoy_growth, 4, align = 'right', na.pad = TRUE))
+      
+
+cim_qcew_tech_growth<-cim_qcew_us_tech %>%
+  filter(date>2020-21-01) %>%
+  group_by(industry_code,`4-Digit Description`)
+
+ggplot(data=cim_qcew_us_tech,aes(x=date,y=ira_q4,color=industry_code))+
+  geom_line()+
+  theme_minimal()
 
 #2021-2023 Growth
 qcew_us_2123 <- cim_qcew_us_tech %>%
@@ -383,9 +508,16 @@ qcew_us_2123 <- cim_qcew_us_tech %>%
          emp_2123_perc=emp_2123/`2021-01-01`*100) %>%
   arrange(desc(emp_2123))
 
+pos_ira_emp <- cim_qcew_us_tech %>%
+  filter(date=="2024-03-01",
+         ira_index>100)
+  
+
 ira_emp_wide <- cim_qcew_us_tech%>%
-  select(date,technology,ira_index) %>%
-  pivot_wider(names_from=technology,values_from=ira_index)
+  ungroup() %>%
+  filter(`4-Digit Description` %in% pos_ira_emp$`4-Digit Description`|is.na(`4-Digit Description`)) %>%
+  select(date,`4-Digit Description`,yoy_growth_moving_avg) %>%
+  pivot_wider(names_from=`4-Digit Description`,values_from=yoy_growth_moving_avg)
 
 write.csv(ira_emp_wide,"Downloads/ira_emp_wide.csv")
 

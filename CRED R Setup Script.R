@@ -38,7 +38,7 @@ library(grDevices)
 library(officer)
 library(rvg)
 library(jsonlite)
-#library(blsAPI)
+library(blsAPI)
 library(ggrepel)
 library(fuzzyjoin)
 library(tigris)
@@ -71,7 +71,7 @@ Sys.setenv(CENSUS_KEY='0b3d37ac56ab19c5a65cbc188f82d8ce5b36cfe6')
 #Google API
 register_google(key ="AIzaSyBQFZhv1jZWHejy4BCdI5kb3JN8zfO62Wc")
 #BLS API
-#bls_api_key("c5294b721a354d5da7727fc5e7a1bf30")
+bls_api_key("c5294b721a354d5da7727fc5e7a1bf30")
 #BEA API
 beaKey <- "B163ADB6-C048-4D1F-A065-33D642873C1B"
 

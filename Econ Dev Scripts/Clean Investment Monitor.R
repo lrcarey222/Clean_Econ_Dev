@@ -37,7 +37,7 @@ tech_mapping <- data.frame(
   Technology = c("Batteries", "Solar", "Critical Minerals", "Fueling Equipment", "Zero Emission Vehicles", "Electrolyzers", "Storage", "Wind", "Hydrogen", "SAF", "Storage", "Nuclear", "Solar", "Wind"),
   tech = c("Batteries & Components", "Solar Energy Components", "Low-Carbon Minerals", "Low-Carbon Industrial Equipment", "Electric Vehicles", "Low-Carbon Industrial Equipment", "Batteries & Components", "Wind Energy Components", "Green Hydrogen", "Biofuels", "Energy Utility Systems", "Nuclear Electric Power", "Solar Electric Power", "Wind Electric Power")
 )
-tech_mapping <- left_join(tech_mapping,eti_long %>% select(Sector,Subsector,Technology,`6-Digit Code`,`6-Digit Description`),by=c("tech"="Technology"))
+tech_mapping <- left_join(tech_mapping,eti_long %>% select(Sector,Subsector,Technology,`4-Digit Code`,`4-Digit Description`,`6-Digit Code`,`6-Digit Description`),by=c("tech"="Technology"))
 tech_mapping<-left_join(tech_mapping,naics2022 %>% select("2022 NAICS Code",
                                                           "2022 NAICS Title",
                                                           "2017 NAICS Code"),
@@ -423,8 +423,10 @@ facilities_state_status<-facilities %>%
 #Solar, Wind, Battery Supply chains---------------------------------------
 supply_chains <- facilities %>%
   filter(Segment=="Manufacturing") %>%
-  mutate(date=as.Date(Announcement_Date),
-         post_IRA = ifelse(date>"2022-08-15",1,0),
+  mutate(
+    date = as.Date(Announcement_Date),
+    yq = paste0(year(date), "-Q", quarter(date)),  # Create year-quarter format
+    post_IRA = ifelse(date > as.Date("2022-08-15"), 1, 0),
          Subcategory = ifelse(Technology=="Solar" & grepl("Cells",Subcategory),"Cells/Modules",Subcategory),
          Subcategory = ifelse(Technology=="Solar" & grepl("Modules",Subcategory),"Cells/Modules",Subcategory),
          Subcategory = ifelse(grepl("Lithium",Subcategory),"Lithium",Subcategory),
@@ -433,7 +435,7 @@ supply_chains <- facilities %>%
          Subcategory = ifelse(Technology=="Batteries" & grepl("Cells",Subcategory),"EAM/Cells/Modules",Subcategory),
          Subcategory = ifelse(Technology=="Critical Minerals" & grepl("Nickel",Subcategory),"Nickel/Cobalt",Subcategory),
          Subcategory = ifelse(Technology=="Critical Minerals" & grepl("Cobalt",Subcategory),"Nickel/Cobalt",Subcategory)) %>%
-  group_by(post_IRA,Technology,Subcategory) %>%
+  group_by(post_IRA,Technology,Subcategory,yq) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) 
 
 supply_chain_total <- supply_chains %>%
@@ -469,6 +471,18 @@ batteries_sc <- supply_chains %>%
   arrange(desc(`post_ira`)) %>%
   write.csv('Downloads/batteries_sc.csv')
 
+
+inv_batt <- investment %>%
+  filter(Segment=="Manufacturing",
+         Technology %in% c("Batteries","Zero Emission Vehicles","Critical Minerals")) %>%
+  mutate(quarter=yq(quarter),
+         inv=Estimated_Actual_Quarterly_Expenditure) %>%
+  group_by(Technology,quarter) %>%
+  summarize(inv=sum(inv,na.rm=T))
+
+ggplot(data=supply_chains,aes(x=yq,y=Total_Facility_CAPEX_Estimated,fill=Technology))+
+  geom_col()+
+  theme_minimal()
 
 #County-Level Data-------------------------------------------------------
 

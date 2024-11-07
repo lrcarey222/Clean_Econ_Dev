@@ -501,6 +501,15 @@ division_xchange <- xchange %>%
 #Good Jobs First Data
 gjf<- read.csv("C:/Users/LCarey.RMI/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
 
+#State Totals -> 2019-2022
+gjf_statetotal_19_22<-gjf %>%
+  filter(Year>2019) %>%
+  group_by(region,Location) %>%
+  summarize_at(vars(subs_m),sum,na.rm=T) %>%
+  arrange(desc(subs_m)) %>%
+  ungroup() %>%
+  inner_join(state_gdp, by=c("Location"="GeoName")) %>%
+  mutate(incent_gdp_rank = rank(-subs_m/X2022))
 
 #State Totals by Awarding Agency
 gjf_stateagency <- gjf %>%
