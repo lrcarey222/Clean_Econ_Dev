@@ -28,7 +28,7 @@ setwd("C:/Users/LCarey/")
 #Load Latest Clean Growth Tool Data-----------------------------
 #County Level
 cgt_county<-read.csv('C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
-cgt_county<-cgt_county %>%
+cgt_county_2<-cgt_county %>%
   filter(aggregation_level=="2",
          industry_desc %in% c("Batteries & Components",
                               "Solar Energy Components",
@@ -226,6 +226,22 @@ doe_batt_supply_chain<-fed_inv %>%
               select(NAME,STATEFP,GEOID),by=c("County"="NAME","fips"="STATEFP")) %>%
   group_by(State,fips,County,GEOID) %>%
   summarize(doe_batt=sum(`Funding Amount`,na.rm=T))
+
+
+#Energy Communities
+energy_coms <- read_excel('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/MSA_NMSA_FEE_EC_Status_2023v2/MSA_NonMSA_EnergyCommunities_FossilFuelEmp_2023v2.xlsx',sheet=2)
+coal_closure_coms<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_Coal_Closure_Energy_Comm_2023v2/Coal_Closure_Energy_Communities_2023v2.csv')
+
+coal_closure_coms<-coal_closure_coms %>%
+  distinct(State_Name,County_Name) %>%
+  mutate(coal_closure ="1")
+
+energy_coms <-energy_coms %>%
+  distinct(State_Name,County_Name,fipstate_2020,fipscounty_2020,ec_qual_status) %>%
+  left_join(coal_closure_coms,by=c("State_Name"="State_Name","County_Name"="County_Name")) %>%
+  mutate(energy_com = ifelse(coal_closure =="1"|ec_qual_status=="yes",1,0)) %>%
+  mutate(energy_com = ifelse(is.na(energy_com),0,energy_com)) %>%
+  mutate(fips=as.numeric(paste0(fipstate_2020,fipscounty_2020)))
   
 #Natural Gas Pipeline
 pipeline_counties<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/natural_gas_pipeline_counties.csv') 
@@ -237,7 +253,7 @@ co2_storage_counties<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects
 
 #County-Level DataFrame w/ All Variables---------------------------
 
-feas_simple <-  cgt_county %>%
+feas_simple <-  cgt_county_2 %>%
   left_join(county_prop %>%
     select(-NAME),
     by=c("county"="GEOID")) %>%
@@ -321,6 +337,9 @@ feas_simple <-  cgt_county %>%
                                     "OR",
                                     "MT"),1,0)) %>%
   select(-abbr)%>%
+  #Energy Community
+  left_join(energy_coms %>%
+              select(fips,energy_com),by=c("county"="fips")) %>%
   mutate(across(where(is.numeric), ~ ifelse(is.na(.), 0, .))) %>%
   ungroup() %>%
   select(-share_good_jobs,
@@ -346,14 +365,16 @@ feas_simple <-  cgt_county %>%
          -ea,
          -primary_transition_products_technologies) %>%
   left_join(facilities %>% 
-              mutate(Year=substr(Announcement_Date,1,4))%>%
-              group_by(county_2020_geoid,tech,Year) %>%
+              mutate(date=as.Date(Announcement_Date),
+                     year=substr(date,1,4),
+                     post_IRA = ifelse(date>"2022-08-15",1,0))%>%
+              group_by(county_2020_geoid,tech,post_IRA) %>%
               summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T),
             by=c("county"="county_2020_geoid","industry_desc"="tech")) %>%
   mutate(Total_Facility_CAPEX_Estimated=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated),
          Investment_Flag=ifelse(Total_Facility_CAPEX_Estimated > 0, 1, 0))
 # Define the path to your GitHub repository's folder
-github_folder <- "OneDrive - RMI/Documents/GitHub/Clean_Econ_Dev/Data"
+github_folder <- "C:/Users/LCarey/OneDrive - RMI/Documents/GitHub/Clean_Econ_Dev/Data"
 
 # Write the CSV to that folder
 write.csv(feas_simple, file = file.path(github_folder, "county_vars.csv"), row.names = FALSE)
@@ -387,7 +408,8 @@ feas_simple_ev <- feas_simple %>%
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_ev_model <- feas_simple_ev %>%
-  mutate(across(density:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
+  mutate(across(density:CSI_mean, ~ scale(., center = TRUE, scale = TRUE)))
+#feas_simple_ev_model$post_IRA <- as.factor(feas_simple_ev_model$post_IRA)
 
 #Binomial Regression
 model <- glm(Investment_Flag ~ density + 
@@ -404,8 +426,8 @@ model <- glm(Investment_Flag ~ density +
                cnbc_rank+
                med_house_inc+
               doe_funds+
-               doe_batt
-               , 
+               doe_batt+
+             energy_com, 
                family=binomial,
                data = feas_simple_ev_model)
 summary(model)
@@ -442,18 +464,20 @@ feas_simple_ev_index<-feas_simple_ev %>%
   mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   mutate(ev_supply_chain_feas = 
-           1.8*coalesce(density, 0) +
+           2.1*coalesce(density, 0) +
            1.2*coalesce(rca, 0) +
-           1.1*coalesce(county_gdp, 0) +
+           #1.1*coalesce(county_gdp, 0) +
            #0.1*coalesce(eci.x, 0) +
            #0.05*coalesce(Total_Facility_CAPEX_Estimated, 0) +
-           0.64*coalesce(1 - incent_gdp_rank, 0) +
-           0.22*coalesce(1 - PropertyValueUSD , 0) +
-           1.4*coalesce(worker_pay, 0) +
+           #0.64*coalesce(1 - incent_gdp, 0) +
+           #0.22*coalesce(1 - PropertyValueUSD , 0) +
+           1.75*coalesce(demshare,0)+
+           #1.4*coalesce(worker_pay, 0) +
            #0.025*coalesce(1 - ind_elec_price, 0) +
            #0.15*coalesce(1 - state_effective_tax_rate, 0) +
-           2.2*coalesce(road, 0) +
-           0.51*coalesce(1 - infrastructure, 0)) %>%
+           2.4*coalesce(road, 0) 
+           #0.51*coalesce(1 - infrastructure, 0)
+         ) %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   #select(state_name,ea,ea_name,county_name,density,ev_supply_chain_feas) %>%
   select(-county)%>%
@@ -529,7 +553,7 @@ feas_simple_batt <- feas_simple %>%
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_batt_model <- feas_simple_batt %>%
-  select(-state_name,-msa_name,-ea_name,-Segment,-Technology) %>%
+  select(-state_name,-msa_name,-ea_name) %>%
   mutate(across(density:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 #Binomial Regression
@@ -549,8 +573,9 @@ model <- glm(Investment_Flag ~ density +
                #business_cost+
                #economy+
                cnbc_rank+
-               doe_batt+
+               doe_batt*energy_com+
                doe_funds
+               
                #pov_rate+
                #emp_pop+
                #med_house_inc
@@ -566,21 +591,24 @@ feas_simple_batt_index<-feas_simple_batt %>%
   mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   mutate(batt_feas = 
-           1.5*coalesce(density, 0) +
+           2.1*coalesce(density, 0) +
            1*coalesce(rca, 0) +
-           2.1*coalesce(eci.x, 0) +
+           #2.1*coalesce(eci.x, 0) +
            1.2*coalesce(county_gdp, 0) +
-           1.7*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
-           0.7*coalesce(1 - incent_gdp_rank, 0) +
-           0.33*coalesce(1 - PropertyValueUSD , 0) +
-           1.2*coalesce(worker_pay, 0) +
+           #1.7*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
+           1.7*coalesce(incent_gdp, 0) +
+           0.27*coalesce(1 - PropertyValueUSD , 0) +
+           0.65*coalesce(1-demshare_state,0)+
+           1.5*coalesce(demshare,0)+
+           1.3*coalesce(worker_pay, 0) +
            #0.8*coalesce(1 - price, 0) +
            #0.15*coalesce(1 - state_effective_tax_rate, 0) +
-           2.2*coalesce(road, 0) 
+           2.5*coalesce(road, 0) +
            #1.3*gdp_17_22+
-           #0.6*coalesce(1 - infrastructure, 0)
+           0.5*coalesce(1 - infrastructure, 0)+
+          1.5*coalesce(doe_batt,0)   
           )%>%
-  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+  mutate(across(batt_feas, ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   #select(state_name,ea,ea_name,county_name,density,ev_supply_chain_feas) %>%
   select(-county)%>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
@@ -614,8 +642,8 @@ feas_density_bins <- feas_simple_batt_bins %>%
 write.csv(feas_density_bins %>% select(-share),'C:/Users/LCarey.RMI/Downloads/feas_density_bins_batt.csv',row.names=FALSE)
 feas_battfeas_bins <- feas_simple_batt_bins %>%
   group_by(batt_feas_bin) %>%
-  summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
-  mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)%>%
+  mutate(share=Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated,na.rm=T))
 
 #5 Solar PV Manufacturing Readiness-------------
 #Solar Man & Industry density correlation
@@ -641,44 +669,34 @@ feas_simple_solar <- feas_simple %>%
                      rca_fgm=rca) %>%
               select(county,density_fgm,rca_fgm),by="county") %>%
   group_by(state_name,ea,ea_name,county,county_name) %>%
-  summarize(across(where(is.numeric), ~ mean(., na.rm = TRUE))) %>%
-  ungroup() %>%
-  select(-county)%>%
-  right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
-  distinct() %>%
-  left_join(facilities %>% 
-              filter(Segment=="Manufacturing",
-                     Technology %in% c("Solar")) %>%
-              select(county_2020_geoid,Total_Facility_CAPEX_Estimated),
-            by=c("county"="county_2020_geoid")) %>%
-  mutate(Total_Facility_CAPEX_Estimated=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated),
-         Investment_Flag=ifelse(Total_Facility_CAPEX_Estimated > 0, 1, 0))
+  summarize(across(where(is.numeric), ~ mean(., na.rm = TRUE))) 
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_solar_model <- feas_simple_solar %>%
+  select(-state_name,-ea_name,-msa_name) %>%
   mutate(across(density:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 #Binomial Regression
 model <- glm(Investment_Flag ~ 
                density + 
-               #rca+
-               #density_fgm+
+               rca+
+               density_fgm+
                rca_fgm+
-               incent_gdp_rank+
+               eci+
+               incent_gdp+
                PropertyValueUSD +
-               eci.x+
                county_gdp+
                worker_pay+
-               #Total_Facility_CAPEX_Estimated.x+
-               #demshare_state+
-               #demshare+
+               demshare_state+
+               demshare+
                #right_to_work+
                #ind_elec_price+
                price+
                #state_effective_tax_rate+
-               #road+
-               #chips+
-               #All+
+               road+
+               chips_funds+
+               doe_funds+
+               All+
                clean_electricity_policy_index+
                #workforce+
                infrastructure
@@ -701,19 +719,20 @@ feas_simple_solar_index<-feas_simple_solar %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   mutate(solar_feas = 
            #1.5*coalesce(density, 0) +
-           1.2*coalesce(rca_fgm, 0) +
-           6*coalesce(eci.x, 0) +
-           1*coalesce(county_gdp, 0) +
+           1.1*coalesce(rca_fgm, 0) +
+           1.9*coalesce(eci, 0) +
+           1.5*coalesce(county_gdp, 0) +
            #1.7*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
            #0.74*coalesce(1 - incent_gdp_rank, 0) +
-           0.1*coalesce(1 - PropertyValueUSD , 0) +
+           0.5*coalesce(1 - PropertyValueUSD , 0) +
            #0.7*coalesce(1 - worker_pay, 0) +
-           0.45*coalesce(1 - price, 0) +
+           #0.45*coalesce(1 - price, 0) +
            #0.15*coalesce(1 - state_effective_tax_rate, 0) +
-           #1*coalesce(road, 0) +
+           2.1*coalesce(road, 0) +
            #1.3*gdp_17_22+
-           0.4*coalesce(1 - infrastructure, 0)) %>%
-  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+           1.8*coalesce(clean_electricity_policy_index,0)+
+           0.5*coalesce(1 - All, 0)) %>%
+  mutate(across(solar_feas, ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   #select(state_name,ea,ea_name,county_name,density,ev_supply_chain_feas) %>%
   select(-county)%>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
@@ -767,78 +786,74 @@ hydrogen_facilities_ea<-facilities %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)
 
 weights <- c(
-  "325120" = 0.3,  # Industrial Gas Manufacturing
-  "325311" = 0.1,  # Nitrogenous Fertilizer Manufacturing
-  "325199" = 0.1,  # All Other Basic Organic Chemical Manufacturing (Methanol)
-  "331110" = 0.1,  # Iron and Steel Mills
-  "331313" = 0.1,  # Alumina Refining and Primary Aluminum Production
-  "483111" = 0.05,  # Deep Sea Freight Transportation
-  "483211" = 0.05,  # Inland Water Freight Transportation
-  "484121" = 0.1,  # General Freight Trucking, Long-Distance, Truckload
-  "486210" = 0.1   # Pipeline Transportation of Natural Gas
+  "325212" = 0.3, #Synthetic Rubber Manufacturing
+  "325120" = 0.12,  # Industrial Gas Manufacturing
+  "325311" = 0.11,  # Nitrogenous Fertilizer Manufacturing
+  "325180" = 0.13, #Other Basic Inorganic Chemical Manufacturing
+  "325199" = 0.07,  # All Other Basic Organic Chemical Manufacturing (Methanol)
+  "325110" = 0.07, #Petrochemical Manufacturing
+  "237990" = 0.110,
+  "237120" = 0.1,
+  "324110" = 0.133, #Petroleum Refineries
+  "324199" = 0.131 #All Other Petroleum and Coal Products Manufacturing
 )
+
+# Convert weights to a data frame for easier joining
+weights_df <- tibble(
+  industry_code = as.numeric(names(weights)),
+  weight = as.numeric(weights)
+)
+
+# Join weights and calculate weighted mean
+cgt_county_h2_weighted <- cgt_county %>%
+  select(industry_code, county, county_name, density, rca) %>%
+  # Filter for relevant industry codes and RCA values
+  filter(industry_code %in% names(weights),
+         rca != 0) %>%
+  left_join(weights_df, by = "industry_code") %>%  # Add weights
+  group_by(county, county_name) %>%
+  summarize(
+    density_weighted = weighted.mean(density, w = weight, na.rm = TRUE),
+    rca_weighted = weighted.mean(rca, w = weight, na.rm = TRUE)
+  ) %>%
+  ungroup()
 
 
 #Put it all together for Hydrogen
-feas_simple_h2 <- cgt_county %>%
-  #Feasibility by county for production and hydrogen uses
-  filter(industry_code %in% c("325120", #Industrial Gas Manufacturing
-                              "325110", #Petrochemical Manufacturing
-                              "486990", #All Other Pipeline Transportation
-                              "333132", #Oil and Gas Field Machinery and Equipment Manufacturing
-                              "325311", #Nitrogenous Fertilizer Manufacturing
-                              "325312", #Phosphatic Fertilizer Manufacturing
-                              "325199", #All Other Basic Organic Chemical Manufacturing (Methanol)
-                              "331110", #Iron and Steel Mills
-                              "331313", #Alumina Refining and Primary Aluminum Production
-                              "483111", #Deep Sea Freight Transportation
-                              "483211", #Inland Water Freight Transportation
-                              "483113", #Coastal and Great Lakes Freight Transportation
-                              "484121", #General Freight Trucking, Long-Distance, Truckload
-                              "486210" #Pipeline Transportation of Natural Gas
-  )) %>%
-  filter(rca != 0) %>%  #Remove counties with no relevant industry
-  group_by(state_name,ea,ea_name,county,county_name) %>%
-  summarize(across(where(is.numeric), 
-                   mean, na.rm = TRUE))  %>%
-  ungroup() %>%
-    #Add Hydrogen investment data from CIM
-  left_join(hydrogen_facilities_ea,by=c("ea_name"="EA Name")) %>%
-  distinct() %>%
-   %>%
-  left_join(facilities 
-            %>% filter(Technology %in% c("Hydrogen")) %>%
-              select(county_2020_geoid,Total_Facility_CAPEX_Estimated),
-            by=c("county"="county_2020_geoid")) %>%
-  mutate(Total_Facility_CAPEX_Estimated.y=ifelse(is.na(Total_Facility_CAPEX_Estimated.y),0,Total_Facility_CAPEX_Estimated.y)) %>%
-  mutate(Investment_Flag = ifelse(Total_Facility_CAPEX_Estimated.y > 0, 1, 0))
+feas_simple_h2 <- cgt_county_h2_weighted %>%
+  right_join(feas_simple %>%
+    filter(industry_desc=="Green Hydrogen"), by=c("county"="county","county_name"="county_name"))
 
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_h2_model <- feas_simple_h2 %>%
-  #select(-inv_description,-right_to_work) %>%
-  mutate(across(density:Total_Facility_CAPEX_Estimated.y, ~ scale(., center = TRUE, scale = TRUE)))
+  select(-state_name,-msa_name,-ea_name,-industry_desc) %>%
+  mutate(across(density_weighted:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 
 #Regression model for Hydrogen Feasibility
 model <- glm(Investment_Flag ~ density + 
                rca+
+               density_weighted+
+               rca_weighted+
                tech_gen+
-               eci+
+               #eci+
                #Total_Facility_CAPEX_Estimated.x+
-               #demshare+
-               #demshare_state+
+               demshare+
+               demshare_state+
                #BATHPR+
                #ren_cagr_20_23+
                worker_pay+
                price+
                #ind_elec_price+
-               #clean_electricity_policy_index+
+               clean_electricity_policy_index+
                ng_pipeline+
                co2_pipeline+
                CSI_mean+
-               #h2hub+
-               clean_ind_policy_index
+               h2hub+
+               clean_ind_policy_index+
+               All+
+               doe_funds
                #infrastructure+
                #economy+
                #workforce+
@@ -854,10 +869,10 @@ exp(coef(model))
 h2_feas_index<-feas_simple_h2 %>%
   mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   mutate(h2_feas = 
-           2*coalesce(density, 0) +
-           1*coalesce(rca, 0) +
-           1.2*coalesce(tech_gen,0)+
-           2.5*coalesce(eci, 0) +
+           2.7*coalesce(density, 0) +
+           1.4*coalesce(rca_weighted, 0) +
+           1.25*coalesce(tech_gen,0)+
+           #2.5*coalesce(eci, 0) +
            #1.7*coalesce(Total_Facility_CAPEX_Estimated.x, 0) +
            #0.1*coalesce(BATHPR, 0) +
            #0.05*coalesce(1 - BANBC2E, 0) +
@@ -867,15 +882,15 @@ h2_feas_index<-feas_simple_h2 %>%
            0.3*coalesce(1 - price, 0) +
            #0.025*coalesce(1 - state_effective_tax_rate, 0) +
            #0.6*coalesce(clean_electricity_policy_index, 0) +
-           1.6*coalesce(clean_ind_policy_index, 0) +
+           #1.6*coalesce(clean_ind_policy_index, 0) +
            #1*co2_pipeline+
-           2.4*ng_pipeline+
-           1.3*CSI_mean
+           3.8*ng_pipeline+
+           1.1*CSI_mean
            #0.7*h2hub) %>%
            #1.1*coalesce(1 - cnbc_rank.x, 0)
            ) %>%
-  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
-  select(state_name,ea,ea_name,county_name,density,h2_feas,rca,tech_gen,clean_ind_policy_index,co2_pipeline,ng_pipeline,CSI_mean,h2hub) %>%
+  mutate(across(h2_feas, ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+  #select(state_name,ea,ea_name,county_name,density,h2_feas,rca,tech_gen,clean_ind_policy_index,co2_pipeline,ng_pipeline,CSI_mean,h2hub) %>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   distinct()
 
@@ -1341,5 +1356,20 @@ feas_wind_bins <- feas_simple_wind_bins %>%
   group_by(wind_feas_bin) %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
   mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
+
+
+
+
+#Indexes
+
+sectoral_indexes<-feas_simple_ev_index %>%
+  select(county,county_name,ev_supply_chain_feas) %>%
+  left_join(h2_feas_index %>%
+              select(county.y,h2_feas),by=c("county"="county.y")) %>%
+  left_join(feas_simple_batt_index %>%
+              select(county,batt_feas),by=c("county"="county")) %>%
+  left_join(feas_simple_solar_index %>%
+              select(county,solar_feas),by=c("county"="county"))
+
 
 
