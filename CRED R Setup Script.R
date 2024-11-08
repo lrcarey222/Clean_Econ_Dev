@@ -90,6 +90,13 @@ county_cbsa <- county_cbsa %>%
   mutate(fips = as.numeric(paste0(FIPS.State.Code, sprintf("%03d", as.numeric(FIPS.County.Code)))))
 county_pop<-read.csv('https://www2.census.gov/programs-surveys/popest/datasets/2020-2023/counties/totals/co-est2023-alldata.csv')
 
+#https://www.americancommunities.org/
+file_url <- 'https://www.americancommunities.org/wp-content/uploads/2023/08/2023-Typology-1.xlsx'
+temp_file <- tempfile(fileext = ".xlsx")
+GET(url = file_url, write_disk(temp_file, overwrite = TRUE))
+us_communities <- read_excel(temp_file, sheet = 1)  # 'sheet = 1' to read the first sheet
+
+
 EAs<-read_excel("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/BEA Economic Areas and Counties.xls",2)
 EAs<-EAs %>%
   mutate(fips=as.numeric(FIPS))

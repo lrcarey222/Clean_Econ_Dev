@@ -361,6 +361,61 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=pl
 facilities_man<-facilities %>%
   filter(Segment=="Manufacturing") 
 
+#Announced Manufacturing Investment by Congressional District
+facilities_congress <- facilities %>%
+  mutate(date=as.Date(Announcement_Date),
+         post_IRA = ifelse(date>"2022-08-15",1,0))  %>%
+  mutate(
+    date = as.Date(Announcement_Date),
+    yq = paste0(year(date), "-Q", quarter(date))) %>%
+  filter(US.Representative.Party != "") %>%
+  group_by(Segment,US.Representative.Party,yq) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  group_by(Segment,US.Representative.Party) %>%
+  mutate(cum_inv = cumsum(Total_Facility_CAPEX_Estimated),
+         type=paste(Segment,"-",US.Representative.Party)) %>%
+  ungroup()%>%
+  select(yq,type,cum_inv) %>%
+  pivot_wider(names_from=type,values_from=cum_inv)
+write.csv(facilities_congress,"Downloads/facilities_congress.csv")
+
+ggplot(data=facilities_congress,aes(x=yq,y=cum_inv,color=type,group=type))+
+  geom_line()+
+  theme_minimal()
+
+#Investment by District
+facilities_district <- facilities %>%
+  mutate(date=as.Date(Announcement_Date),
+         post_IRA = ifelse(date>"2022-08-15",1,0))  %>%
+  mutate(
+    date = as.Date(Announcement_Date),
+    yq = paste0(year(date), "-Q", quarter(date)),
+    district=paste(CD118_2022_Name,US.Representative.Party),
+    name_district=paste0(US.Representative.Name," (",substr(US.Representative.Party,1,1),"-",CD118_2022_Name,")")) %>%
+  filter(post_IRA==1,
+         CD118_2022_Name!="") %>%
+  group_by(name_district) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  arrange(desc(Total_Facility_CAPEX_Estimated)) %>%
+  head(25)
+write.csv(facilities_district,"Downloads/facilities_district.csv")
+
+facilities_senate <- facilities %>%
+  mutate(date=as.Date(Announcement_Date),
+         post_IRA = ifelse(date>"2022-08-15",1,0))  %>%
+  mutate(
+    date = as.Date(Announcement_Date),
+    yq = paste0(year(date), "-Q", quarter(date)),
+    district=paste(CD118_2022_Name,US.Representative.Party),
+    name_district=paste0(US.Senator.1..Name ," (",substr(US.Senator.1..Party,1,1),"-",State,"), ",US.Senator.2..Name ," (",substr(US.Senator.2..Party,1,1),"-",State,")")) %>%
+  filter(post_IRA==1,
+         CD118_2022_Name!="") %>%
+  group_by(name_district) %>%
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  arrange(desc(Total_Facility_CAPEX_Estimated)) %>%
+  head(10)
+write.csv(facilities_senate,"Downloads/facilities_senate.csv")
+
 #Announced Manufacturing Investment by State
 facilities_state <- facilities %>%
   filter(Segment=="Manufacturing") %>%
