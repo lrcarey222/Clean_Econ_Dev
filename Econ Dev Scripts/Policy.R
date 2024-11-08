@@ -157,11 +157,15 @@ tax_inv_state_tot <- tax_inv_state %>% group_by(State) %>%
               select(State,real_gdp,population),by=c("State"="State")) %>%
   filter(!is.na(real_gdp)) %>%
   mutate(share_ira=round(Total.Federal.Investment..2023.Billion.USD./sum(Total.Federal.Investment..2023.Billion.USD.)*100,3),
+         ira_gdp=Total.Federal.Investment..2023.Billion.USD./real_gdp*100,
          share_gdp=round(real_gdp/sum(real_gdp,na.rm=T)*100,3),
          gdp_cap=real_gdp/population,
          share_pop=population/sum(population)*100,
          lq=share_ira/share_gdp,
          lq2=share_ira/share_pop)
+
+ggplot(data=tax_inv_state_tot %>%
+         slice_max(order_by=))
 
 
 ggplot(data=tax_inv_state_tot, aes(y=share_ira, x=share_gdp, size=Total.Federal.Investment..2023.Billion.USD.)) +
@@ -342,11 +346,11 @@ state_estimates2<-state_estimates %>%
          "Federal Investment (% of State GDP)"=round(`Federal Investment (Billions 2023 USD)`/`State GDP (Billions 2023 USD)`*100,3)) %>%
   select(-quarter,-real_gdp,-population)
 write.csv(state_estimates2,"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_taxcredits_estimate.csv")
-
+state_estimates2<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IRA_taxcredits_estimate.csv")
 
 #Charts
 ggplot(data=state_estimates2) +
-  geom_col(aes(x=reorder(State,-`Federal Investment (Billions 2023 USD)`),y=`Federal Investment (Billions 2023 USD)`,fill=Category),position="stack") +
+  geom_col(aes(x=reorder(State,-`Federal.Investment..Billions.2023.USD.`),y=`Federal.Investment..Billions.2023.USD.`,fill=Category),position="stack") +
   coord_flip() +
   scale_fill_manual(values=rmi_palette) +
   labs(title = "Federal IRA Investment by State, Cateogry", 
