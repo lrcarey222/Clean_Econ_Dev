@@ -473,8 +473,10 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_ira_provisions.png"),plot=s
 
 #State Climate and Clean Energy Policy-----------------------------------------
 
-xchange <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
-xchange_pol_index <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange_climate_policy_index.csv")
+xchange <- read.csv("C:/Users/LCarey/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
+xchange_pol_index <- read.csv("C:/Users/LCarey/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange_climate_policy_index.csv")
+
+write.csv(xchange_pol_index,"Downloads/xchange_pol.csv")
 
 xchange_label<-xchange_pol_index %>%
   filter(region %in% region_abbrv$region) %>%
@@ -497,6 +499,9 @@ division_xchange <- xchange %>%
   summarize(value=sum(value,na.rm=T)) %>%
   pivot_wider(names_from=Topic,values_from=value) %>%
   write.csv(paste0(output_folder,"/",state_abbreviation,"_division_xchange.csv"),row.names=F)
+
+#Comparing Policies and Outcomes
+state_pol <- xchange_pol_index %>%
 
 
 
@@ -607,7 +612,7 @@ sc_clim_taxchanges<-climate_taxes %>%
 
 #Climate/Clean ENergy/Manufacturing Incentive Policies------------------------------------------
 
-dev_pol <- read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/dbo_Program.csv")
+dev_pol <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/dbo_Program.csv")
 
 keywords<- c("carbon","climate","emission",
              "greenhouse","renewable","solar","wind",
