@@ -11,11 +11,11 @@
  # Electricity Imports and Exports by State  (SEDS Data)
 
 #Set the Working Directory to your Username and update output folder for saved charts etc
-setwd("C:/Users/LCarey.RMI/")
+setwd("C:/Users/LCarey/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "MT"  # Replace with any US state abbreviation
+state_abbreviation <- "PA"  # Replace with any US state abbreviation
 state_name <- "South Montana"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
@@ -52,7 +52,7 @@ state_counties<-us_counties %>%
 
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/august_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/september_generator2024.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -66,6 +66,11 @@ abbr_opgen_12_23 <- op_gen %>%
          `Operating Year` > 2011) %>%
   mutate(Technology = ifelse(grepl("Natural Gas", Technology), "Natural Gas", Technology)) %>%
   filter(Technology != "Flywheels" & Technology != "All Other" & Technology != "Other Gases" & Technology != "Wood/Wood Waste Biomass" & Technology != "Pumped Storage" & Technology != "Wood and Wood Derived Fuels") 
+
+abbr_gen_12_24 <- abbr_opgen_12_23 %>%
+  group_by(`Operating Year`,Technology) %>%
+  summarize(capacity=sum(`Nameplate Capacity (MW)`,na.rm=T)) %>%
+  pivot_wider(names_from=`Operating Year`,values_from=capacity)
 
 #Region-Level
 counties <- counties(class = "sf")

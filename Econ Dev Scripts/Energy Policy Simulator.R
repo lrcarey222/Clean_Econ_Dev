@@ -154,6 +154,22 @@ eps_cars_bau <- eps_car_sales %>%
   pivot_wider(names_from=Vehicle,values_from=Sales) %>%
   write.csv(file.path(output_folder, paste0("eps_cars_bau", ".csv")))
 
+#Exports
+exports_ndc <- eps_ndc %>%
+  filter(var1=="Output Net Imports of Electricity" ,
+         #var2=="electricity",
+         Year=="2050") %>%
+  arrange(desc(Value))
+
+exports_ndc2 <- eps_ndc %>%
+  filter(var1=="Output Total Electricity Demand"|var1=="Output Electricity Generation by Type",
+         #var2=="electricity",
+         Year=="2050") %>%
+  group_by(State,var1) %>%
+  summarize_at(vars(Value),sum,na.rm=T) %>%
+  pivot_wider(names_from=var1,values_from=Value) %>%
+  mutate(export=`Output Electricity Generation by Type`-`Output Total Electricity Demand`)
+
 
 #BAU v NDC Charts----------------
 

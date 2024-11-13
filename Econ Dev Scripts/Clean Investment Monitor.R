@@ -237,7 +237,16 @@ investment_gdp_2123<- investment %>%
   mutate(US_inv_gdp = Value/real_gdp,
          State = "US",
          US_inv_share=Value/sum(Value)) %>%
-  select(industry,US_inv_gdp,US_inv_share) 
+  select(industry,US_inv_gdp,US_inv_share)  %>%
+  mutate(industry2=industry,
+         industry2=ifelse(industry %in% c("Batteries Manufacturing",
+                                          "Zero Emission Vehicles Manufacturing",
+                                          "Critical Minerals Manufacturing"),"EV Supply Chain",industry2),
+         industry2=ifelse(industry %in% c("Solar PV Manufacturing",
+                                          "Electrolyzers Manufacturing",
+                                          "Fuel Equipment Manufacturing",
+                                          "Wind Manufacturing"),"Cleantech Manufacturing",industry2),
+         industry2=ifelse(industry %in% c("Storage","Solar","Wind","Distributed Electricity and Storage","Nuclear"),"Clean Electricity",industry2))
 
 #State
 states_investment_gdp_2123 <- investment %>%
@@ -259,6 +268,67 @@ states_investment_gdp_2123 <- investment %>%
          lq=inv_share/US_inv_share) %>%
   filter(industry != "Other") %>%
   arrange(desc(lq))
+
+
+#Investment Location Quotient - i.e. specialization in investment by State-----------------------------------
+#National
+key_investment_gdp_2123<- investment %>%
+  filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
+  rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
+  mutate(industry=ifelse(Segment=="Manufacturing",paste0(Technology," Manufacturing"),Technology),
+         year_quarter = yq(quarter)) %>%
+  mutate(industry2=industry,
+         industry2=ifelse(industry %in% c("Batteries Manufacturing",
+                                          "Zero Emission Vehicles Manufacturing",
+                                          "Critical Minerals Manufacturing"),"EV Supply Chain",industry2),
+         industry2=ifelse(industry %in% c("Solar Manufacturing",
+                                          "Electrolyzers Manufacturing",
+                                          "Fueling Equipment Manufacturing",
+                                          "Wind Manufacturing"),"Cleantech Manufacturing",industry2),
+         industry2=ifelse(industry %in% c("Storage","Solar","Wind","Distributed Electricity and Storage","Nuclear"),"Clean Electricity",industry2)) %>%
+  left_join(socioecon,by=c("State"="State","quarter"="quarter")) %>%
+  filter(year_quarter>"2020-12-01") %>%
+  group_by(industry2) %>%
+  summarize_at(vars(Value,real_gdp),sum,na.rm=T) %>%
+  mutate(US_inv_gdp = Value/real_gdp,
+         State = "US",
+         US_inv_share=Value/sum(Value)) %>%
+  select(industry2,US_inv_gdp,US_inv_share)  
+  
+
+#Key Industries
+clean_key_inv_lq<-investment %>%
+  filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
+  rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
+  mutate(industry=ifelse(Segment=="Manufacturing",paste0(Technology," Manufacturing"),Technology),
+         year_quarter = yq(quarter)) %>%
+  left_join(socioecon,by=c("State"="State","quarter"="quarter")) %>%
+  filter(year_quarter>"2020-12-01") %>%
+  mutate(post_IRA = ifelse(year_quarter>"2022-08-15",1,0)) %>%
+  filter(post_IRA=="1") %>%
+  filter(!industry %in% c("Zero Emission Vehicles","Heat Pumps","Other")) %>%
+  mutate(industry2=industry,
+         industry2=ifelse(industry %in% c("Batteries Manufacturing",
+                         "Zero Emission Vehicles Manufacturing",
+                         "Critical Minerals Manufacturing"),"EV Supply Chain",industry2),
+         industry2=ifelse(industry %in% c("Solar Manufacturing",
+                         "Electrolyzers Manufacturing",
+                         "Fueling Equipment Manufacturing",
+                         "Wind Manufacturing"),"Cleantech Manufacturing",industry2),
+         industry2=ifelse(industry %in% c("Storage","Solar","Wind","Distributed Electricity and Storage","Nuclear"),"Clean Electricity",industry2)) %>%
+  
+  group_by(State,industry2) %>%
+  summarize_at(vars(Value,real_gdp),sum,na.rm=T) %>%
+  mutate(inv_gdp = Value/real_gdp) %>%
+  group_by(State) %>%
+  mutate(inv_share=Value/sum(Value)) %>%
+  left_join(key_investment_gdp_2123,by=c("industry2")) %>%
+  mutate(gdp_lq=inv_gdp/US_inv_gdp,
+         lq=inv_share/US_inv_share) %>%
+  filter(industry2 != "Other") %>%
+  arrange(desc(lq))
+
+write.csv(clean_key_inv_lq %>% filter(industry2=="SAF"),"Downloads/saf_lq.csv")
 
 #State Specialization Map - Find most specialized for each state
 state_spec_inv_2123<-states_investment_gdp_2123 %>%
