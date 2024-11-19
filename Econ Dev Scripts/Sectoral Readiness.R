@@ -177,6 +177,27 @@ gjf_statetotal_18_23<-gjf %>%
   inner_join(state_gdp, by=c("Location"="GeoName")) %>%
   mutate(incent_gdp = subs_m/X2022)
 
+#Tax Incentives
+pdit<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/pdit.csv")
+pdit<-pdit %>%
+  select(State,Property.Tax,Sales.Tax,Corporate.Income.Tax,Job.Creation.Tax.Credit,Investment.Tax.Credit,Research.and.Development.Credit,Property.Tax.Abatement,Customized.Job.Training.Subsidy) %>%
+  left_join(states_simple %>% select(full,abbr),by=c("State"="abbr"))
+
+#State Capacity
+url <- "https://dataverse.unc.edu/api/access/datafile/7531153"
+destfile <- "datafile.RData"
+
+# Download the file
+download.file(url, destfile, mode = "wb")
+load(destfile)
+
+# create dataset with factor scores and state data from library(usmap) data
+sc_data = as.data.frame(sc.fa_1$scores)
+sc_data$abbr = NA
+sc_data$abbr = row.names(sc_data)
+sc_data = left_join(statepop, sc_data)
+sc_data$SC = -sc_data$MR1 # this is our state capacity factor
+
 #CHIPS Act Subsidies
 url <- 'https://www.whitehouse.gov/wp-content/uploads/2023/11/Invest.gov_PublicInvestments_Map_Data_CURRENT.xlsx'
 temp_file <- tempfile(fileext = ".xlsx")
@@ -279,6 +300,11 @@ feas_simple <-  cgt_county_2 %>%
   #Economic Development Incentives
   left_join(gjf_statetotal_18_23 %>% select(Location,incent_gdp),
             by=c("state_name"="Location")) %>%
+  #US Community Type
+  left_join(us_communities %>%
+              mutate(community=`2023 Typology`) %>%
+              select(Fips,community),
+            by=c("county"="Fips")) %>%
   #Politics
   left_join(pres_2020 %>%
               select(county_fips,demshare),by=c("county"="county_fips")) %>%
@@ -291,6 +317,11 @@ feas_simple <-  cgt_county_2 %>%
                                    "All")) %>%
               select(State,Policy,value) %>%
               pivot_wider(names_from=Policy,values_from=value),by=c("state_name"="State"))%>%
+  #State Capacity
+  left_join(sc_data %>%
+              select(full,SC),by=c("state_name"="full")) %>%
+  #Taxes
+  left_join(pdit,by=c("state_name"="full")) %>%
   #Industrial Electricity Price by County
   left_join(ind_price %>% select(FIPS,price),by=c("county"="FIPS")) %>%
   #County GDP
@@ -356,7 +387,7 @@ feas_simple <-  cgt_county_2 %>%
          -State.y,
          -fips.y,
          -County.y,
-         -State,
+         #-State,
          -fips,
          -County,
          -transition_sector_category,
@@ -366,13 +397,13 @@ feas_simple <-  cgt_county_2 %>%
          -primary_transition_products_technologies) %>%
   left_join(facilities %>% 
               mutate(date=as.Date(Announcement_Date),
-                     year=substr(date,1,4),
-                     post_IRA = ifelse(date>"2022-08-15",1,0))%>%
-              group_by(county_2020_geoid,tech,post_IRA) %>%
+                     year=substr(date,1,4))%>%
+              group_by(county_2020_geoid,tech) %>%
               summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T),
             by=c("county"="county_2020_geoid","industry_desc"="tech")) %>%
   mutate(Total_Facility_CAPEX_Estimated=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated),
          Investment_Flag=ifelse(Total_Facility_CAPEX_Estimated > 0, 1, 0))
+
 # Define the path to your GitHub repository's folder
 github_folder <- "C:/Users/LCarey/OneDrive - RMI/Documents/GitHub/Clean_Econ_Dev/Data"
 
@@ -398,13 +429,15 @@ cgt_ev<-cgt_county %>%
 feas_simple_ev <- feas_simple %>%
   filter(industry_desc %in% c("Electric Vehicle Components",
                               "Electric Vehicles")) %>%
-  group_by(state_name,ea_name,county,county_name) %>%
+  group_by(state_name,ea_name,county,county_name,community) %>%
   summarize(across(where(is.numeric), ~ mean(., na.rm = TRUE))) %>%
   ungroup() %>%
   select(-county)%>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   distinct() 
-  
+feas_simple_ev$community <- as.factor(feas_simple_ev$community)
+feas_simple_ev$energy_com <- as.factor(feas_simple_ev$energy_com)
+
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_ev_model <- feas_simple_ev %>%
@@ -421,43 +454,28 @@ model <- glm(Investment_Flag ~ density +
                popdens+
                county_gdp+
                worker_pay+
+               All+
+               SC+
+               Property.Tax+
+               #Sales.Tax+
+               Corporate.Income.Tax+
+               Job.Creation.Tax.Credit+
+               Investment.Tax.Credit+
+               Research.and.Development.Credit+
+               Property.Tax.Abatement+
+               #Customized.Job.Training.Subsidy+
                price+
                road+
                cnbc_rank+
                med_house_inc+
               doe_funds+
                doe_batt+
-             energy_com, 
+             energy_com+
+               community, 
                family=binomial,
                data = feas_simple_ev_model)
 summary(model)
 exp(coef(model))
-
-#OLS Regression
-model <- lm(Total_Facility_CAPEX_Estimated ~ density + 
-               rca+
-               incent_gdp+
-               PropertyValueUSD +
-               demshare+
-               demshare_state+
-               #Total_Facility_CAPEX_Estimated.x+
-               worker_pay+
-               #ind_elec_price+
-               #price+
-               road+
-               #demshare+
-               #workforce+
-               infrastructure
-             #business_cost+
-             #economy+
-             #cnbc_rank.x
-             #pov_rate+
-             #emp_pop+
-             #med_house_inc+
-             #gdp_17_22
-             , 
-             data = feas_simple_ev_model)
-summary(model)
 
 #Index
 feas_simple_ev_index<-feas_simple_ev %>%
@@ -549,11 +567,12 @@ battery_facilities_ea<-facilities %>%
   summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)
 
 feas_simple_batt <- feas_simple %>%
-  filter(industry_desc %in% c("Batteries & Components"))
+  filter(industry_desc %in% c("Batteries & Components")) %>%
+  mutate()
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_batt_model <- feas_simple_batt %>%
-  select(-state_name,-msa_name,-ea_name) %>%
+  select(-state_name,-msa_name,-ea_name,-community,-State.x.x,-State.y.y) %>%
   mutate(across(density:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 #Binomial Regression
@@ -569,6 +588,15 @@ model <- glm(Investment_Flag ~ density +
                price+
                road+
                All+
+               SC+
+               Property.Tax+
+               Sales.Tax+
+               Corporate.Income.Tax+
+               Job.Creation.Tax.Credit+
+               Investment.Tax.Credit+
+               Research.and.Development.Credit+
+               Property.Tax.Abatement+
+               Customized.Job.Training.Subsidy+
                infrastructure+
                #business_cost+
                #economy+
@@ -614,6 +642,30 @@ feas_simple_batt_index<-feas_simple_batt %>%
   right_join(cgt_county %>% select(county,county_name),by=c("county_name")) %>%
   distinct()
 
+# Scatterplot
+ggplot(feas_simple_batt_index %>%
+         filter(batt_feas != 0,
+                Total_Facility_CAPEX_Estimated != 0), aes(x = batt_feas, y = Total_Facility_CAPEX_Estimated)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Scatterplot of Total_Facility_CAPEX_Estimated by batt_feas",
+       x = "batt_feas",
+       y = "Total_Facility_CAPEX_Estimated") +
+  geom_smooth(method="lm",se=F)+
+  theme_minimal()
+
+# Density plot
+feas_simple_batt_index <- feas_simple_batt_index %>%
+  filter(!is.na(batt_feas), !is.na(Total_Facility_CAPEX_Estimated))
+ggplot(feas_simple_batt_index %>%
+         filter(batt_feas != 0,
+                Total_Facility_CAPEX_Estimated != 0), aes(x = batt_feas, y = Total_Facility_CAPEX_Estimated)) +
+  geom_density2d() +
+  labs(title = "Density Plot of Total_Facility_CAPEX_Estimated by batt_feas",
+       x = "batt_feas",
+       y = "Total_Facility_CAPEX_Estimated") +
+  theme_minimal()
+
+
 write.csv(feas_simple_batt_index %>%
             select(state_name,ea,ea_name,county,county_name,density,
                    batt_feas,
@@ -637,8 +689,8 @@ feas_simple_batt_bins <-feas_simple_batt %>%
 
 feas_density_bins <- feas_simple_batt_bins %>%
   group_by(density_bin) %>%
-  summarize_at(vars(Total_Facility_CAPEX_Estimated.y),sum,na.rm=T)%>%
-  mutate(share=Total_Facility_CAPEX_Estimated.y/sum(Total_Facility_CAPEX_Estimated.y,na.rm=T))
+  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T)%>%
+  mutate(share=Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated,na.rm=T))
 write.csv(feas_density_bins %>% select(-share),'C:/Users/LCarey.RMI/Downloads/feas_density_bins_batt.csv',row.names=FALSE)
 feas_battfeas_bins <- feas_simple_batt_bins %>%
   group_by(batt_feas_bin) %>%
@@ -649,7 +701,7 @@ feas_battfeas_bins <- feas_simple_batt_bins %>%
 #Solar Man & Industry density correlation
 cgt_solarman<-cgt_county %>%
   select(county,county_name,industry_code,industry_desc,aggregation_level,density,rca)%>%
-  filter(aggregation_level=="4") %>%
+  filter(aggregation_level=="2") %>%
   left_join(facilities %>% 
               filter(Segment=="Manufacturing",
                      Technology %in% c("Solar")) %>%
@@ -657,7 +709,7 @@ cgt_solarman<-cgt_county %>%
             by=c("county"="county_2020_geoid")) %>%
   mutate(Total_Facility_CAPEX_Estimated=ifelse(is.na(Total_Facility_CAPEX_Estimated),0,Total_Facility_CAPEX_Estimated)) %>%
   group_by(industry_code,industry_desc) %>%
-  summarize(correlation = cor(rca, Total_Facility_CAPEX_Estimated, use = "complete.obs")) %>%
+  summarize(correlation = cor(density, Total_Facility_CAPEX_Estimated, use = "complete.obs")) %>%
   arrange(desc(correlation))
 
 
@@ -668,13 +720,14 @@ feas_simple_solar <- feas_simple %>%
               mutate(density_fgm=density,
                      rca_fgm=rca) %>%
               select(county,density_fgm,rca_fgm),by="county") %>%
-  group_by(state_name,ea,ea_name,county,county_name) %>%
+  group_by(state_name,ea_name,county,county_name) %>%
   summarize(across(where(is.numeric), ~ mean(., na.rm = TRUE))) 
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_solar_model <- feas_simple_solar %>%
-  select(-state_name,-ea_name,-msa_name) %>%
-  mutate(across(density:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
+  ungroup() %>%
+  #select(-state_name,-ea_name,-msa_name) %>%
+  mutate(across(rca:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 #Binomial Regression
 model <- glm(Investment_Flag ~ 
@@ -697,6 +750,7 @@ model <- glm(Investment_Flag ~
                chips_funds+
                doe_funds+
                All+
+               SC+
                clean_electricity_policy_index+
                #workforce+
                infrastructure
@@ -714,9 +768,10 @@ summary(model)
 exp(coef(model))
 
 #Create the Readiness Index
-feas_simple_solar_index<-feas_simple_solar %>%
-  mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
-  mutate(across(where(is.numeric), ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
+feas_simple_solar_index <- feas_simple_solar %>%
+  ungroup() %>%
+  mutate(across(rca:rca_fgm, ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
+  mutate(across(rca:rca_fgm, ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE)))) %>%
   mutate(solar_feas = 
            #1.5*coalesce(density, 0) +
            1.1*coalesce(rca_fgm, 0) +
@@ -827,7 +882,7 @@ feas_simple_h2 <- cgt_county_h2_weighted %>%
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_h2_model <- feas_simple_h2 %>%
-  select(-state_name,-msa_name,-ea_name,-industry_desc) %>%
+  select(-state_name,-msa_name,-ea_name,-industry_desc,-community) %>%
   mutate(across(density_weighted:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 
@@ -1360,7 +1415,7 @@ feas_wind_bins <- feas_simple_wind_bins %>%
 
 
 
-#Indexes
+##All Sectoral Indexes-----------------------------
 
 sectoral_indexes<-feas_simple_ev_index %>%
   select(county,county_name,ev_supply_chain_feas) %>%
