@@ -20,9 +20,9 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 # Clean investment Monitor Data - Check it's the latest quarter available
-investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/quarterly_actual_investment.csv'
-facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/manufacturing_energy_and_industry_facility_metadata.csv'
-socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/socioeconomics.csv'
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/quarterly_actual_investment.csv'
+facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/manufacturing_energy_and_industry_facility_metadata.csv'
+socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/socioeconomics.csv'
 
 # Read Data
 investment <- read.csv(investment_data_path, skip=5)
@@ -102,19 +102,19 @@ investment_growth <-investment %>%
   group_by(Segment,Technology) %>%
   mutate(Value = replace_na(Value,0)) %>%
   mutate(yoy_growth = (Value / lag(Value, n = 4) - 1) * 100) %>%
-  mutate(yoy_growth_moving_avg = rollmean(yoy_growth, 4, align = 'right', na.pad = TRUE)) %>% #4 quarter moving average
+  mutate(yoy_growth_moving_avg = rollmean(yoy_growth, 4, align = 'right', na.pad = TRUE)) %>% #4 quarter moving average %>%
+  mutate(Sector=paste0(Segment,"-",Technology)) %>%
+  filter(Sector %in% investment_10$Sector) %>%
   arrange(year_quarter) %>%
   mutate(cum_inv = cumsum(Value)) %>% #cumulative investment
   mutate(inv_index_ira = 100*cum_inv/cum_inv[quarter=="2022-Q2"],na.rm=T) %>% #Index to IRA
-  ungroup() %>%
-  mutate(Sector=paste0(Segment,"-",Technology)) %>%
-  filter(Sector %in% investment_10$Sector) 
+  ungroup()
 
 investment_growth_wide<-investment_growth %>% #wide format for Datawrapper
-  filter(Segment=="Energy and Industry",
-         Technology %in% c("Solar","Wind","Storage","Nuclear")) %>%
-  select(Technology,inv_index_ira,quarter) %>%
-  pivot_wider(names_from=Technology,values_from=inv_index_ira) %>%
+  #filter(Segment=="Energy and Industry",
+   #      Technology %in% c("Solar","Wind","Storage","Nuclear")) %>%
+  select(Sector,inv_index_ira,quarter) %>%
+  pivot_wider(names_from=Sector,values_from=inv_index_ira) %>%
   write.csv('Downloads/in_elect.csv')
 
 #Cumulative Growth in Subcategories
@@ -158,6 +158,9 @@ state_inv_tot <- investment %>%
   filter(Division==division_abbr$Division,
          State != "DC") %>%
   left_join(socioecon,by=c("State"="State","quarter"="quarter"))%>%
+  mutate(inv_gdp=Estimated_Actual_Quarterly_Expenditure/real_gdp)
+  
+state_inv_tot2<-state_inv_tot %>%
   mutate(year_quarter = yq(quarter)) %>%
   mutate(cum_inv = cumsum(Estimated_Actual_Quarterly_Expenditure),
          cum_inv_cap=cum_inv/population) %>%
@@ -431,7 +434,7 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=pl
 facilities_man<-facilities %>%
   filter(Segment=="Manufacturing") 
 
-#Announced Manufacturing Investment by Congressional District
+#Announced  Investment by Congressional District
 facilities_congress <- facilities %>%
   mutate(date=as.Date(Announcement_Date),
          post_IRA = ifelse(date>"2022-08-15",1,0))  %>%
@@ -495,6 +498,13 @@ facilities_state <- facilities %>%
   arrange(desc(share)) %>%
   slice_max(order_by=share,n=12) %>%
   write.csv('Downloads/facilities_man_state.csv')
+
+facilities_man_pa<- facilities %>%
+  mutate(date=as.Date(Announcement_Date),
+         post_IRA = ifelse(date>"2022-08-15",1,0)) %>%
+  filter(State=="PA",
+         post_IRA=="1") 
+write.csv(facilities_man_pa,"Downloads/facilities_man_pa.csv")
 
 
 #Pre and Post-IRA

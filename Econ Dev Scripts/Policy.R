@@ -6,6 +6,7 @@ url <- 'https://www.whitehouse.gov/wp-content/uploads/2023/11/Invest.gov_PublicI
 temp_file <- tempfile(fileext = ".xlsx")
 GET(url = url, write_disk(temp_file, overwrite = TRUE))
 fed_inv <- read_excel(temp_file, sheet = 4)  # 'sheet = 1' to read the first sheet
+write.csv(fed_inv,'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/White Houe Public Investments.csv')
 
 #Total expenditure by program-------------------------------------
 program_spend <- fed_inv %>%
@@ -664,3 +665,29 @@ climate_leg<-read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Dat
 climate_leg_state<-climate_leg %>%
   filter(statename==state_name) %>%
   select(statename,statustype,bill_id,bill_name,bill_description,bill_type_1,bill_type_2,issue_type_1,issue_type_2,source_link,sponsors_list)
+
+
+#State Capacity
+# Define the URL and destination file
+url <- "https://dataverse.unc.edu/api/access/datafile/7531153"
+destfile <- "datafile.RData"
+
+# Download the file
+download.file(url, destfile, mode = "wb")
+load(destfile)
+
+# create dataset with factor scores and state data from library(usmap) data
+sc_data = as.data.frame(sc.fa_1$scores)
+sc_data$abbr = NA
+sc_data$abbr = row.names(sc_data)
+sc_data = left_join(statepop, sc_data)
+sc_data$SC = -sc_data$MR1 # this is our state capacity factor
+
+#Clim Index & State Capacity
+sc_clim<-left_join(xchange_pol_index,sc_data,by="abbr")
+ggplot(data = sc_clim, aes(x = SC, y = climate_policy_index)) +
+  geom_point() +
+  geom_text(aes(label = abbr), vjust = -0.5) +  # Adjust label placement with `vjust`
+  geom_smooth(method="lm",se = FALSE) +  # Default aesthetics are sufficient; no need for aes(x~y)
+  theme_minimal()
+
