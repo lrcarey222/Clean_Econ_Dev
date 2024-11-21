@@ -751,6 +751,14 @@ model <- glm(Investment_Flag ~
                doe_funds+
                All+
                SC+
+               Property.Tax+
+               Sales.Tax+
+               Corporate.Income.Tax+
+               Job.Creation.Tax.Credit+
+               Investment.Tax.Credit+
+               Research.and.Development.Credit+
+               Property.Tax.Abatement+
+               Customized.Job.Training.Subsidy+
                clean_electricity_policy_index+
                #workforce+
                infrastructure
@@ -882,7 +890,7 @@ feas_simple_h2 <- cgt_county_h2_weighted %>%
 
 # Standardize columns from density to Total_Facility_CAPEX_Estimated.y
 feas_simple_h2_model <- feas_simple_h2 %>%
-  select(-state_name,-msa_name,-ea_name,-industry_desc,-community) %>%
+  select(-state_name,-msa_name,-ea_name,-industry_desc,-community,-State.x.x,-State.y.y) %>%
   mutate(across(density_weighted:Total_Facility_CAPEX_Estimated, ~ scale(., center = TRUE, scale = TRUE)))
 
 
@@ -908,6 +916,15 @@ model <- glm(Investment_Flag ~ density +
                h2hub+
                clean_ind_policy_index+
                All+
+               SC+
+               Property.Tax+
+               Sales.Tax+
+               Corporate.Income.Tax+
+               Job.Creation.Tax.Credit+
+               Investment.Tax.Credit+
+               Research.and.Development.Credit+
+               Property.Tax.Abatement+
+               Customized.Job.Training.Subsidy+
                doe_funds
                #infrastructure+
                #economy+

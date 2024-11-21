@@ -206,6 +206,18 @@ nza_states<-nzap %>%
   filter(!is.na(State.Code)) %>%
   mutate(scenario = factor(scenario, levels = c("REF", "E+", "E+RE+")))
 
+#State Electricity Import/Exports
+nza_states_trade<-nza_states %>%
+  filter(filter_level_2 %in% c("Electricity demand","Generation"),
+         scenario=="E+") %>%
+  group_by(geo,State.Code,filter_level_2) %>%
+  summarize_at(vars(`2050`),sum,na.rm=T) %>%
+  pivot_wider(names_from=filter_level_2,values_from=`2050`) %>%
+  mutate(Generation=1000*Generation/8760) %>%
+  mutate(trade=`Generation`-`Electricity demand`)
+
+write.csv(nza_states_trade,"Downloads/nza_states_trade.csv")
+
 #Jobs by Economic Sector----------------------------------------
 nza_jobs_econ <- nza_states %>%
   ungroup()%>%
