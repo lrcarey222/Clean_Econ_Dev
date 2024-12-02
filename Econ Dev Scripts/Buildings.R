@@ -29,7 +29,7 @@ temp_file <- tempfile(fileext = ".xlsx")
 GET(url = file_url, write_disk(temp_file, overwrite = TRUE))
 ggrf <- read_excel(temp_file, sheet = 4)
 
-ggrf<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/GGRF_Needs_by_county_Aug2023.csv')
+ggrf<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/GGRF_Needs_by_county_Aug2023.csv')
 
 
 #Clean file

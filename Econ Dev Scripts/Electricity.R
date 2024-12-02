@@ -15,8 +15,8 @@ setwd("C:/Users/LCarey/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "PA"  # Replace with any US state abbreviation
-state_name <- "South Montana"  # Replace with the full name of any US state
+state_abbr <- "MT"  # Replace with any US state abbreviation
+state_name <- "Montana"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
 
@@ -1046,3 +1046,124 @@ ggplot(data=ea_wind, aes(x=tech_gen,y=`Nameplate Capacity (MW)`,label=`EA Name`)
        caption="Source: NREL") +
   theme_classic()
   
+
+
+#Electricity maps
+library(rvest)
+
+# Define the URL
+zones <- list("US-CAR-YAD",
+              "US-SW-AZPS",
+              "US-MIDW-AECI",
+              "US-NW-AVA",
+              "US-CAL-BANC",
+              "US-NW-BPAT",
+              "US-CAL-CISO",
+              "US-NW-TPWR",
+              "US-FLA-TAL",
+              "US-CAR-DUK",
+              "US-FLA-FPC",
+              "US-CAR-CPLE",
+              "US-CAR-CPLW",
+              "US-SW-EPE",
+              "US-TEX-ERCO",
+              "US-FLA-FMPP",
+              "US-FLA-FPL",
+              "US-FLA-GVL",
+              "US-NW-GRID",
+              "US-NW-IPCO",
+              "US-CAL-IID",
+              "US-NE-ISNE",
+              "US-FLA-JEA",
+              "US-CAL-LDWP",
+              "US-MIDW-LGEE",
+              "US-MIDW-MISO",
+              "US-NW-NEVP",
+              "US-NY-NYIS",
+              "US-NW-NWMT",
+              "US-MIDA-PJM",
+              "US-NW-CHPD",
+              "US-NW-DOPD",
+              "US-NW-GCPD",
+              "US-NW-PACE",
+              "US-NW-PACW",
+              "US-NW-PGE",
+              "US-NW-PSCO",
+              "US-SW-PNM",
+              "US-NW-PSEI",
+              "US-SW-SRP",
+              "US-NW-SCL",
+              "US-FLA-SEC",
+              "US-CAR-SCEG",
+              "US-CAR-SC",
+              "US-SE-SOCO",
+              "US-CENT-SWPP",
+              "US-CENT-SPA",
+              "US-FLA-TEC",
+              "US-TEN-TVA",
+              "US-SW-TEPC",
+              "US-CAL-TIDC",
+              "US-SW-WALC",
+              "US-NW-WACM",
+              "US-NW-WAUW"
+              )
+
+# Initialize an empty list to store dataframes
+yearly_2023_dataframes <- list()
+
+for (i in seq_along(zones)) {
+  # Read the CSV from the URL
+  yearly_2023_dataframes[[i]] <- read.csv(
+    paste0("https://data.electricitymaps.com/2024-01-17/", zones[i], "_2023_yearly.csv")
+  )
+}
+
+monthly_2023<-read.csv("https://data.electricitymaps.com/2024-01-17/US-NW-WAUW_2023_monthly.csv")
+
+electricity_maps <- bind_rows(yearly_2023_dataframes)
+
+
+#Retail Service Territories from EIA Energy Atlas
+#https://atlas.eia.gov/datasets/f4cd55044b924fed9bc8b64022966097
+shapefile <- st_read("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Electric_Retail_Service_Territories.shp")
+
+sbrgn_sf_transformed <- st_transform(shapefile, crs = st_crs(counties))
+sbrgn_sf_transformed <- st_make_valid(sbrgn_sf_transformed)
+sf::sf_use_s2(FALSE)
+
+# Perform the spatial join with countiesto get retail territories by county
+matched <- st_join(sbrgn_sf_transformed, counties, join = st_intersects)
+sf::sf_use_s2(TRUE)
+matched<-as.data.frame(matched)
+matched <- matched %>%
+  select(ID,NAME.x,STATE,CNTRL_AREA,HOLDING_CO,NET_GEN,CUSTOMERS,STATEFP,COUNTYFP,GEOID) %>%
+  mutate(id=as.numeric(ID))
+
+
+electricity_maps_match<-electricity_maps %>%
+  mutate(Zone.Name=case_when(
+    Zone.Name == "Northwestern Energy" ~ "NORTHWESTERN ENERGY (NWMT)",
+    Zone.Name == "Duke Energy Progress West" ~ "",
+    Zone.Name == "Florida Power and Light Company" ~ "FLORIDA POWER & LIGHT COMPANY",
+    Zone.Name == "Gridforce Energy Management, LLC" ~ "",
+    Zone.Name == "Jacksonville Electric Authority" ~ "JEA",
+    Zone.Name == "Midcontinent Independent Transmission System Operator, Inc." ~ "MIDCONTINENT INDEPENDENT TRANSMISSION SYSTEM OPERATOR, INC..",
+    Zone.Name == "PUD No. 1 of Chelan County" ~ "PUBLIC UTILITY DISTRICT NO. 1 OF CHELAN COUNTY",
+    Zone.Name == "PUD No. 2 of Grant County, Washington" ~ "PUBLIC UTILITY DISTRICT NO. 2 OF GRANT COUNTY, WASHINGTON",
+    Zone.Name == "Pacificorp East" ~ "PACIFICORP - EAST",
+    Zone.Name == "Pacificorp West" ~ "PACIFICORP - WEST",
+    TRUE ~ Zone.Name)) %>%
+  mutate(cntrl_area=toupper(Zone.Name)) %>%
+  left_join(matched %>%
+              select(GEOID,CNTRL_AREA),by=c("cntrl_area"="CNTRL_AREA")) %>%
+  mutate(fips=as.numeric(GEOID)) %>%
+  left_join(geo,by="fips")
+
+maps_unmatched <- electricity_maps_match %>%
+  filter(is.na(GEOID)) %>%
+  select(Zone.Name) %>%
+  distinct()
+
+
+
+

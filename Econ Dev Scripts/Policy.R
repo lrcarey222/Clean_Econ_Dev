@@ -147,59 +147,30 @@ ggplot(data=ira_chips,aes(y=share_irachips,x=share_gdp,size=`Funding Amount`))+
 
 
 #Federal Tax Credit Incentives State-Level Estimates
-tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/public_investment_by_category.csv',skip=5)
+tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/federal_actual_investment_by_category.csv',skip=5)
 tax_inv_cat_tot <- tax_inv_cat%>% group_by(Segment,Category) %>%
-  summarize_at(vars(Total.Federal.Investment.2023USBn),sum,na.rm=T)
-tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2024/public_investment_by_state.csv',skip=5)
+  summarize_at(vars(Total.Federal.Investment),sum,na.rm=T)
+tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/federal_actual_investment_by_state.csv',skip=5)
 tax_inv_state_tot <- tax_inv_state %>% group_by(State) %>%
-  summarize_at(vars(Total.Federal.Investment..2023.Billion.USD.),sum,na.rm=T) %>%
-  left_join(socioecon %>%
-              filter(quarter=="2024-Q1") %>%
-              select(State,real_gdp,population),by=c("State"="State")) %>%
-  filter(!is.na(real_gdp)) %>%
-  mutate(share_ira=round(Total.Federal.Investment..2023.Billion.USD./sum(Total.Federal.Investment..2023.Billion.USD.)*100,3),
-         ira_gdp=Total.Federal.Investment..2023.Billion.USD./real_gdp*100,
-         share_gdp=round(real_gdp/sum(real_gdp,na.rm=T)*100,3),
-         gdp_cap=real_gdp/population,
-         share_pop=population/sum(population)*100,
-         lq=share_ira/share_gdp,
-         lq2=share_ira/share_pop)
+  summarize_at(vars(Total.Federal.Investment),sum,na.rm=T) 
 
-ggplot(data=tax_inv_state_tot %>%
-         slice_max(order_by=))
-
-
-ggplot(data=tax_inv_state_tot, aes(y=share_ira, x=share_gdp, size=Total.Federal.Investment..2023.Billion.USD.)) +
-  geom_point() +
-  geom_smooth(method="lm", se=F) +
-  labs(title="IRA Federal Funding",
-       subtitle="Share of IRA investment in states",
-       y="Share of IRA Funding",
-       x="Share of GDP") +
-  theme_classic() +
-  theme(plot.title = element_text(hjust = 1, vjust = 0.5),  # Center the plot title
-        plot.subtitle = element_text(hjust = 1, vjust = 0.5),
-        legend.position="none") +  # Center the plot subtitle
-  annotate("text", x = max(tax_inv_state_tot$share_ira) * 0.8, y = max(tax_inv_state_tot$share_gdp) * 0.9,
-           label = cor_text, size = 5, hjust = 1) +  # Add the correlation text
-  geom_text_repel(aes(label=State), size=3)  # Add state labels with geom_text_repel
 
 #45X
 fac_45x<-facilities %>%
-  filter(Segment=="Manufacturing",
+  filter(Decarb_Sector=="Clean Tech Manufacturing",
          Technology %in% c("Solar",
                            "Wind",
                            "Critical Minerals",
                            "Batteries"),
-         Current_Facility_Status=="O"
-)%>%
+         Investment_Status=="O"
+        )%>%
   group_by(State,Segment) %>%
-  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
+  summarize_at(vars(Estimated_Total_Facility_CAPEX),sum,na.rm=T) %>%
   group_by(Segment) %>%
-  mutate(cap_share=Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated)) %>%
+  mutate(cap_share=Estimated_Total_Facility_CAPEX/sum(Estimated_Total_Facility_CAPEX)) %>%
   left_join( tax_inv_cat_tot %>%
               filter(Category=="Advanced Manufacturing Tax Credits"),by=c("Segment")) %>%
-  mutate(state_45x = Total.Federal.Investment.2023USBn*cap_share) 
+  mutate(state_45x = Total.Federal.Investment*cap_share) 
 
 #45V & 45Q
 fac_45vq<-investment %>%
@@ -509,10 +480,10 @@ state_pol <- xchange_pol_index %>%
 #Economic Development Incentives----------------------------------
 
 #Good Jobs First Data
-gjf<- read.csv("C:/Users/LCarey.RMI/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
+gjf<- read.csv("C:/Users/LCarey/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
 
 #State Totals -> 2019-2022
-gjf_statetotal_19_22<-gjf %>%
+gjf_statetotal_19<-gjf %>%
   filter(Year>2019) %>%
   group_by(region,Location) %>%
   summarize_at(vars(subs_m),sum,na.rm=T) %>%

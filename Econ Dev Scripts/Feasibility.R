@@ -81,7 +81,7 @@ state_feas_msa <- feasibility %>%
   mutate(feas_industry_percentile=percent_rank(density)) %>%
   left_join(state_totals,by=c("state_avb"="state_avb","naics_desc"="naics_desc") )
 
-state_feas_plot<-ggplot(data=state_feas_msa %>% filter(state_avb==state_abbreviation,
+state_feas_plot<-ggplot(data=state_feas %>% filter(state_avb==state_abbreviation,
                                                    !transition_sector_category %in% c("Environmental Protection & Management End-Use Sector",
                                                                                       "Transition Enabling Sector",
                                                                                       "Transition Forestry, Land, and Agriculture (FLAG) Sector")),
@@ -290,8 +290,11 @@ state_ranks <- msa_data %>%
 #County Level Feasibility-----------------------------------
 cgt_county<-read.csv('C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/cgt_county_data_08_29_2024.csv')
 
-region_id <-region_id %>%
-  mutate(geoid=as.numeric(fips))
+region_id <- counties %>%
+  as.data.frame() %>%
+  filter(NAME %in% c("Cuming",
+                     "Lancaster"))%>%
+  mutate(geoid=as.numeric(GEOID))
 
 region_county_feas<- cgt_county %>%
   filter(county %in% region_id$geoid,
