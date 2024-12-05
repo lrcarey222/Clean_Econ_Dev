@@ -48,6 +48,8 @@ evs_model <- evs_model %>%
 write.csv(evs_model,paste0(output_folder,"/evs_model.csv"))
 
 #If the EV registration is by zip code
+#install.packages("zipcodeR")
+library(zipcodeR)
 zip_county_ev <- zip_code_db %>% 
   filter(state == state_abbreviation) %>%
   select(zipcode, county) %>%
@@ -103,6 +105,7 @@ ea_evlocs <- evlocs %>%
 
 write.csv(ea_evlocs,paste0(output_folder,"/ea_evlocs.csv"))
 
+multi_region_id <- EAs %>% filter(`EA Name`==region_name)
 region_evlocs<-evlocs %>%
   filter(`EA Name` %in% multi_region_id$`EA Name`) %>%
   group_by(Groups.With.Access.Code,Facility.Type) %>%
@@ -116,9 +119,41 @@ evlocs_county <- ev_locs %>%
   group_by(State,GEOID) %>%
   summarize(total_charg=n()) 
 
+county_labels<-centroid_labels(regions = c("counties"))
 state_evlocs_county<-evlocs_county %>%
   filter(State==state_abbreviation) %>%
   left_join(county_labels,by=c("State"="abbr","GEOID"="fips")) %>%
-  left_join(state_evs_county,by=c("State"="State","county"="County")) %>%
+  left_join(state_evs_county,by=c("State"="State","county"="County"))
+
+#Graphs
+us_counties<-us_map("counties")
+mn_counties <- us_counties %>% filter(full=="Minnesota")
+
+# Potential for state map
+# ggplot() +
+#   geom_sf(data = mn_counties, fill = "white", color = "black") +
+#   geom_point(data = state_evlocs_county %>% filter(!is.na(ev_cap)),
+#              aes(x = st_coordinates(geom)[, 1],
+#                  y = st_coordinates(geom)[, 2],
+#                  size = ev_cap),
+#              color = "blue", alpha = 0.7) +
+#   scale_size_continuous(range = c(3, 10)) +  # Adjust bubble sizes as needed
+#   labs(title = "Bubble Map of Total EV Capacity",
+#        size = "Value") +
+#   theme_minimal()
+
+#Scatter Plot
+EV_total_plot<-ggplot(data=state_evlocs_county,
+                        aes(x=total,y=total_charg,color=ev_cap))+
+  geom_point()+
+  theme_classic()+
+  labs(title=paste0("EV Uptake in ",state_name),
+       x="Total EV Registrations",
+       y="EV Charging Stations",
+       color="EV Capacity")+
+  geom_text_repel(aes(label=county),size=2)
+
+ggsave(paste0(output_folder,"/",state_abbreviation,"_EV_total_plot.png"),plot=EV_total_plot,width=8,height=6,units="in",dpi=300)
+
   
 
