@@ -55,13 +55,24 @@ investment_year<-investment %>%
 
 #Total Investment by Segment,Year
 investment_year_segment<-investment %>%
-  mutate(year=as.numeric(substr(quarter,1,4))) %>%
-  group_by(year,Segment) %>%
+  #mutate(year=as.numeric(substr(quarter,1,4))) %>%
+  group_by(quarter,Decarb_Sector) %>%
   summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
-  mutate(Segment = recode(Segment, "energyandindustry" = "Energy & Industry",
-                          "manufacturing" = "Manufacturing",
-                          "retail" = "Retail")) %>%
-  pivot_wider(names_from=year,values_from=Estimated_Actual_Quarterly_Expenditure) #wide format for Datwrapper
+  #mutate(Segment = recode(Segment, "energyandindustry" = "Energy & Industry",
+   #                       "manufacturing" = "Manufacturing",
+    #                      "retail" = "Retail")) %>%
+  pivot_wider(names_from=quarter,values_from=Estimated_Actual_Quarterly_Expenditure) #wide format for Datwrapper
+write.csv(investment_year_segment,"Downloads/investment_year_segment.csv")
+
+investment_manufacturing<-investment %>%
+  filter(Segment=="Manufacturing") %>%
+  group_by(quarter,Technology) %>%
+  summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
+  #mutate(Segment = recode(Segment, "energyandindustry" = "Energy & Industry",
+  #                       "manufacturing" = "Manufacturing",
+  #                      "retail" = "Retail")) %>%
+  pivot_wider(names_from=quarter,values_from=Estimated_Actual_Quarterly_Expenditure) #wide format for Datwrapper
+write.csv(investment_manufacturing,"Downloads/investment_man.csv")
 
 #Investment by Segment
 investment_segment<-investment %>%
@@ -272,6 +283,22 @@ states_investment_gdp_2123 <- investment %>%
   filter(industry != "Other") %>%
   arrange(desc(lq))
 
+region_inv<-investment %>%
+  rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
+  mutate(year_quarter = yq(quarter)) %>%
+  mutate(post_IRA = ifelse(year_quarter>"2022-08-15",1,0)) %>%
+  #filter(post_IRA=="1") %>%
+  filter(year_quarter>"2020-12-01") %>%
+  mutate(region =ifelse(State %in% c("MN","WI","IL","IN","OH","PA","MI"),"Great Lakes",
+                        ifelse(State %in% c("NC","SC","GA","AL","TN"),"Southeast",
+                               ifelse(State %in% c("TX","NM","OK","LA"),"South-Central","Other")))) %>%
+  group_by(region,Decarb_Sector) %>%
+  summarize_at(vars(Value),sum,na.rm=T) %>%
+  group_by(Decarb_Sector) %>%
+  mutate(share=round(Value/sum(Value)*100,1)) %>%
+  select(-Value) %>%
+  pivot_wider(names_from=Decarb_Sector,values_from=share)
+
 
 #Investment Location Quotient - i.e. specialization in investment by State-----------------------------------
 #National
@@ -300,6 +327,13 @@ key_investment_gdp_2123<- investment %>%
   
 
 #Key Industries
+census_gdp <- census_divisions %>%
+  inner_join(total_gdp_by_year,by=c("State"="GeoName")) %>%
+  group_by(Division) %>%
+  summarize_at(vars(X2023),sum,na.rm=T) %>%
+  mutate(gdp_share=X2023/sum(X2023)) %>%
+  select(Division,X2023,gdp_share)
+
 clean_key_inv_lq<-investment %>%
   filter(!Subcategory %in% c("Power - Natural Gas", "Power - Coal","Natural gas processing")) %>% #filter out Carbon Management categories we don't like
   rename(Value=Estimated_Actual_Quarterly_Expenditure) %>%
@@ -307,9 +341,9 @@ clean_key_inv_lq<-investment %>%
          year_quarter = yq(quarter)) %>%
   left_join(socioecon,by=c("State"="State","quarter"="quarter")) %>%
   filter(year_quarter>"2020-12-01") %>%
-  mutate(post_IRA = ifelse(year_quarter>"2022-08-15",1,0)) %>%
-  filter(post_IRA=="1") %>%
-  filter(!industry %in% c("Zero Emission Vehicles","Heat Pumps","Other")) %>%
+  #mutate(post_IRA = ifelse(year_quarter>"2022-08-15",1,0)) %>%
+  #filter(post_IRA=="1") %>%
+  #filter(!industry %in% c("Zero Emission Vehicles","Heat Pumps","Other")) %>%
   mutate(industry2=industry,
          industry2=ifelse(industry %in% c("Batteries Manufacturing",
                          "Zero Emission Vehicles Manufacturing",
@@ -319,17 +353,24 @@ clean_key_inv_lq<-investment %>%
                          "Fueling Equipment Manufacturing",
                          "Wind Manufacturing"),"Cleantech Manufacturing",industry2),
          industry2=ifelse(industry %in% c("Storage","Solar","Wind","Distributed Electricity and Storage","Nuclear"),"Clean Electricity",industry2)) %>%
-  
-  group_by(State,industry2) %>%
-  summarize_at(vars(Value,real_gdp),sum,na.rm=T) %>%
-  mutate(inv_gdp = Value/real_gdp) %>%
-  group_by(State) %>%
-  mutate(inv_share=Value/sum(Value)) %>%
+  left_join(census_divisions,by=c("State"="State.Code")) %>%
+  group_by(Division,industry2) %>%
+  summarize_at(vars(Value),sum,na.rm=T) %>%
+  left_join(census_gdp,by="Division") %>%
+  mutate(inv_gdp = Value/X2023) %>%
+  group_by(industry2) %>%
+  mutate(inv_share=Value/sum(Value),
+         inv_gdp_ratio=round(inv_share/gdp_share,1)) %>%
+  group_by(Division) %>%
   left_join(key_investment_gdp_2123,by=c("industry2")) %>%
   mutate(gdp_lq=inv_gdp/US_inv_gdp,
          lq=inv_share/US_inv_share) %>%
   filter(industry2 != "Other") %>%
   arrange(desc(lq))
+
+clean_division_table <- clean_key_inv_lq %>%
+  select(Division,industry2,inv_gdp_ratio) %>%
+  pivot_wider(names_from=Division,values_from=inv_gdp_ratio)
 
 write.csv(clean_key_inv_lq %>% filter(industry2=="SAF"),"Downloads/saf_lq.csv")
 
@@ -432,7 +473,17 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=pl
 #ANNOUNCED INVESTMENT-------------------------------------------------
 #All Manufacturing Facilities
 facilities_man<-facilities %>%
-  filter(Segment=="Manufacturing") 
+  filter(Segment=="Manufacturing",
+         Technology %in% c("Batteries",
+                           "Solar",
+                           "Wind",
+                           "Critical Minerals")) %>%
+  mutate(industry = paste0(Technology," "," (",Subcategory,")")) %>%
+  mutate(date=as.Date(Announcement_Date)) %>%
+  filter(date > "2022-08-01",
+         Investment_Reported_Flag=="True") %>%
+  select(Company,industry,Technology,Estimated_Total_Facility_CAPEX,Latitude,Longitude)
+write.csv(facilities_man,"Downloads/facilities_man.csv")
 
 #Announced  Investment by Congressional District
 facilities_congress <- facilities %>%
@@ -468,8 +519,8 @@ facilities_district <- facilities %>%
   filter(post_IRA==1,
          CD118_2022_Name!="") %>%
   group_by(name_district) %>%
-  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
-  arrange(desc(Total_Facility_CAPEX_Estimated)) %>%
+  summarize_at(vars(Estimated_Total_Facility_CAPEX),sum,na.rm=T) %>%
+  arrange(desc(Estimated_Total_Facility_CAPEX)) %>%
   head(25)
 write.csv(facilities_district,"Downloads/facilities_district.csv")
 

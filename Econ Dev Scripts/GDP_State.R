@@ -612,3 +612,17 @@ region_pop <- county_pop %>%
   select(`EA Name`, natural, netmig, total) %>%
   arrange(desc(total))
 write.csv(region_pop, paste0(output_folder, "/", state_abbreviation, "_region_pop.csv"))
+
+
+
+#County GDP by Industry
+
+#GDP by Industry----------------------------
+url <- "https://apps.bea.gov/regional/zip/CAGDP11.zip"
+temp_zip <- tempfile(fileext = ".zip")
+download(url, temp_zip, mode = "wb")
+temp_dir <- tempdir()
+unzip(temp_zip, exdir = temp_dir)
+files <- list.files(temp_dir, full.names = TRUE)
+
+county_gdp_ind<-read.csv(files[grepl("CAGDP11__ALL_AREAS_2002_2023.csv", files)], stringsAsFactors = FALSE)

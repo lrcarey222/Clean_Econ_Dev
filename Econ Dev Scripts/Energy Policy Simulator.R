@@ -44,6 +44,8 @@ eps_ndc <- eps_ndc_master %>%
 
 eps<-rbind(eps_bau,eps_ndc)
 
+write.csv(eps,"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps.csv")
+
 #Electricity Capacity, Generation, and Demand------------------------------------------
 
 

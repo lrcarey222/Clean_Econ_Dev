@@ -49,7 +49,6 @@ state_counties<-us_counties %>%
   left_join(census_divisions,by=c("abbr"="State.Code","full"="State")) %>%
   select(Division,abbr,full,county,fips)
 
-
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
 url <- 'https://www.eia.gov/electricity/data/eia860m/xls/september_generator2024.xlsx'
@@ -59,6 +58,29 @@ downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
 
 #Operating Generation
 op_gen <- read_excel(file_path, sheet = 1,skip=2)
+
+op_gen_ira <- op_gen %>%
+  mutate(tech = case_when(
+    Technology=="Natural Gas Steam Turbine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combined Cycle" ~ "Natural Gas",
+    Technology=="Natural Gas Internal Combustion Engine" ~ "Natural Gas",
+    Technology=="Natural Gas Fired Combustion Turbine" ~ "Natural Gas",
+    Technology=="Conventional Steam Coal" ~ "Coal",
+    Technology=="Conventional Hydroelectric" ~ "Hydro",
+    Technology=="Onshore Wind Turbine" ~ "Wind",
+    Technology=="Offshore Wind Turbine" ~ "Wind",
+    Technology=="Batteries" ~ "Storage",
+    Technology=="Solar Photovoltaic" ~ "Solar",
+    Technology=="Solar Thermal with Energy Storage" ~ "Solar",
+    Technology=="Hydroelectric Pumped Storage" ~ "Hydro",
+    Technology=="Geothermal" ~ "Geothermal",
+    Technology=="Wood/Wood Waste Biomass"~"Biomass"
+  )) %>%
+  filter(tech %in% c("Solar",
+                     "Geothermal",
+                     "Storage",
+                     "Wind"),
+         `Operating Year`>2021) 
 
 #State-Level
 abbr_opgen_12_23 <- op_gen %>%
@@ -821,7 +843,26 @@ ind_price_m <- eia_sales %>%
   select(State,Year,Month,ind_price_m)
 
 
+#EIA Disruption & Reliability Data-------------------------------
+url <- 'https://www.eia.gov/electricity/annual/xls/epa_11_04.xlsx'
+destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
+file_path <- paste0(destination_folder, "eia_saidi.xlsx")
+downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
 
+saidi_med <- read_excel(file_path, sheet = 1, skip=3)
+saidi_med<-saidi_med %>%
+  select(1:12) %>%
+  pivot_longer(cols=2:12,names_to="year") %>%
+  mutate(year=substr(year,1,4),
+         type="With Major Event Days")
+saidi_wo_med <- read_excel(file_path, sheet = 1, skip=3)
+saidi_wo_med<-saidi_wo_med %>%
+  select(1,13:23) %>%
+  pivot_longer(cols=2:12,names_to="year") %>%
+  mutate(year=substr(year,1,4),
+         type="Without Major Event Days")
+
+saidi <- rbind(saidi_med,saidi_wo_med)
 
 
 #State Sector Electricity Consumption-----------------------------------------
@@ -980,11 +1021,11 @@ msn_descriptions <- data.frame(
 )
 
 seds_ren_prod <- seds_all %>%
-  filter(MSN %in% msn_descriptions$MSN, #Electricity export expenditure
-         Year %in% 2002:2022) %>%
+  filter(Year %in% 2002:2022) %>%
   left_join(census_divisions, by=c("StateCode"="State.Code")) %>%
-  left_join(msn_descriptions,by=c("MSN"="MSN")) %>%
-  select(Region,Division,State,StateCode,Year,MSN, Description, Data)
+  select(-Description) %>%
+  inner_join(msn_descriptions,by=c("MSN"="MSN")) %>%
+  select(Region,Division,State,StateCode,Year,MSN, Description, Data, Unit)
 
 seds_ren_prod_plot<-ggplot(data=seds_ren_prod %>%
                              filter(), aes(x=Year,y=Data,fill=variable_name)) +
@@ -995,6 +1036,56 @@ seds_ren_prod_plot<-ggplot(data=seds_ren_prod %>%
        caption="Source: Net Zero America (2021), Princeton University") +
   scale_y_continuous(expand = c(0,0))+
   theme_classic()
+
+#State Renewable Electricity Consumption Shares --------------------------
+states_ren_con <- seds_all %>%
+  filter(MSN %in% c("GEEGB",
+                    "HYEGB",
+                    "NUEGB",
+                    "SOEGB",
+                    "WYEGB",
+                    "ESTCB")) %>%
+  group_by(StateCode,`State Name`,Year) %>%
+  summarise(
+    renewables = sum(Data[MSN %in% c("GEEGB",
+                                      "HYEGB",
+                                      "NUEGB",
+                                      "SOEGB",
+                                      "WYEGB")], na.rm = TRUE),
+    total_energy = sum(Data[MSN == "ESTCB"], na.rm = TRUE),
+    renewables_share = ifelse(total_energy > 0, renewables / total_energy, NA_real_)
+  ) %>%
+  ungroup()
+  
+#Ren Con v Reliability Chart
+states_renew_reli <- states_ren_con %>%
+  left_join(saidi %>%
+               filter(type=="Without Major Event Days") %>%
+               rename("saidi"="value") %>%
+               mutate(year=as.numeric(year)),by=c("State Name"="Census Division\r\nand State",
+                                             "Year"="year")) %>%
+  group_by(StateCode,`State Name`) %>%
+  arrange(Year) %>%
+  mutate(
+    renewables_share_ma = rollmean(renewables_share, k = 3, align = "right", fill = NA),
+    renewables_ma = rollmean(renewables, k = 3, align = "right", fill = NA),
+    saidi_ma = rollmean(saidi, k = 3, align = "right", fill = NA)
+  )%>%
+  filter(!is.na(renewables_share_ma), !is.na(saidi_ma)) %>%  # Remove early NA values
+  summarise(
+    renewable_change = renewables_share[Year == 2022] - renewables_share[Year == 2015],
+    renewable = renewables[Year == 2022],
+    saidi_change = saidi_ma[Year == 2022] - saidi_ma[Year == 2015],
+    saidi = saidi_ma[Year == 2022]
+  ) 
+
+
+ggplot(data=states_renew_reli %>% 
+         filter(!`State Name` %in% c("Louisiana","Vermont")),aes(x=renewable_change,y=saidi_change,size=renewable))+
+  geom_point(alpha=0.7)+
+  geom_smooth(method="lm",se=F)+
+  geom_text_repel(aes(label=StateCode))+
+  theme_minimal()
 
 #Generation Potential--------------------------------
 tech_pot <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/techpot_baseline_county.csv")
