@@ -542,10 +542,10 @@ write.csv(facilities_senate,"Downloads/facilities_senate.csv")
 
 #Announced Manufacturing Investment by State
 facilities_state <- facilities %>%
-  filter(Segment=="Manufacturing") %>%
-  group_by(State) %>%
-  summarize_at(vars(Total_Facility_CAPEX_Estimated),sum,na.rm=T) %>%
-  mutate(share=Total_Facility_CAPEX_Estimated/sum(Total_Facility_CAPEX_Estimated)*100) %>%
+  filter(as.Date(Announcement_Date)>"2022-08-15") %>%
+  group_by(State,Company,Segment,Technology) %>%
+  summarize_at(vars(Estimated_Total_Facility_CAPEX),sum,na.rm=T) %>%
+  mutate(share=Estimated_Total_Facility_CAPEX/sum(Estimated_Total_Facility_CAPEX)*100) %>%
   arrange(desc(share)) %>%
   slice_max(order_by=share,n=12) %>%
   write.csv('Downloads/facilities_man_state.csv')

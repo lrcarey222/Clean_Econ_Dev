@@ -1,14 +1,10 @@
 #GDP R Script
 
-# State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "MT"  # Replace with any US state abbreviation
-state_name <- "Montana"  # Replace with the full name of any US state
-
 #Set the Working Directory to your Username and update output folder for saved charts etc
 setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
-#GDP by Industry----------------------------
+#Annual GDP by Industry----------------------------
 url <- "https://apps.bea.gov/regional/zip/SAGDP.zip"
 temp_zip <- tempfile(fileext = ".zip")
 download(url, temp_zip, mode = "wb")
@@ -16,12 +12,22 @@ temp_dir <- tempdir()
 unzip(temp_zip, exdir = temp_dir)
 files <- list.files(temp_dir, full.names = TRUE)
 
-gdp_ind <- read.csv(files[grepl("SAGDP9N__ALL_AREAS_1997_2023.csv", files)], stringsAsFactors = FALSE)
+gdp_ind_a <- read.csv(files[grepl("SAGDP9N__ALL_AREAS_1997_2023.csv", files)], stringsAsFactors = FALSE)
+
+#Quarterly GDP by Industry----------------------------
+url <- "https://apps.bea.gov/regional/zip/SQGDP.zip"
+temp_zip <- tempfile(fileext = ".zip")
+download(url, temp_zip, mode = "wb")
+temp_dir <- tempdir()
+unzip(temp_zip, exdir = temp_dir)
+files <- list.files(temp_dir, full.names = TRUE)
+
+gdp_ind_q <- read.csv(files[grepl("SQGDP9__ALL_AREAS_2005_2024.csv", files)], stringsAsFactors = FALSE)
 
 #Make relevant columns numeric and add GDP growth variable
 years <- 1997:2023
 year_cols <- paste0("X", years)
-gdp_ind <- gdp_ind %>%
+gdp_ind <- gdp_ind_a %>%
   mutate(across(all_of(year_cols), ~ as.numeric(gsub(",", "", .)))) %>%
   mutate(gdp_growth_1722 = (X2022 - X2017) / X2017 * 100,
          gdp_growth_1823 = (X2023 - X2018) / X2018 * 100,
@@ -32,6 +38,8 @@ gdp_state_total<-gdp_ind %>%
   filter(Description=="All industry total ")%>%
   mutate(fips=as.numeric(GeoFIPS)) %>%
   filter(fips<60000)
+
+write.csv(gdp_state_total,"Downloads/gdp_state.csv")
 
 #GDP Growth Map
 us_states<-usmap::us_map(regions = "states")

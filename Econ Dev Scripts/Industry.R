@@ -150,3 +150,12 @@ asm_dw<- asm_22 %>%
   filter(YEAR=="2021",
          Region==division_of_interest$Region)  %>%
   write.csv(paste0(output_folder,"/asm_dw.csv"))
+
+
+
+#Natural Gas Pipeline
+pipeline_counties<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/natural_gas_pipeline_counties.csv') 
+#CO2 Pipeline
+co2_pipeline_counties<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/co2_pipeline_counties.csv') 
+#CO2 Storage Potential
+co2_storage_counties<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/co2_storage_counties.csv') 

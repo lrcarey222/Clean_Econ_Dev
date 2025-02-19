@@ -7,8 +7,8 @@
 
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbreviation <- "MT"  # Replace with any US state abbreviation
-state_name <- "Montana"  # Replace with the full name of any US state
+state_abbreviation <- "WY"  # Replace with any US state abbreviation
+state_name <- "New Mexico"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
 great_falls<-EAs %>%
@@ -20,6 +20,62 @@ great_falls<-EAs %>%
 #Make a region_id for your state/region of interest
 region_id <- us_counties %>%
   filter(fips %in% great_falls$FIPS) 
+
+
+#BLS QCEW Data
+
+install.packages("blsAPI")
+library(blsAPI)
+install_github('mikeasilva/blsAPI')
+
+#load in QCEW data
+
+
+#New Mexico example - Annual, Statewide
+state_fips<-states_simple %>%
+  filter(abbr==state_abbreviation) 
+
+years<-2014:2023
+
+all_years_data <- list()
+for (yr in years){
+  NMdata <- blsQCEW('Area', year=yr, quarter='a', area=paste0(state_fips$fips,'000'))
+  
+  all_years_data[[yr]]<-NMdata
+}
+
+NM_combined_data <- do.call(rbind, all_years_data)
+
+available_NMdata <- NM_combined_data %>% filter(disclosure_code != "N",
+                                      own_code == 5)
+USdata <- blsQCEW('Area', year=yr, quarter='a', area='US000')
+
+#Annual, County-level
+
+# Filter for counties in New Mexico (state abbreviation NM)
+state_counties <- county_gdp %>%
+  mutate(
+    GeoName = str_trim(GeoName),
+    state_fips = substr(GeoName, nchar(GeoName) - 1, nchar(GeoName))
+  ) %>%
+  filter(state_fips == "NM")  # Replace "NM" with the actual abbreviation for New Mexico if needed
+
+# Initialize an empty list to store results for each county
+all_county_data <- list()
+
+# Loop through each county GeoFips and pull data
+for (county in state_counties$GeoFips) {
+  # Pull data for the county
+  NMdata_county <- blsQCEW('Area', year = '2023', quarter = 'a', area = county)
+  
+  # Append the result to the list
+  all_county_data[[county]] <- NMdata_county
+}
+
+# Combine all data frames into one
+NM_combined_data <- do.call(rbind, all_county_data)
+
+
 
 #County Business Patterns-------------------------------
 cbp_2022 <- getCensus(
@@ -711,12 +767,13 @@ write.csv(state_spec_1,'C:/Users/LCarey.RMI/Downloads/state_spec_1.csv')
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/'
 file_path <- paste0(destination_folder, "USEER 2024 Public Data.xlsx")
 
-state_useer <- read_excel(file_path, sheet = 7,skip=6)
+state_useer <- read_excel(file_path, sheet = 7,skip=6) %>%
+  pivot_longer(cols=c("Solar":"Did not hire"),names_to="category") 
+write.csv(state_useer %>%
+            distinct(category),"Downloads/state_useer_cat.csv")
 
-state_useer <- state_useer %>%
-  pivot_longer(cols=c("Solar":"Did not hire")) %>%
-  mutate(category="TBD",
-         category=ifelse(name %in% 
+state_useer_sum <- state_useer %>%
+  mutate(category=ifelse(name %in% 
                            c("Solar",
                              "Wind",
                              "Traditional hydropower",

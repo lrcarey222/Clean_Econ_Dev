@@ -1,4 +1,8 @@
 #Generic Setup for CRED analysis
+
+raw_data<-"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/"
+
+
 #Set State of Interest
 state_name <- "Montana"
 state_abbreviation <- "MT"
@@ -73,7 +77,7 @@ Sys.setenv(CENSUS_KEY='0b3d37ac56ab19c5a65cbc188f82d8ce5b36cfe6')
 #Google API
 register_google(key ="AIzaSyBQFZhv1jZWHejy4BCdI5kb3JN8zfO62Wc")
 #BLS API
-#bls_api_key("c5294b721a354d5da7727fc5e7a1bf30")
+blsAPI("c5294b721a354d5da7727fc5e7a1bf30")
 #BEA API
 beaKey <- "B163ADB6-C048-4D1F-A065-33D642873C1B"
 

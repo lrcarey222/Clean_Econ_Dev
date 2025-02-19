@@ -719,6 +719,8 @@ ggplot(data=region_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) 
   theme_classic()+
   scale_fill_manual(values = rmi_palette)
 
+
+
 #State-Level Industrial Electricity Expenditure & Consumption out to 2050 from NREL Estimates---------------------------
 state_pop <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/demographics_baseline_state.csv")
 
@@ -841,6 +843,48 @@ eia_sales <- read_excel(file_path, sheet = 1,skip=2)
 ind_price_m <- eia_sales %>%
   mutate(ind_price_m=`Cents/kWh...16`) %>%
   select(State,Year,Month,ind_price_m)
+
+ind_price_a<-ind_price_m %>%
+  group_by(State,Year) %>%
+  summarize(across(c(ind_price_m),mean,na.rm=T))
+
+#Natural Gas Prices--------------
+#https://www.eia.gov/dnav/ng/ng_pri_sum_a_epg0_pin_dmcf_m.htm
+url <- 'https://www.eia.gov/dnav/ng/xls/NG_PRI_SUM_A_EPG0_PIN_DMCF_M.xls'
+destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
+file_path <- paste0(destination_folder, "eia_gas.xls")
+downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
+eia_gas <- read_excel(file_path, sheet = 2,skip=2)
+
+library(dplyr)
+library(stringr)
+
+# Clean column names
+clean_colnames <- function(names) {
+  names %>%
+    str_remove_all(" Natural Gas Industrial Price \\(Dollars per Thousand Cubic Feet\\)") %>%
+    str_trim()
+}
+
+# Apply to dataframe
+colnames(eia_gas) <- c("Date", clean_colnames(colnames(eia_gas)[-1]))
+
+eia_gas<-pivot_longer(eia_gas,cols=c(`United States`:`Wyoming`),names_to="state",values_to = "dollars_mcf")
+eia_gas<-left_join(eia_gas,census_divisions,by=c("state"="State"))
+
+eia_gas_year<-eia_gas %>%
+  mutate(year=substr(Date,1,4)) %>%
+  group_by(Region,Division,state,year) %>%
+  summarize(across(c(dollars_mcf),mean,na.rm=T))
+
+eia_gas_division_year<-eia_gas %>%
+  mutate(year=substr(Date,1,4)) %>%
+  group_by(Region,Division,year) %>%
+  summarize(across(c(dollars_mcf),mean,na.rm=T))
+
+ggplot(data=eia_gas_division_year,aes(x=year,y=dollars_mcf,group=Division,color=Division))+
+  geom_line()+
+  theme_classic()
 
 
 #EIA Disruption & Reliability Data-------------------------------
