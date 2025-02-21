@@ -1,12 +1,6 @@
-#Industry Prioritization Matrix
+##Industry Prioritization Matrix##
 
-#Clean Industry NAICS
-clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>% select(-X)
-
-
-#Employment - Location Quotients, Employment Change------------------------------------------
-
-# Libraries
+# Libraries-----------------
 library(httr)
 library(data.table)
 library(magrittr)
@@ -15,9 +9,21 @@ library(dplyr)
 library(stringr)
 library(tidyr)
 
+#Adjust folder locations as necessary----------------------------------
+
+setwd("C:/Users/LCarey/")
+raw_data<-"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/"
+acre_data<-"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data"
+
+#Clean Industry NAICS codes and industry category crosswalk
+clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>% select(-X)
+
+
+#Employment - Location Quotients, Employment Change------------------------------------------
+
 # ----- Set State Parameter -----
-state_name <- "New Mexico" #Change to desired state full name
-state_abbr <- "NM"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
+state_name <- "Pennsylvania" #Change to desired state full name
+state_abbr <- "PA"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
 state_fips <- c(
   "AL"="01", "AK"="02", "AZ"="04", "AR"="05", "CA"="06", "CO"="08", "CT"="09",
   "DE"="10", "FL"="12", "GA"="13", "HI"="15", "ID"="16", "IL"="17", "IN"="18",
@@ -216,9 +222,10 @@ ind_emp_combined15 <- left_join(US_ind_emp15, state_ind_emp15, by = c("clean_ind
 # and the changes from 2015 to 2023, respectively.
 
 
+
 #Feasibility------------------------
 
-#feas<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Clean-growth-project/raw/ClimateandEconomicJusticeTool/feasibility_geo.csv')
+#feas<-read.csv(paste0(acre_data,/Clean-growth-project/raw/ClimateandEconomicJusticeTool/feasibility_geo.csv'))
 
 feas_state<-feas %>%
   filter(geo=="State",
@@ -236,13 +243,11 @@ feas_state<-feas %>%
 
 
 #Clean investment Monitor Data---------------------------
-investment_categories<-investment %>%
-  select(Technology,Segment)%>%
-  distinct()
-write.csv(investment_categories,"Downloads/invest_categories.csv")
-eco_eti_categories<-eco_eti_2 %>%
-  select(clean_industry,Production.Phase)%>%
-  distinct()
+investment_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/extended_CIM_data/quarterly_actual_investment.csv')
+facilities_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/manufacturing_energy_and_industry_facility_metadata.csv')
+investment <- read.csv(investment_data_path, skip=5)
+facilities <- read.csv(facilities_data_path, skip=5)
+
 CIM_eco_eti<-read.csv(paste0(raw_data,"CIM_eco_eti_invest_categories.csv"))
 
 investment_eco<-investment %>%
@@ -275,7 +280,7 @@ facilities_eco <-facilities %>%
 
 
 #USEER Employment Data ---------------------------------
-useer_eco <- read.csv("Downloads/state_useer_cat.csv")
+useer_eco <- read.csv(paste0(raw_data,"/state_useer_cat.csv"))
 useer_eco<-useer_eco %>%
   filter(clean_industry != "")
 
@@ -306,8 +311,83 @@ supplycurve_state <- supplycurve_geo %>%
   mutate(clean_industry=ifelse(clean_industry=="Wind","Wind Energy",clean_industry))
 
 
+#Federal Policy Support---------------------------------
+federal_support <- clean_industry_naics %>%
+  distinct(clean_industry,Production.Phase) %>%
+  mutate(fed_support = ifelse(clean_industry == "Solar" & 
+                                Production.Phase == "Operations",1,0),
+         fed_support = ifelse(clean_industry == "Wind" & 
+                                Production.Phase == "Operations",1,fed_support),
+         fed_support = ifelse(clean_industry == "Solar" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Wind" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Batteries" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Inverters" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Green Hydrogen" & 
+                                Production.Phase == "Operations",1,fed_support),
+         fed_support = ifelse(clean_industry == "Nuclear" & 
+                                Production.Phase == "Operations",1,fed_support),
+         fed_support = ifelse(clean_industry == "Critical Minerals" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Geothermal" & 
+                                Production.Phase == "Operations",1,fed_support),
+         fed_support = ifelse(clean_industry == "Biofuels" & 
+                                Production.Phase == "Manufacturing",1,fed_support),
+         fed_support = ifelse(clean_industry == "Energy Storage" & 
+                                Production.Phase == "Operations",1,fed_support)
+  )
+
+#State Policy Support
+xchange_state<-read.csv(paste0(raw_data,"xchange.csv")) %>% select(-X) %>%
+  filter(grepl("index",Policy),
+         abbr==state_abbr) 
+
+state_support <- clean_industry_naics %>%
+  distinct(clean_industry,Production.Phase) %>%
+  mutate(state_support = ifelse(clean_industry == "Solar" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Electricity"],""),
+         state_support = ifelse(clean_industry == "Wind" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Electricity"],state_support),
+         state_support = ifelse(clean_industry == "Green Hydrogen" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Industry"],state_support),
+         state_support = ifelse(clean_industry == "Nuclear" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Electricity"],state_support),
+         state_support = ifelse(clean_industry == "Geothermal" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Electricity"],state_support),
+         state_support = ifelse(clean_industry == "Biofuels" & 
+                                Production.Phase == "Manufacturing",xchange_state$value[xchange_state$Topic == "Industry"],state_support),
+         state_support = ifelse(clean_industry == "Energy Transition Metals" & 
+                                  Production.Phase == "Manufacturing",xchange_state$value[xchange_state$Topic == "Industry"],state_support),
+         state_support = ifelse(clean_industry == "Energy Storage" & 
+                                Production.Phase == "Operations",xchange_state$value[xchange_state$Topic == "Electricity"],state_support),
+         state_support = ifelse(clean_industry == "Transmission & Distribution" & 
+                                  Production.Phase == "Construction",xchange_state$value[xchange_state$Topic == "Electricity"],state_support),
+         state_support = ifelse(clean_industry == "Energy Efficient Heating/Cooling",xchange_state$value[xchange_state$Topic == "Buildings"],state_support),
+         state_support = ifelse(clean_industry == "Energy Efficient Lighting",xchange_state$value[xchange_state$Topic == "Buildings"],state_support),
+         state_support = ifelse(clean_industry == "Energy Efficient Appliances",xchange_state$value[xchange_state$Topic == "Buildings"],state_support))
+
+
 #Technology Readiness from IEA -----------------------------------
 iea_cleantech_sector<-read.csv(paste0(raw_data,"iea_cleantech_sector.csv"))
+
+#National Investment from CIM----------------------
+
+investment_national<-investment %>%
+  left_join(CIM_eco_eti,by=c("Technology","Segment")) %>%
+  mutate(clean_industry=ifelse(Technology=="Other" & Subcategory=="Geothermal","Geothermal",clean_industry),
+         Production.Phase=ifelse(clean_industry=="Geothermal","Operations",Production.Phase)) %>%
+  filter(clean_industry!= "") %>%
+  mutate(year=as.numeric(substr(quarter,1, 4))) %>%
+  group_by(clean_industry,Production.Phase,year) %>%
+  summarize(value=sum(Estimated_Actual_Quarterly_Expenditure,na.rm=T),
+            .groups='drop') %>%
+  pivot_wider(names_from="year",values_from='value') %>%
+  mutate(growth_2224=(`2024`-`2022`)/`2022`*100) %>%
+  rename("inv_24"="2024") %>%
+  select(clean_industry,Production.Phase,growth_2224,inv_24)
 
 #Putting the Matrix Together------------------
 ind_matrix<-left_join(ind_emp_combined15,feas_state,by=c("clean_industry","Production.Phase")) %>%
@@ -327,38 +407,45 @@ ind_matrix<-left_join(ind_emp_combined15,feas_state,by=c("clean_industry","Produ
                    cost=51-cost
                    ),by=c("clean_industry","Production.Phase")) %>%
   left_join(iea_cleantech_sector %>%
-              select(-X),by=c("clean_industry"="rmi_sector"))
+              select(-X),by=c("clean_industry"="rmi_sector")) %>%
+  left_join(federal_support,by=c("clean_industry","Production.Phase")) %>%
+  left_join(state_support,by=c("clean_industry","Production.Phase")) 
 
 
-#Prioritization Index-----------------------------------------
+#Normalized Matrix & Index----------------------------------------- 
 normalized_ind_matrix <- ind_matrix %>%
   ungroup() %>%
   select(-state_ind_emp15, -consolidated_ind_lq_2015) %>%
+  # Replace infinite values with the column max and NAs with the column min (only on numeric cols)
   mutate(across(
     where(is.numeric),
     ~ case_when(
       is.infinite(.) ~ max(.[!is.infinite(.)], na.rm = TRUE),
-      is.na(.)       ~ 0,
+      is.na(.)       ~ min(.[!is.infinite(.)], na.rm = TRUE),
       TRUE           ~ .
     )
   )) %>%
-  # Normalize within each geo group (using na.rm = TRUE)
+  # Normalize specific columns on an external scale (1-50 becomes 0-1)
+  mutate(
+    potential    = (potential    - 1) / (50 - 1),
+    cost         = (cost         - 1) / (50 - 1),
+    inv_gdp_rank = (inv_gdp_rank - 1) / (50 - 1)
+  ) %>%
+  # Normalize all other numeric columns (excluding the externally normalized ones)
   mutate(across(
-    where(is.numeric),
-    ~ (. - min(., na.rm = TRUE)) /
-      (max(., na.rm = TRUE) - min(., na.rm = TRUE))
+    .cols = setdiff(names(select(., where(is.numeric))), c("potential", "cost", "inv_gdp_rank")),
+    ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE))
   )) %>%
   rowwise() %>%
   mutate(
+    # Calculate index, giving density 3× (or 4× in this code) weight if non-zero
     index = {
       row_vals <- c_across(where(is.numeric))
-      if("density" %in% names(row_vals)) {
-        if(row_vals[["density"]] != 0) {
-          # Include density three times if it is non-zero
+      if ("density" %in% names(row_vals)) {
+        if (row_vals[["density"]] != 0) {
           other_vals <- row_vals[names(row_vals) != "density"]
-          new_vals <- c(other_vals, rep(row_vals[["density"]], 3))
+          new_vals <- c(other_vals, rep(row_vals[["density"]], 4))
         } else {
-          # Exclude density if it is zero
           new_vals <- row_vals[names(row_vals) != "density"]
         }
       } else {
@@ -368,17 +455,33 @@ normalized_ind_matrix <- ind_matrix %>%
     }
   ) %>%
   ungroup() %>%
+  # Final normalization for all numeric columns except our externally normalized ones
   mutate(across(
-    where(is.numeric),
-    ~ (. - min(., na.rm = TRUE)) /
-      (max(., na.rm = TRUE) - min(., na.rm = TRUE))
+    .cols = setdiff(names(select(., where(is.numeric))), c("potential", "cost", "inv_gdp_rank")),
+    ~ (. - min(., na.rm = TRUE)) / (max(., na.rm = TRUE) - min(., na.rm = TRUE))
   ))
 
+#Final Matrix----------------------------
 ind_matrix_final <- left_join(ind_matrix,normalized_ind_matrix %>%
                            select(clean_industry,Production.Phase,index),by=c("clean_industry","Production.Phase")) %>%
-  #group_by(Production.Phase,state_ind_emp) %>%
-  #filter(n() < 2) %>%
+  group_by(Production.Phase,state_ind_emp,potential) %>%
+  filter(n() < 2) %>%
   ungroup() %>%
   arrange(desc(index))
 
+#Write to CSV----------------------------------------
+write.csv(ind_matrix_final %>%
+            mutate(across(where(is.numeric), ~ ifelse(is.na(.), 0, .))) %>%
+            select(clean_industry,
+                   Production.Phase,
+                   index,
+                   density,
+                   consolidated_ind_lq,
+                   state_ind_emp,
+                   Estimated_Actual_Quarterly_Expenditure,
+                   Estimated_Total_Facility_CAPEX,
+                   potential,
+                   cost,
+                   trl2023,
+                   pci),paste0("Downloads/ind_matrix_",state_abbr,".csv"))
 
