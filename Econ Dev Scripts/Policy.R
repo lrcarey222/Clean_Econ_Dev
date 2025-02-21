@@ -448,7 +448,9 @@ ggsave(paste0(output_folder,"/",state_abbreviation,"_ira_provisions.png"),plot=s
 xchange <- read.csv("C:/Users/LCarey/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange.csv")
 xchange_pol_index <- read.csv("C:/Users/LCarey/OneDrive - RMI/Documents/Data/US Maps etc/Policy/xchange_climate_policy_index.csv")
 
+write.csv(xchange,paste0(raw_data,"xchange.csv"))
 write.csv(xchange_pol_index,"Downloads/xchange_pol.csv")
+
 
 xchange_label<-xchange_pol_index %>%
   filter(region %in% region_abbrv$region) %>%
