@@ -22,8 +22,10 @@ clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>
 #Employment - Location Quotients, Employment Change------------------------------------------
 
 # ----- Set State Parameter -----
-state_name <- "Pennsylvania" #Change to desired state full name
-state_abbr <- "PA"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
+
+state_name <- "New Mexico" #Change to desired state full name
+state_abbr <- "NM"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
+
 state_fips <- c(
   "AL"="01", "AK"="02", "AZ"="04", "AR"="05", "CA"="06", "CO"="08", "CT"="09",
   "DE"="10", "FL"="12", "GA"="13", "HI"="15", "ID"="16", "IL"="17", "IN"="18",
@@ -245,8 +247,11 @@ feas_state<-feas %>%
 #Clean investment Monitor Data---------------------------
 investment_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/extended_CIM_data/quarterly_actual_investment.csv')
 facilities_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/manufacturing_energy_and_industry_facility_metadata.csv')
+socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv'
+
 investment <- read.csv(investment_data_path, skip=5)
 facilities <- read.csv(facilities_data_path, skip=5)
+socioecon <- read.csv(socioeconomics_data_path, skip=5)
 
 CIM_eco_eti<-read.csv(paste0(raw_data,"CIM_eco_eti_invest_categories.csv"))
 
@@ -280,6 +285,11 @@ facilities_eco <-facilities %>%
 
 
 #USEER Employment Data ---------------------------------
+destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/'
+file_path <- paste0(destination_folder, "USEER 2024 Public Data.xlsx")
+
+state_useer <- read_excel(file_path, sheet = 7,skip=6) %>%
+  pivot_longer(cols=c("Solar":"Did not hire"),names_to="category") 
 useer_eco <- read.csv(paste0(raw_data,"/state_useer_cat.csv"))
 useer_eco<-useer_eco %>%
   filter(clean_industry != "")
@@ -389,6 +399,121 @@ investment_national<-investment %>%
   rename("inv_24"="2024") %>%
   select(clean_industry,Production.Phase,growth_2224,inv_24)
 
+#Innovation Funding from ITIF-------------------------------------
+url <- 'https://cdn.sanity.io/files/03hnmfyj/production/77717b609392dedba6f8ba316ce16d6629bf6666.xlsx'
+temp_file <- tempfile(fileext = ".xlsx")
+GET(url = url, write_disk(temp_file, overwrite = TRUE))
+innov_state <- read_excel(temp_file, sheet = 3)  # 'sheet = 1' to read the first sheet
+innov_metro <- read_excel(temp_file, sheet = 4)  # 'sheet = 1' to read the first sheet
+innov_vars<- read_excel(temp_file, sheet = 1,skip=58)  # 'sheet = 1' to read the first sheet
+key_vars <-innov_vars %>% filter(Subindex %in% c("Knowledge Development and Diffusion (KDD)","Entrepreneurial Experimentation (EE)"))
+sectors <- c("bioenergy", "ccus", "efficiency", "geothermal", 
+             "grid", "hydrogen", "mfg", "nuclear", "solar", 
+             "storage", "transport", "water", "wind","all")
+
+# Build a regular expression that matches columns ending in one of the sectors.
+regex <- paste0("^(.*)_(", paste(sectors, collapse = "|"), ")$")
+
+# Pivot the data longer: keep 'year' and 'statecode' and split the other columns
+innov_state_long <- innov_state %>%
+  pivot_longer(
+    cols = matches(regex),
+    names_to = c("measure", "sector"),
+    names_pattern = regex
+  ) %>%
+  distinct(year,statecode,measure,sector,value) %>%
+  inner_join(innov_vars %>% 
+               filter(Subindex %in% c("Knowledge Development and Diffusion (KDD)","Entrepreneurial Experimentation (EE)")) %>%
+               select(`Variable Name`,Subindex),by=c("measure"="Variable Name"))%>% 
+  group_by(statecode,measure,Subindex,sector) %>%
+  summarize_at(vars(value),sum,na.rm=T)
+library(dplyr)
+
+# --- US-level normalization ---
+# Step 1.1: Compute the US-wide baseline (the "all" sector) for each measure & Subindex.
+us_denom <- innov_state_long %>%
+  filter(sector == "all") %>%
+  group_by(measure, Subindex) %>%
+  summarize(us_denom = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Step 1.2: For each (measure, sector, Subindex), sum values across states and compute the US norm.
+us_norm <- innov_state_long %>%
+  group_by(measure, sector, Subindex) %>%
+  summarize(us_value = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  left_join(us_denom, by = c("measure", "Subindex")) %>%
+  mutate(us_norm = us_value / us_denom) %>%
+  select(measure, sector, Subindex, us_norm)
+
+# --- State-level normalization ---
+# Step 2.1: Compute the state-level baseline (for sector == "all") for each state, measure, Subindex.
+state_denom <- innov_state_long %>%
+  filter(sector == "all") %>%
+  group_by(statecode, measure, Subindex) %>%
+  summarize(state_denom = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Step 2.2: Compute the state-level value for each (state, measure, sector, Subindex)
+# and calculate the state normalized value.
+state_norm <- innov_state_long %>%
+  group_by(statecode, measure, sector, Subindex) %>%
+  summarize(state_value = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  left_join(state_denom, by = c("statecode", "measure", "Subindex")) %>%
+  mutate(state_norm = state_value / state_denom)
+
+# --- Combine and create the state index ---
+# Step 3: For each (state, measure, sector, Subindex), merge the state and US norms and compute the ratio.
+combined <- state_norm %>%
+  left_join(us_norm, by = c("measure", "sector", "Subindex")) %>%
+  mutate(ratio = state_norm / us_norm)
+
+# Step 4: Now average the ratio within each state and Subindex.
+state_index <- combined %>%
+  group_by(statecode, Subindex, sector) %>%
+  summarize(index = mean(ratio, na.rm = TRUE), .groups = "drop")
+
+rdd_state_index <- state_index %>%
+  filter(Subindex == "Knowledge Development and Diffusion (KDD)",
+         sector != "all") 
+
+state_sector_norm <- rdd_state_index %>%
+  group_by(Subindex, sector) %>%
+  mutate(min_val = min(index, na.rm = TRUE),
+         max_val = max(index, na.rm = TRUE),
+         norm_0_1 = if_else(max_val == min_val, 0, (index - min_val) / (max_val - min_val))) %>%
+  ungroup()
+
+
+state_sector_norm <- state_sector_norm %>% 
+  select(statecode,sector,norm_0_1) %>%
+  rename("RDD_specialization"="norm_0_1") %>%
+  mutate(clean_industry=ifelse(sector=="bioenergy","Biofuels",""),
+         clean_industry=ifelse(sector=="ccus","Carbon Capture",clean_industry),
+         clean_industry=ifelse(sector=="geothermal","Geothermal",clean_industry),
+         clean_industry=ifelse(sector=="grid","Transmission & Distribution",clean_industry),
+         clean_industry=ifelse(sector=="efficiency","Energy Efficient Appliances|Energy Efficient Heating/Cooling|Energy Efficient Lighting",clean_industry),
+         clean_industry=ifelse(sector=="hydrogen","Green Hydrogen",clean_industry),
+         clean_industry=ifelse(sector=="nuclear","Nuclear",clean_industry),
+         clean_industry=ifelse(sector=="solar","Solar",clean_industry),
+         clean_industry=ifelse(sector=="storage","Energy Storage|Batteries",clean_industry),
+         clean_industry=ifelse(sector=="transport","Electric Vehicles",clean_industry),
+         clean_industry=ifelse(sector=="wind","Wind Energy",clean_industry),
+         clean_industry=ifelse(sector=="water","Water Purification",clean_industry)) %>%
+  separate_rows(clean_industry, sep = "\\|")
+
+innov_state_sum <- innov_state_long %>%
+  filter(Subindex=="Knowledge Development and Diffusion (KDD)",
+         sector != "all") %>%
+  group_by(sector,measure) %>%
+  mutate(min_val = min(value, na.rm = TRUE),
+         max_val = max(value, na.rm = TRUE),
+         norm_0_1 = if_else(max_val == min_val, 0, (value - min_val) / (max_val - min_val))) %>%
+  group_by(statecode,sector) %>%
+  summarize_at(vars(norm_0_1),sum,na.rm=T) %>%
+  rename("RDD_total"="norm_0_1") %>%
+  left_join(state_sector_norm,by=c("statecode","sector")) %>%
+  filter(clean_industry != "") %>%
+  select(-sector)
+
+
 #Putting the Matrix Together------------------
 ind_matrix<-left_join(ind_emp_combined15,feas_state,by=c("clean_industry","Production.Phase")) %>%
   left_join(investment_eco %>%
@@ -409,7 +534,10 @@ ind_matrix<-left_join(ind_emp_combined15,feas_state,by=c("clean_industry","Produ
   left_join(iea_cleantech_sector %>%
               select(-X),by=c("clean_industry"="rmi_sector")) %>%
   left_join(federal_support,by=c("clean_industry","Production.Phase")) %>%
-  left_join(state_support,by=c("clean_industry","Production.Phase")) 
+  left_join(state_support,by=c("clean_industry","Production.Phase")) %>%
+  left_join(innov_state_sum %>%
+              filter(statecode==state_abbr) %>%
+              select(-statecode),by="clean_industry")
 
 
 #Normalized Matrix & Index----------------------------------------- 
