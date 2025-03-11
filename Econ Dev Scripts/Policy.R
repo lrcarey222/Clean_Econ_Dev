@@ -482,7 +482,7 @@ state_pol <- xchange_pol_index %>%
 #Economic Development Incentives----------------------------------
 
 #Good Jobs First Data
-gjf<- read.csv("C:/Users/LCarey/RMI/US Program - Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
+gjf<- read.csv("OneDrive - RMI/Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
 
 #State Totals -> 2019-2022
 gjf_statetotal_19<-gjf %>%

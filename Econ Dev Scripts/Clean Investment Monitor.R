@@ -20,9 +20,9 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 # Clean investment Monitor Data - Check it's the latest quarter available
-investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/quarterly_actual_investment.csv'
-facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/manufacturing_energy_and_industry_facility_metadata.csv'
-socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/socioeconomics.csv'
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/quarterly_actual_investment.csv'
+facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/manufacturing_energy_and_industry_facility_metadata.csv'
+socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv'
 
 # Read Data
 investment <- read.csv(investment_data_path, skip=5)

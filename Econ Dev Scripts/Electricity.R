@@ -51,7 +51,7 @@ state_counties<-us_counties %>%
 
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/september_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/january_generator2025.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -479,7 +479,7 @@ ea_eleccons <- county_eleccons %>% #group by Economic Area
   summarize_at(vars(Consumption.MMBtu),sum,na.rm=T)
 
 
-#Retail Service Territories from EIA Energy Atlas
+#Retail Service Territories from EIA Energy Atlas------------------------------------
   #https://atlas.eia.gov/datasets/f4cd55044b924fed9bc8b64022966097
 shapefile <- st_read("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Electric_Retail_Service_Territories.shp")
 
@@ -506,7 +506,7 @@ region_utility <- utilities %>%
   filter(GEOID %in% region_id$FIPS) 
 
 
-#EPA eGRID Data for plant-level generation
+#EPA eGRID Data for plant-level generation----------------------------------
 file_url <- 'https://www.epa.gov/system/files/documents/2024-01/egrid2022_data.xlsx'
 temp_file <- tempfile(fileext = ".xlsx")
 GET(url = file_url, write_disk(temp_file, overwrite = TRUE))
