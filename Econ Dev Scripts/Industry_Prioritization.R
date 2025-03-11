@@ -39,8 +39,17 @@ state_fips <- c(
 state_area <- paste0(state_fips[state_abbr], "000")
 
 #-------Set Region Paramater
-region<-c("",
-          "")
+region<-c("42003",
+          "42005",
+          "42007",
+          "42019",
+          "42051",
+          "42059",
+          "42063",
+          "42073",
+          "42125",
+          "42129"
+          )
 # ----- Download QCEW Data for 2023 and 2015 -----
 state_data   <- blsQCEW('Area', year = '2023', quarter = 'a', area = state_area)
 USdata       <- blsQCEW('Area', year = '2023', quarter = 'a', area = 'US000')
@@ -55,6 +64,20 @@ for(county in region){
   region_data<-rbind(region_data,df)
   
 }
+
+state_data <- region_data %>%
+  group_by(own_code, industry_code, agglvl_code, size_code, disclosure_code, year) %>%
+  summarize(
+    annual_avg_emplvl = sum(annual_avg_emplvl, na.rm = TRUE)) 
+
+state_data2<-region_data %>%
+  group_by(own_code, industry_code, agglvl_code, size_code, disclosure_code, year) %>%
+  summarize(across(c(lq_annual_avg_emplvl,avg_annual_pay,lq_annual_avg_wkly_wage), 
+                 weighted.mean, 
+                 w = .data$annual_avg_emplvl, 
+                 na.rm = TRUE))
+
+state_data<-left_join(state_data,state_data2,by=c("own_code", "industry_code", "agglvl_code", "size_code", "disclosure_code", "year"))
 
 # Filter to include only disclosed state data (own_code == 5)
 available_state_data   <- state_data   %>% filter(disclosure_code != "N", own_code == 5)
