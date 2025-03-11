@@ -238,7 +238,7 @@ feas_state<-feas %>%
   left_join(state_energy %>%
               mutate(detailed_naics=as.numeric(detailed_naics)),by=c("clean_industry","Production.Phase","X6.Digit.Code"="detailed_naics")) %>%
   group_by(clean_industry,Production.Phase) %>%
-  summarize(across(c(density,pci), 
+  summarize(across(c(industry_feas_perc,density,pci), 
                    weighted.mean, 
                    w = .data$annual_avg_emplvl, 
                    na.rm = TRUE))
@@ -271,6 +271,18 @@ investment_eco<-investment %>%
   group_by(clean_industry,Production.Phase) %>%
   mutate(inv_gdp=Estimated_Actual_Quarterly_Expenditure/real_gdp,
          inv_gdp_rank=rank(inv_gdp))
+
+division_eco <- census_divisions %>%
+  filter(State==state_name)
+
+write.csv(investment_eco %>%
+            ungroup() %>%
+            left_join(census_divisions %>%
+                        select(-State),by=c("State"="State.Code")) %>%
+            filter(Division %in% division_eco$Division) %>%
+            group_by(State,clean_industry) %>%
+            summarize(inv_gdp = sum(inv_gdp,na.rm=T)) %>%
+            pivot_wider(names_from=State,values_from=inv_gdp),"Downloads/investment_Division.csv")
 
 facilities_eco <-facilities %>%
   left_join(CIM_eco_eti,by=c("Technology","Segment")) %>%
@@ -350,7 +362,7 @@ federal_support <- clean_industry_naics %>%
                                 Production.Phase == "Operations",1,fed_support)
   )
 
-#State Policy Support
+#State Policy Support------------------------------------
 xchange_state<-read.csv(paste0(raw_data,"xchange.csv")) %>% select(-X) %>%
   filter(grepl("index",Policy),
          abbr==state_abbr) 
