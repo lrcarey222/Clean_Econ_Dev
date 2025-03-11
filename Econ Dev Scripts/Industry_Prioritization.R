@@ -38,11 +38,23 @@ state_fips <- c(
 )
 state_area <- paste0(state_fips[state_abbr], "000")
 
+#-------Set Region Paramater
+region<-c("",
+          "")
 # ----- Download QCEW Data for 2023 and 2015 -----
 state_data   <- blsQCEW('Area', year = '2023', quarter = 'a', area = state_area)
 USdata       <- blsQCEW('Area', year = '2023', quarter = 'a', area = 'US000')
 state_data15 <- blsQCEW('Area', year = '2015', quarter = 'a', area = state_area)
 USdata15     <- blsQCEW('Area', year = '2015', quarter = 'a', area = 'US000')
+
+region_data<-data.frame()
+
+for(county in region){
+  df   <- blsQCEW('Area', year = '2023', quarter = 'a', area = county)
+  
+  region_data<-rbind(region_data,df)
+  
+}
 
 # Filter to include only disclosed state data (own_code == 5)
 available_state_data   <- state_data   %>% filter(disclosure_code != "N", own_code == 5)
