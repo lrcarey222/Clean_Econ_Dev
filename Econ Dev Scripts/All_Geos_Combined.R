@@ -29,6 +29,7 @@ states_simple <- read.csv('OneDrive - RMI/Documents/Data/US Maps etc/Regions/rmi
 county_cbsa<-read.csv("OneDrive - RMI/Documents/Data/US Maps etc/Regions/csa_cbsa_county.csv",skip=2)
 EAs<-read_excel("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/BEA Economic Areas and Counties.xls",2)
 cd_119_county<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/cd_119_counties.csv")
+congress_119<-sf::st_read("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/congress_119.geojson") 
 
 #https://www.americancommunities.org/
 file_url <- 'https://www.americancommunities.org/wp-content/uploads/2023/08/2023-Typology-1.xlsx'
