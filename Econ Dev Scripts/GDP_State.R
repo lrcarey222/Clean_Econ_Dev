@@ -4,6 +4,17 @@
 setwd("C:/Users/LCarey.RMI/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
+#GDP by Industry
+url <- "https://apps.bea.gov/industry/Release/ZIP/GdpByInd.zip"
+temp_zip <- tempfile(fileext = ".zip")
+download(url, temp_zip, mode = "wb")
+temp_dir <- tempdir()
+unzip(temp_zip, exdir = temp_dir)
+files <- list.files(temp_dir, full.names = TRUE)
+
+gdp_ind_a <- read.csv(files[grepl("SAGDP9N__ALL_AREAS_1997_2023.csv", files)], stringsAsFactors = FALSE)
+
+
 #Annual GDP by Industry----------------------------
 url <- "https://apps.bea.gov/regional/zip/SAGDP.zip"
 temp_zip <- tempfile(fileext = ".zip")

@@ -39,23 +39,25 @@ state_fips <- c(
 state_area <- paste0(state_fips[state_abbr], "000")
 
 #-------Set Region Paramater
-region<-c("42003",
-          "42005",
-          "42007",
-          "42019",
-          "42051",
-          "42059",
-          "42063",
-          "42073",
-          "42125",
-          "42129"
-          )
+  region<-c("42003",
+            "42005",
+            "42007",
+            "42019",
+            "42051",
+            "42059",
+            "42063",
+            "42073",
+            "42125",
+            "42129"
+            )
 # ----- Download QCEW Data for 2023 and 2015 -----
 state_data   <- blsQCEW('Area', year = '2023', quarter = 'a', area = state_area)
 USdata       <- blsQCEW('Area', year = '2023', quarter = 'a', area = 'US000')
 state_data15 <- blsQCEW('Area', year = '2015', quarter = 'a', area = state_area)
 USdata15     <- blsQCEW('Area', year = '2015', quarter = 'a', area = 'US000')
 
+
+##OPTIONAL - If you want to look at a specific sub-state region, otherwise PLEASE IGNORE-------------------------------
 region_data<-data.frame()
 
 for(county in region){
@@ -79,7 +81,7 @@ state_data2<-region_data %>%
 
 state_data<-left_join(state_data,state_data2,by=c("own_code", "industry_code", "agglvl_code", "size_code", "disclosure_code", "year"))
 
-# Filter to include only disclosed state data (own_code == 5)
+# Filter to include only disclosed state data (own_code == 5)----------------------------
 available_state_data   <- state_data   %>% filter(disclosure_code != "N", own_code == 5)
 available_state_data15 <- state_data15 %>% filter(disclosure_code != "N", own_code == 5)
 
@@ -273,7 +275,7 @@ feas_state<-feas %>%
   left_join(state_energy %>%
               mutate(detailed_naics=as.numeric(detailed_naics)),by=c("clean_industry","Production.Phase","X6.Digit.Code"="detailed_naics")) %>%
   group_by(clean_industry,Production.Phase) %>%
-  summarize(across(c(industry_feas_perc,density,pci), 
+  summarize(across(c(annual_avg_emplvl,industry_feas_perc,density,pci), 
                    weighted.mean, 
                    w = .data$annual_avg_emplvl, 
                    na.rm = TRUE))
@@ -366,6 +368,11 @@ supplycurve_state <- supplycurve_geo %>%
   ) %>%
   mutate(Production.Phase="Operations") %>%
   mutate(clean_industry=ifelse(clean_industry=="Wind","Wind Energy",clean_industry))
+
+
+#Manufacturing Potential - Employment & Cost Data-------------------------
+state_data_man   <- blsQCEW('Area', year = '2024', quarter = '3', area = state_area)
+
 
 
 #Federal Policy Support---------------------------------
@@ -473,13 +480,14 @@ innov_state_long <- innov_state %>%
                filter(Subindex %in% c("Knowledge Development and Diffusion (KDD)","Entrepreneurial Experimentation (EE)")) %>%
                select(`Variable Name`,Subindex),by=c("measure"="Variable Name"))%>% 
   group_by(statecode,measure,Subindex,sector) %>%
-  summarize_at(vars(value),sum,na.rm=T)
-library(dplyr)
+  summarize_at(vars(value),sum,na.rm=T) %>%
+  group_by(measure,Subindex,sector) %>%
+  mutate(rank=rank(value))
 
 # --- US-level normalization ---
 # Step 1.1: Compute the US-wide baseline (the "all" sector) for each measure & Subindex.
 us_denom <- innov_state_long %>%
-  filter(sector == "all") %>%
+  filter(sector != "all") %>%
   group_by(measure, Subindex) %>%
   summarize(us_denom = sum(value, na.rm = TRUE), .groups = "drop")
 
@@ -494,7 +502,7 @@ us_norm <- innov_state_long %>%
 # --- State-level normalization ---
 # Step 2.1: Compute the state-level baseline (for sector == "all") for each state, measure, Subindex.
 state_denom <- innov_state_long %>%
-  filter(sector == "all") %>%
+  filter(sector != "all") %>%
   group_by(statecode, measure, Subindex) %>%
   summarize(state_denom = sum(value, na.rm = TRUE), .groups = "drop")
 
@@ -504,13 +512,17 @@ state_norm <- innov_state_long %>%
   group_by(statecode, measure, sector, Subindex) %>%
   summarize(state_value = sum(value, na.rm = TRUE), .groups = "drop") %>%
   left_join(state_denom, by = c("statecode", "measure", "Subindex")) %>%
-  mutate(state_norm = state_value / state_denom)
+  mutate(state_norm = state_value / state_denom) 
 
 # --- Combine and create the state index ---
 # Step 3: For each (state, measure, sector, Subindex), merge the state and US norms and compute the ratio.
 combined <- state_norm %>%
   left_join(us_norm, by = c("measure", "sector", "Subindex")) %>%
-  mutate(ratio = state_norm / us_norm)
+  mutate(ratio = state_norm / us_norm) %>%
+  group_by(measure,sector,Subindex) %>%
+  mutate(min_val = min(ratio, na.rm = TRUE),
+         max_val = max(ratio, na.rm = TRUE),
+         norm_0_1 = if_else(max_val == min_val, 0, (ratio - min_val) / (max_val - min_val))) 
 
 # Step 4: Now average the ratio within each state and Subindex.
 state_index <- combined %>%
@@ -519,19 +531,7 @@ state_index <- combined %>%
 
 rdd_state_index <- state_index %>%
   filter(Subindex == "Knowledge Development and Diffusion (KDD)",
-         sector != "all") 
-
-state_sector_norm <- rdd_state_index %>%
-  group_by(Subindex, sector) %>%
-  mutate(min_val = min(index, na.rm = TRUE),
-         max_val = max(index, na.rm = TRUE),
-         norm_0_1 = if_else(max_val == min_val, 0, (index - min_val) / (max_val - min_val))) %>%
-  ungroup()
-
-
-state_sector_norm <- state_sector_norm %>% 
-  select(statecode,sector,norm_0_1) %>%
-  rename("RDD_specialization"="norm_0_1") %>%
+         sector != "all") %>%
   mutate(clean_industry=ifelse(sector=="bioenergy","Biofuels",""),
          clean_industry=ifelse(sector=="ccus","Carbon Capture",clean_industry),
          clean_industry=ifelse(sector=="geothermal","Geothermal",clean_industry),
@@ -545,6 +545,18 @@ state_sector_norm <- state_sector_norm %>%
          clean_industry=ifelse(sector=="wind","Wind Energy",clean_industry),
          clean_industry=ifelse(sector=="water","Water Purification",clean_industry)) %>%
   separate_rows(clean_industry, sep = "\\|")
+
+state_sector_norm <- rdd_state_index %>%
+  group_by(Subindex, clean_industry) %>%
+  mutate(min_val = min(index, na.rm = TRUE),
+         max_val = max(index, na.rm = TRUE),
+         norm_0_1 = if_else(max_val == min_val, 0, (index - min_val) / (max_val - min_val))) %>%
+  ungroup()
+
+
+state_sector_norm <- state_sector_norm %>% 
+  select(statecode,sector,norm_0_1) %>%
+  rename("RDD_specialization"="norm_0_1") 
 
 innov_state_sum <- innov_state_long %>%
   filter(Subindex=="Knowledge Development and Diffusion (KDD)",

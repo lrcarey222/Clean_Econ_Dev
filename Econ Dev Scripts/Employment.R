@@ -151,7 +151,8 @@ total_emp_region <- total_emp %>%
 
 #Fossil Fuel Employment--------------------------
 fossil_codes <- tibble(
-  NAICS_code = c(211, 2121, 213111, 213112, 213113, 32411, 4861, 4862),
+  NAICS_code = c(211, 2121, 213111, 213112, 213113, 32411, 4861, 4862,221112
+                 ),
   Description = c("Oil and Gas Extraction",
                   "Coal Mining",
                   "Drilling Oil and Gas Wells",
@@ -159,7 +160,8 @@ fossil_codes <- tibble(
                   "Support Activities for Coal Mining",
                   "Petroleum Refineries",
                   "Pipeline Transportation of Crude Oil",
-                  "Pipeline Transportation of Natural Gas"))
+                  "Pipeline Transportation of Natural Gas",
+                  "Fossil Fuel Electric Power Generation"))
 
 fossil_emp_national <- cbp_22 %>%
   mutate(fossil = ifelse(NAICS2017 %in% fossil_codes$NAICS_code,1,0)) %>%
@@ -768,12 +770,13 @@ destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regi
 file_path <- paste0(destination_folder, "USEER 2024 Public Data.xlsx")
 
 state_useer <- read_excel(file_path, sheet = 7,skip=6) %>%
-  pivot_longer(cols=c("Solar":"Did not hire"),names_to="category") 
+  pivot_longer(cols=c("Solar":"Did not hire"),names_to="name") 
 write.csv(state_useer %>%
             distinct(category),"Downloads/state_useer_cat.csv")
 
 state_useer_sum <- state_useer %>%
-  mutate(category=ifelse(name %in% 
+  mutate(category="",
+         category=ifelse(name %in% 
                            c("Solar",
                              "Wind",
                              "Traditional hydropower",
@@ -861,7 +864,7 @@ state_useer_total <- state_useer %>%
          category="Totals")
 
 
-nat_useer_totals<- state_useer %>%
+nat_useer_totals<- state_useer_sum %>%
   group_by(name,category) %>%
   summarize_at(vars(value),sum,na.rm=T) 
 
@@ -954,3 +957,56 @@ state_useer_breakdown_ind <- state_clean_useer %>%
   write.csv(file.path(output_folder, paste0(state_abbreviation,"_useer_breakdown_ind", ".csv")))
   
   
+#BLS QCEW--------------------
+clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>% select(-X)
+fossil_codes<-fossil_codes %>% 
+  mutate(Production.Phase=ifelse(grepl("Electric",Description),"Operations",
+                                 ifelse(grepl("Refineries",Description),"Manufacturing","Input")),
+         Industry="Oil, Gas, and Coal")
+energy_codes<-clean_industry_naics %>%
+  filter(nchar(X6.Digit.Code)==6) %>%
+  rename("NAICS_code"="X6.Digit.Code",
+         "Description"="naics_desc",
+         "Industry"="clean_industry") %>%
+  rbind(fossil_codes)
+  
+
+
+# Loop through years, quarters, and industry codes
+us_qcew<-data.frame()
+for (year in c('2018','2019','2020','2021','2022','2023')) {
+      
+      # Try-catch to handle potential errors
+      current_data <- tryCatch({
+        # Pull data for the current combination
+        blsQCEW('Area', year = year, quarter = 'a', area = 'US000')
+        }, error = function(e) {
+        message("Error with year: ", year, ", quarter: ", quarter, ", industry: ", industry_code)
+        return(NULL)  # Return NULL if there's an error
+      })
+      
+      # Append data only if the request was successful
+      if (!is.null(current_data)) {
+        us_qcew <- bind_rows(us_qcew, current_data)
+      }
+      
+      # Pause to avoid hitting rate limits
+      Sys.sleep(1)
+    }
+
+US_energy_emp <-us_qcew %>%
+  filter(disclosure_code != "N", own_code == 5) %>%
+  mutate(industry_code=as.numeric(industry_code)) %>%
+  inner_join(energy_codes,by=c("industry_code"="NAICS_code")) %>%
+  select(Industry,Production.Phase,Description,industry_code,year,annual_avg_emplvl,annual_avg_wkly_wage)
+
+us_energy_ind_emp<-US_energy_emp %>%
+  filter(Industry != "Wave Energy") %>%
+  mutate(Industry=ifelse(Production.Phase=="Design_Engineering","Design & Engineering",Industry)) %>%
+  group_by(Industry,Production.Phase,year) %>%
+  summarize(emp=sum(annual_avg_emplvl,na.rm=T),
+            wage=weighted.mean(annual_avg_wkly_wage,w=annual_avg_emplvl,na.rm=T)) %>%
+  arrange(year) %>%
+  group_by(Industry,Production.Phase) %>%
+  mutate(emp_index=emp/emp[year=="2018"]*100) %>%
+  mutate(industry_full=paste(Industry,Production.Phase))

@@ -664,3 +664,134 @@ ggplot(data = sc_clim, aes(x = SC, y = climate_policy_index)) +
   geom_smooth(method="lm",se = FALSE) +  # Default aesthetics are sufficient; no need for aes(x~y)
   theme_minimal()
 
+
+#-------------State Budgets-------------------------------------------
+library(readxl)
+library(httr)
+library(jsonlite)
+library(bea.R)
+library(tidyverse)
+
+
+state_budgets<-read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",1)
+state_budg_key<-read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",2)
+
+state_key_TOT<-state_budg_key %>%
+  filter(grepl("_TOT",`COLUMN HEADING`))
+
+state_budget<- state_budgets %>%
+  rename(state="...2") %>%
+  select(YEAR,state,state_key_TOT$`COLUMN HEADING`)
+
+#Totals for all states form 2012 to 2022
+state_budg_1222 <- state_budget %>%
+  filter(YEAR>2011) %>%
+  summarize(across(c(ELSED_TOT:OTHCP_TOT),sum,na.rm=T)) %>%
+  pivot_longer(ELSED_TOT:OTHCP_TOT,names_to="key",values_to="value") %>%
+  inner_join(state_key_TOT,by=c("key"="COLUMN HEADING")) %>%
+  mutate(share=round(value/sum(value)*100,2)) %>%
+  write.csv("C:/Users/LCarey.RMI/Downloads/state_budget_spending_1222.csv")
+
+#Capital Spending by State
+state_key_cap<-state_budg_key %>%
+  filter(grepl("Capital Total",`...2`))
+
+state_cap_spend<-state_budgets %>%
+  rename(state="...2") %>%
+  select(YEAR,state, TOTAL_CAP) 
+
+#GDP by Industry by State
+library(bea.R)
+
+# Set your API key (replace "YOUR_API_KEY" with your actual API key)
+beaKey <- "B163ADB6-C048-4D1F-A065-33D642873C1B"
+
+# Retrieve linecodes as dataframe
+linecode <- beaParamVals(beaKey = beaKey, "Regional", "LineCode")$ParamValue
+
+SAGDP9N<-linecode %>% filter(str_detect(Desc,"SAGDP2N"))
+
+#GDP Growth
+result<-data.frame()
+
+for (i in c(1)) {
+  beaSpecs <- list(
+    'UserID' = beaKey,
+    'Method' = 'GetData',
+    'datasetname' = 'Regional',
+    'TableName' = 'SAGDP2N',
+    'LineCode' = i,
+    'GeoFIPS' = 'STATE',
+    'Frequency' = 'A',
+    'Year' = 'ALL',
+    'resultFormat' = 'json'
+  )
+  
+  # Make the API call and extract the desired data
+  api_result <- beaGet(beaSpecs)
+  
+  result<-rbind(result,api_result)
+}
+
+state_gdp_growth<-result %>%
+  mutate(growth_17_22 = round((DataValue_2022-DataValue_2017)/DataValue_2017*100,2))
+
+stategdp_long<-result %>%
+  pivot_longer(DataValue_2017:DataValue_2022,names_to="year",values_to="gdp") %>%
+  mutate(year = str_trim(year, side = "right")) %>%  # remove trailing white spaces
+  mutate(year = as.numeric(substr(year, nchar(year)-3, nchar(year)))) 
+
+state_cap_spend_1722<-state_cap_spend %>%
+  filter(YEAR>2016) %>%
+  inner_join(stategdp_long %>% select(GeoName,year,gdp),by=c("state"="GeoName","YEAR"="year")) %>%
+  mutate(cap_gdp = TOTAL_CAP/gdp*100)
+
+write.csv(state_cap_spend_1722 ,"C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/state_cap_spend_1722.csv")
+
+
+#-------------State Taxes----------------
+#https://www.census.gov/programs-surveys/stc/data/datasets.html
+census_stc <- read_excel(paste0(raw_data,"STC-Historical-DB.xlsx"),sheet=1,skip=1)
+
+census_stc <- census_stc %>%
+  rename("Year"="...1",
+         "State"="...2",
+         "Name"="...3",
+         "FY Ending Date"="...4") %>%
+  mutate(state_abbr=substr(Name,1,2))
+
+stc_1823 <- census_stc %>%
+  filter(Year %in% 2018:2023) %>%
+  group_by(state_abbr) %>%
+  mutate(across(`Total Taxes`:`Taxes NEC (T99)`, as.numeric)) %>%
+  summarize(total_tax=sum(`Total Taxes`,na.rm=T),
+            property_tax=sum(`Property Tax (T01)`,na.rm=T),
+            sales_receipt_tax=sum(`Tot Sales & Gr Rec Tax`,na.rm=T),
+            fuel_tax=sum(`Motor Fuels Tax (T13)`,na.rm=T),
+            total_income_tax=sum(`Total Income Taxes`,na.rm=T),
+            individual_income_tax=sum(`Individual Income Tax (T40)`,na.rm=T),
+            corp_income_tax=sum(`Corp Net Income Tax (T41)`,na.rm=T),
+            severance_tax=sum(`Severance Tax (T53)`,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(property_tax_rate=property_tax/total_tax*100,
+         sales_tax_rate=sales_receipt_tax/total_tax*100,
+         fuel_tax_rate=fuel_tax/total_tax*100,
+         income_tax_rate=total_income_tax/total_tax*100,
+         ind_income_tax_rate=individual_income_tax/total_tax*100,
+         corp_inc_tax_rate=corp_income_tax/total_tax*100,
+         severance_tax_rate=severance_tax/total_tax*100) %>%
+  select(state_abbr,property_tax_rate,sales_tax_rate,fuel_tax_rate,income_tax_rate,corp_inc_tax_rate,ind_income_tax_rate,severance_tax_rate) %>%
+  mutate(property_tax_lq=property_tax_rate/property_tax_rate[state_abbr=="US"],
+         sales_tax_lq=sales_tax_rate/sales_tax_rate[state_abbr=="US"],
+         fuel_tax_lq=fuel_tax_rate/fuel_tax_rate[state_abbr=="US"],
+         income_tax_lq=income_tax_rate/income_tax_rate[state_abbr=="US"],
+         corp_inc_tax_lq=corp_inc_tax_rate/corp_inc_tax_rate[state_abbr=="US"],
+         ind_income_tax_lq=ind_income_tax_rate/ind_income_tax_rate[state_abbr=="US"],
+         severance_tax_lq=severance_tax_rate/severance_tax_rate[state_abbr=="US"])
+
+state_toptax <- stc_1823 %>%
+  select(state_abbr,property_tax_lq,sales_tax_lq,fuel_tax_lq,income_tax_lq,corp_inc_tax_lq,ind_income_tax_lq,severance_tax_lq) %>%
+  pivot_longer(cols=c(property_tax_lq:severance_tax_lq),values_to="LQ") %>%
+  group_by(state_abbr) %>%
+  slice_max(order_by=LQ,n=1)
+

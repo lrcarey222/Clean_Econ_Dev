@@ -1,7 +1,7 @@
 #Fossil Fuels
 
 
-#Fossil Production - EIA Data\
+#Fossil Production - EIA Data------------------------
 
 #Natural Gas
 url<-'https://www.eia.gov/dnav/ng/xls/NG_PROD_SUM_A_EPG0_FGW_MMCF_M.xls'
@@ -64,7 +64,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_natgas_prod_plot", "
        height = 8,   # Height of the plot in inches
        dpi = 300)
 
-#Production in State
+#Production in State-----------------------------
 # Calculate the maximum date to use in the filter to avoid recalculating it for each row
 max_date <- max(nat_gas_prod$Date, na.rm = TRUE)
 
@@ -112,7 +112,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_plot_natgas_index", 
        dpi = 300)
 
 
-#Oil Production
+#Oil Production---------------------------
 url<-'https://www.eia.gov/dnav/pet/xls/PET_CRD_CRPDN_ADC_MBBL_M.xls'
 
 temp_file <- tempfile(fileext = ".xls")
@@ -218,7 +218,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_plot_oil_index", ".p
        dpi = 300)
 
 
-#Energy Production in a Net Zero Scenario
+#Energy Production in a Net Zero Scenario------------------------
 nza_energy_production<- nzap %>%
   #filter(scenario %in% c("REF","E+","E+RE+")) %>%
   drop_na(value) %>%
@@ -261,7 +261,7 @@ ggsave(file.path(output_folder, paste0(state_abbreviation,"_plot_nza_energyprod"
        height = 8,   # Height of the plot in inches
        dpi = 300)
 
-#Tax Revenues
+#Tax Revenues--------------------------------
 url<'https://www.rff.org/documents/4338/WP_24-01_Dataset.xlsx'
 
 tax_rev <- read_excel('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/rff_taxrev.xlsx', sheet = 2)
