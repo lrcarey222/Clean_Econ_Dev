@@ -1,8 +1,9 @@
 ###############################################################################
 #  ECONOMIC DEVELOPMENT & CLEANTECH DATA EXPLORER
-#  RMI Shiny Scatter  –  Ultra‑Robust, ZERO OMISSIONS  (April 2025)
+#  RMI Shiny Scatter  –  Cross‑Platform Ultra‑Robust (April 2025)
 ###############################################################################
-#  ▸ RMI‑branded responsive UI  (with logo)
+#  ▸ Runs on macOS **or** Windows (auto‑detects data path or prompts user)
+#  ▸ RMI‑branded responsive UI with logo
 #  ▸ Interactive scatter: colour & size mapping, trend‑line, zero‑value filter
 #  ▸ Advanced axis controls, CSV downloads, verbose logging
 ###############################################################################
@@ -14,7 +15,8 @@ options(stringsAsFactors = FALSE, warn = 1, width = 120)
 DEBUG_VERBOSE <- TRUE
 log_msg <- function(msg, level = "INFO") {
   if (!DEBUG_VERBOSE && identical(level, "DEBUG")) return(invisible())
-  message(sprintf("[%s] %s: %s", level, format(Sys.time(), "%Y‑%m‑%d %H:%M:%S"), msg), appendLF = TRUE)
+  message(sprintf("[%s] %s: %s", level, format(Sys.time(), "%Y‑%m‑%d %H:%M:%S"), msg),
+          appendLF = TRUE)
 }
 
 ## ── 1.  LIBRARIES ────────────────────────────────────────────────────────────
@@ -31,12 +33,36 @@ suppressPackageStartupMessages({
   purrr::walk(pkgs, ~log_msg(sprintf("Loaded: %s", .x), "DEBUG"))
 })
 
-## ── 2.  LOAD DATA ────────────────────────────────────────────────────────────
-file_path <- "~/Library/CloudStorage/OneDrive-RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/all_geo_complete_dataset.csv"
+## ── 2.  DATA PATH (DETECT macOS vs Windows) ──────────────────────────────────
+data_filename <- "all_geo_complete_dataset.csv"
 
-log_msg(sprintf("Verifying CSV at ‘%s’", file_path))
-if (!file.exists(path.expand(file_path))) stop("❌ CSV not found at: ", file_path)
+sys_os <- Sys.info()[["sysname"]]
+log_msg(sprintf("Detected OS: %s", sys_os), "DEBUG")
 
+if (identical(tolower(sys_os), "windows")) {
+  base_path <- file.path(Sys.getenv("USERPROFILE"),
+                         "OneDrive - RMI", "Documents - US Program",
+                         "6_Projects", "Clean Regional Economic Development",
+                         "ACRE", "Data", "Raw Data")
+} else {  # assume macOS / Linux
+  base_path <- file.path("~", "Library", "CloudStorage", "OneDrive-RMI",
+                         "Documents - US Program", "6_Projects",
+                         "Clean Regional Economic Development", "ACRE",
+                         "Data", "Raw Data")
+}
+
+file_path <- file.path(base_path, data_filename)
+
+if (!file.exists(path.expand(file_path))) {
+  log_msg(sprintf("Default path not found: %s", file_path), "WARN")
+  log_msg("Opening file chooser – please locate the CSV manually …", "INFO")
+  file_path <- file.choose()
+  if (!file.exists(file_path)) stop("❌ CSV file was not selected or does not exist.")
+}
+
+log_msg(sprintf("Using data file: %s", file_path))
+
+## ── 3.  LOAD DATA ────────────────────────────────────────────────────────────
 log_msg("Reading CSV …")
 geo_df <- tryCatch(
   read_csv(file_path, show_col_types = FALSE, progress = FALSE),
@@ -46,7 +72,7 @@ log_msg(sprintf("Loaded: %s rows × %s cols (%.1f MB)",
                 scales::comma(nrow(geo_df)), ncol(geo_df),
                 as.numeric(object.size(geo_df))/2^20))
 
-## ── 3.  IDENTIFIER COLUMN & GEO FILTER ───────────────────────────────────────
+## ── 4.  IDENTIFIER & GEO FILTER SETUP ────────────────────────────────────────
 possible_ids <- c("geo_name", "county_name", "msa_name")
 id_matches   <- intersect(possible_ids, names(geo_df))
 id_col <- if (length(id_matches)) id_matches[1] else NULL
@@ -56,12 +82,12 @@ geo_type_col   <- "geo"
 has_geo_filter <- geo_type_col %in% names(geo_df)
 geo_types      <- if (has_geo_filter) sort(unique(na.omit(geo_df[[geo_type_col]]))) else character(0)
 
-## ── 4.  NUMERIC COLUMNS ──────────────────────────────────────────────────────
+## ── 5.  NUMERIC COLUMNS ──────────────────────────────────────────────────────
 excluded_cols <- c("...1", "X", "geo_code")
 num_cols <- setdiff(names(geo_df)[vapply(geo_df, is.numeric, logical(1))], excluded_cols)
 if (length(num_cols) < 2) stop("❌ Need at least two numeric columns for plotting; found ", length(num_cols))
 
-## ── 5.  RMI BRAND COLOURS ────────────────────────────────────────────────────
+## ── 6.  RMI BRAND COLORS & CSS ───────────────────────────────────────────────
 rmi_colors <- list(
   blue_spruce = "#003B63",
   energy      = "#45CFCC",
@@ -69,66 +95,34 @@ rmi_colors <- list(
   chart_palette = c("#003B63", "#45CFCC", "#2b8cbe", "#7fcdbb", "#c7e9b4")
 )
 
-## ── 6.  RMI CSS ( FULL STRING ) ──────────────────────────────────────────────
 font_import <- "
 @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600;700&display=swap');
 "
 
-rmi_css <- paste0(
-  font_import, "
-
-:root{
-  --primary:", rmi_colors$blue_spruce, ";
-  --secondary:", rmi_colors$energy, ";
-  --text:", rmi_colors$basalt, ";
-  --text-light:#6c8792; --shadow:rgba(0,0,0,0.1);
-}
-
+rmi_css <- paste0(font_import, "
+:root{--primary:", rmi_colors$blue_spruce,";--secondary:",rmi_colors$energy,";--text:",rmi_colors$basalt,";--text-light:#6c8792;--shadow:rgba(0,0,0,0.1);}
 body{font-family:'Source Sans Pro',Helvetica,Arial,sans-serif;background:#fff;color:var(--text);line-height:1.6}
-h1,h2,h3,h4,h5,h6{font-weight:600;color:var(--primary)}
-label{font-weight:500;color:var(--primary)}
-
-.app-header{
-  display:flex;align-items:center;gap:20px;
-  background:var(--primary);color:#fff;padding:20px 30px;margin-bottom:30px;position:relative;overflow:hidden}
-.app-header .angle-decorator{
-  position:absolute;right:0;top:0;height:100%;width:70%;
-  clip-path:polygon(100% 0,0 0,100% 100%);
-  background:linear-gradient(135deg,transparent,var(--secondary) 150%);opacity:.3}
-.app-header h1{margin:0;font-weight:700;z-index:2;font-size:1.75rem}
-.app-header p{margin:0;opacity:.9;z-index:2}
+h1,h2,h3,h4,h5,h6{font-weight:600;color:var(--primary)} label{font-weight:500;color:var(--primary)}
+.app-header{display:flex;align-items:center;gap:20px;background:var(--primary);color:#fff;padding:20px 30px;margin-bottom:30px;position:relative;overflow:hidden}
+.app-header .angle-decorator{position:absolute;right:0;top:0;height:100%;width:70%;clip-path:polygon(100% 0,0 0,100% 100%);background:linear-gradient(135deg,transparent,var(--secondary) 150%);opacity:.3}
+.app-header h1{margin:0;font-weight:700;font-size:1.75rem;z-index:2} .app-header p{margin:0;opacity:.9;z-index:2}
 .app-header img.rmi-logo{height:45px;width:auto;z-index:2}
-
 .sidebar{background:#fff;padding:20px;border-right:1px solid #eee}
 .sidebar h3{border-bottom:2px solid var(--primary);padding-bottom:10px;margin-bottom:20px;color:var(--primary)}
-
 .form-control,.selectize-input{border:1px solid #e0e0e0;border-radius:3px;padding:8px 12px;transition:all .3s}
 .form-control:focus,.selectize-input.focus{border-color:var(--secondary);box-shadow:0 0 0 3px rgba(69,207,204,.25)}
 .btn-primary{background:var(--primary);border-color:var(--primary);color:#fff;border-radius:3px;font-weight:500;padding:8px 16px}
-.btn-primary:hover{background:var(--secondary);border-color:var(--secondary)}
-.download-button{margin-bottom:15px}
-
-.stat-card{background:#fff;border:1px solid #eee;border-left:4px solid var(--primary);
-           border-radius:3px;box-shadow:0 1px 3px var(--shadow);padding:20px;margin-bottom:20px;transition:transform .3s}
-.stat-card:hover{transform:translateY(-3px)}
-.stat-value{font-size:28px;font-weight:600;color:var(--primary);margin:0}
+.btn-primary:hover{background:var(--secondary);border-color:var(--secondary)} .download-button{margin-bottom:15px}
+.stat-card{background:#fff;border:1px solid #eee;border-left:4px solid var(--primary);border-radius:3px;box-shadow:0 1px 3px var(--shadow);padding:20px;margin-bottom:20px;transition:transform .3s}
+.stat-card:hover{transform:translateY(-3px)} .stat-value{font-size:28px;font-weight:600;color:var(--primary);margin:0}
 .stat-label{color:var(--text-light);font-size:14px;margin:0}
-
-.filter-tag{display:inline-block;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:3px;
-            padding:4px 12px;margin:0 8px 8px 0;font-size:13px;color:var(--primary)}
+.filter-tag{display:inline-block;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:3px;padding:4px 12px;margin:0 8px 8px 0;font-size:13px;color:var(--primary)}
 .active-filters{margin-bottom:15px}
-
-.accordion-toggle{cursor:pointer;padding:10px 15px;background:#f8f8f8;border:1px solid #e5e5e5;border-radius:3px;
-                  font-weight:500;color:var(--primary);display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.accordion-toggle:after{content:'+';font-size:18px;color:var(--primary)}
-.accordion-toggle.open:after{content:'−'}
-.accordion-content{padding:15px;border:1px solid #e5e5e5;border-top:none;border-radius:0 0 3px 3px;margin-top:-10px;
-                   margin-bottom:15px;display:none}
+.accordion-toggle{cursor:pointer;padding:10px 15px;background:#f8f8f8;border:1px solid #e5e5e5;border-radius:3px;font-weight:500;color:var(--primary);display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.accordion-toggle:after{content:'+';font-size:18px;color:var(--primary)} .accordion-toggle.open:after{content:'−'}
+.accordion-content{padding:15px;border:1px solid #e5e5e5;border-top:none;border-radius:0 0 3px 3px;margin-top:-10px;margin-bottom:15px;display:none}
 .accordion-toggle.open + .accordion-content{display:block}
-
-@media(max-width:767px){
-  .sidebar{border-right:none;border-bottom:1px solid #eee;margin-bottom:20px}
-}
+@media(max-width:767px){.sidebar{border-right:none;border-bottom:1px solid #eee;margin-bottom:20px}}
 ")
 
 ## ── 7.  SHINY UI ─────────────────────────────────────────────────────────────
@@ -141,7 +135,7 @@ ui <- fluidPage(
     tags$script(HTML("$(document).on('click','.accordion-toggle',function(){$(this).toggleClass('open');$(this).next('.accordion-content').slideToggle('fast');});"))
   ),
   div(class = "app-header",
-      img(src = "https://rmi.org/wp-content/uploads/2021/01/rmi_logo_stacked_tag_white.svg",
+      img(src = "https://rmi.org/wp-content/uploads/2021/08/rmi_logo_horitzontal_no_tagline.svg",
           class = "rmi-logo", alt = "RMI Logo"),
       div(class = "angle-decorator"),
       div(
@@ -202,13 +196,13 @@ ui <- fluidPage(
                 selectInput("size_var", "Size points by",
                             choices = c("None" = "none", num_cols), selected = "none"),
                 conditionalPanel("input.size_var != 'none'",
-                                 radioButtons("size_mode", "Size mode",
-                                              choices = c("Dynamic" = "dynamic", "Fixed" = "fixed"),
-                                              selected = "dynamic", inline = TRUE),
-                                 conditionalPanel("input.size_mode == 'fixed'",
-                                                  sliderInput("fixed_size", "Point size", 1, 10, 3, 0.5)),
-                                 conditionalPanel("input.size_mode == 'dynamic'",
-                                                  sliderInput("size_range", "Dynamic size range", 1, 20, c(3, 9), 0.5))
+                  radioButtons("size_mode", "Size mode",
+                               choices = c("Dynamic" = "dynamic", "Fixed" = "fixed"),
+                               selected = "dynamic", inline = TRUE),
+                  conditionalPanel("input.size_mode == 'fixed'",
+                    sliderInput("fixed_size", "Point size", 1, 10, 3, 0.5)),
+                  conditionalPanel("input.size_mode == 'dynamic'",
+                    sliderInput("size_range", "Dynamic size range", 1, 20, c(3, 9), 0.5))
                 ),
                 checkboxInput("show_trend", "Add trend line", FALSE),
                 conditionalPanel("input.show_trend",
@@ -269,25 +263,25 @@ ui <- fluidPage(
 ## ── 8.  SERVER LOGIC ─────────────────────────────────────────────────────────
 log_msg("Defining server …")
 server <- function(input, output, session) {
-  
+
   filtered_data <- reactive({
     df <- geo_df
     if (has_geo_filter && nzchar(input$geo_filter))
       df <- dplyr::filter(df, .data[[geo_type_col]] == input$geo_filter)
     df
   })
-  
+
   output$active_filters <- renderUI({
     if (has_geo_filter && nzchar(input$geo_filter))
       div(class = "active-filters",
           span("Active Filters: "),
           span(class = "filter-tag", paste("Geography:", input$geo_filter)))
   })
-  
+
   plot_data <- reactive({
     req(input$xvar, input$yvar)
     df <- filtered_data()
-    
+
     cols <- unique(c(input$xvar, input$yvar, id_col))
     if (input$color_var != "none") cols <- c(cols, input$color_var)
     if (input$size_var  != "none") cols <- c(cols, input$size_var)
@@ -299,24 +293,24 @@ server <- function(input, output, session) {
     }
     df
   })
-  
+
   correlation_data <- reactive({
     df <- plot_data()
     if (nrow(df) < 3) return(list(r = NA, p = NA, sig = FALSE))
     ct <- cor.test(df[[input$xvar]], df[[input$yvar]])
     list(r = unname(ct$estimate), p = ct$p.value, sig = ct$p.value < 0.05)
   })
-  
+
   output$total_obs        <- renderText(scales::comma(nrow(filtered_data())))
   output$displayed_points <- renderText(scales::comma(nrow(plot_data())))
   output$correlation_with_sig <- renderUI({
     cd <- correlation_data()
     if (is.na(cd$r)) return(h3("N/A", class = "stat-value"))
     badge <- if (cd$sig) span(class = "sig-badge sig", "Significant")
-    else span(class = "sig-badge not-sig", "Not significant")
+             else span(class = "sig-badge not-sig", "Not significant")
     div(h3(format(round(cd$r, 3), nsmall = 3), class = "stat-value"), badge)
   })
-  
+
   output$x_summary  <- renderPrint(summary(plot_data()[[input$xvar]]))
   output$y_summary  <- renderPrint(summary(plot_data()[[input$yvar]]))
   output$cor_analysis <- renderPrint({
@@ -327,9 +321,9 @@ server <- function(input, output, session) {
         "95% CI:", paste(round(ct$conf.int, 4), collapse = " to "), "\n",
         "p‑value:", format.pval(ct$p.value, digits = 4), "\n",
         "Significance:", if (cd$sig) "Statistically significant (p < 0.05)"
-        else       "Not statistically significant", "\n")
+                         else       "Not statistically significant", "\n")
   })
-  
+
   output$download_chart_data <- downloadHandler(
     filename = function() {
       paste0("rmi_chart_",
@@ -343,13 +337,12 @@ server <- function(input, output, session) {
     filename = function() paste0("rmi_full_dataset_", format(Sys.Date(), "%Y%m%d"), ".csv"),
     content  = function(file) write.csv(filtered_data(), file, row.names = FALSE)
   )
-  
+
   output$scatter_plot <- renderPlotly({
     df <- plot_data()
     if (nrow(df) < 2)
-      return(plotly_empty(type = "scatter") %>%
-               layout(title = "Insufficient data for plotting"))
-    
+      return(plotly_empty(type = "scatter") %>% layout(title = "Insufficient data for plotting"))
+
     tooltip <- paste0(
       if (!is.null(id_col)) paste0(id_col, ": ", df[[id_col]], "<br>") else "",
       input$xvar, ": ", df[[input$xvar]], "<br>",
@@ -357,14 +350,14 @@ server <- function(input, output, session) {
       if (input$color_var != "none") paste0("<br>", input$color_var, ": ", df[[input$color_var]]) else "",
       if (input$size_var  != "none") paste0("<br>", input$size_var,  ": ", df[[input$size_var]])  else ""
     )
-    
+
     p <- ggplot(df, aes(x = .data[[input$xvar]], y = .data[[input$yvar]], text = tooltip))
-    
+
     if (input$color_var != "none") {
       p <- p + aes(color = .data[[input$color_var]]) +
         scale_color_gradientn(colors = rmi_colors$chart_palette)
     }
-    
+
     if (input$size_var != "none" && input$size_mode == "dynamic") {
       p <- p + aes(size = .data[[input$size_var]]) +
         scale_size_continuous(range = input$size_range, guide = "legend") +
@@ -372,21 +365,21 @@ server <- function(input, output, session) {
     } else {
       p <- p + geom_point(alpha = input$point_opacity,
                           size = if (input$size_var != "none" && input$size_mode == "fixed")
-                            input$fixed_size else 1.8,
+                                   input$fixed_size else 1.8,
                           colour = if (input$color_var == "none") rmi_colors$blue_spruce else NULL)
     }
-    
+
     if (isTRUE(input$show_trend))
       p <- p + geom_smooth(method = input$trend_method, se = FALSE,
                            colour = rmi_colors$energy, linewidth = 1)
-    
+
     x_exp <- expansion(mult = input$x_expand); y_exp <- expansion(mult = input$y_expand)
     x_scale <- if (input$x_log) scale_x_log10(expand = x_exp) else scale_x_continuous(expand = x_exp)
     y_scale <- if (input$y_log) scale_y_log10(expand = y_exp) else scale_y_continuous(expand = y_exp)
     if (input$x_invert) x_scale <- scale_x_reverse(expand = x_exp)
     if (input$y_invert) y_scale <- scale_y_reverse(expand = y_exp)
     p <- p + x_scale + y_scale
-    
+
     p <- p + labs(
       x = input$xvar, y = input$yvar,
       title = paste(input$yvar, "vs.", input$xvar),
@@ -401,7 +394,7 @@ server <- function(input, output, session) {
         panel.grid.major = element_line(colour = "#f0f0f0"),
         panel.grid.minor = element_line(colour = "#f8f8f8")
       )
-    
+
     ggplotly(p, tooltip = "text") %>%
       layout(
         hovermode = "closest",
@@ -413,7 +406,7 @@ server <- function(input, output, session) {
              modeBarButtonsToRemove = c("sendDataToCloud", "autoScale2d", "hoverClosestCartesian"),
              toImageButtonOptions = list(format = "png", filename = "rmi_scatter", scale = 2))
   })
-  
+
   session$onSessionEnded(function() log_msg("Session ended."))
 }
 
