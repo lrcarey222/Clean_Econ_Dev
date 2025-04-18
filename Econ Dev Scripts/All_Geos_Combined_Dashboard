@@ -1,415 +1,335 @@
-###############################################################################
-#  ECONOMIC DEVELOPMENT & CLEANTECH DATA EXPLORER
-#  RMI Shiny Scatter  –  Cross‑Platform Ultra‑Robust (April 2025)
-###############################################################################
-#  ▸ Runs on macOS **or** Windows (auto‑detects data path or prompts user)
-#  ▸ RMI‑branded responsive UI with logo
-#  ▸ Interactive scatter: colour & size mapping, trend‑line, zero‑value filter
-#  ▸ Advanced axis controls, CSV downloads, verbose logging
+#ALL_GEOS_COMBINED_DASHBOARD
+#LAST UPDATED: April 17, 2025 
+#  KEY FEATURES
+#  • Auto‑detect CSV path (macOS / Windows) or prompt user
+#  • RMI‑branded responsive UI, stacked white logo
+#  • Interactive scatter: colour & size mapping; optional labels; Loess trend
+#  • Auto colour‑scale (numeric → sequential, categorical → qualitative)
+#  • Axis‑unit selector (Number / K / M / B) – never scientific notation
+#  • Correlation card now shows value + significance + direction
+#  • Extensive defensive logging / error handling
 ###############################################################################
 
-## ── 0.  GLOBAL OPTIONS ───────────────────────────────────────────────────────
-options(stringsAsFactors = FALSE, warn = 1, width = 120)
-
-## ── 0.1  LOGGING HELPER ──────────────────────────────────────────────────────
+## ───────────────────────────── 0.  GLOBALS ──────────────────────────────────
+options(stringsAsFactors = FALSE, warn = 1, width = 120, scipen = 999)  # no sci‑notation
 DEBUG_VERBOSE <- TRUE
 log_msg <- function(msg, level = "INFO") {
-  if (!DEBUG_VERBOSE && identical(level, "DEBUG")) return(invisible())
-  message(sprintf("[%s] %s: %s", level, format(Sys.time(), "%Y‑%m‑%d %H:%M:%S"), msg),
-          appendLF = TRUE)
+  if (!DEBUG_VERBOSE && level == "DEBUG") return(invisible())
+  message(sprintf("[%s] %s: %s",
+                  level, format(Sys.time(), "%Y‑%m‑%d %H:%M:%S"), msg))
 }
 
-## ── 1.  LIBRARIES ────────────────────────────────────────────────────────────
-log_msg("Loading required libraries …")
+## ──────────────────────────── 1.  LIBRARIES ─────────────────────────────────
+log_msg("Loading libraries …")
 suppressPackageStartupMessages({
-  pkgs <- c(
-    "shiny", "bslib", "shinycssloaders", "readr", "dplyr", "tidyr",
-    "ggplot2", "plotly", "stringr", "rlang", "purrr", "scales", "htmltools"
-  )
-  missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
-  if (length(missing))
-    stop("❌ Missing packages: ", paste(missing, collapse = ", "), ". Please install.")
+  pkgs <- c("shiny", "bslib", "readr", "dplyr", "tidyr", "ggplot2",
+            "plotly", "stringr", "purrr", "scales", "htmltools",
+            "RColorBrewer", "ggrepel")
+  need <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+  if (length(need)) stop("❌ Install missing packages: ", paste(need, collapse = ", "))
   purrr::walk(pkgs, library, character.only = TRUE)
-  purrr::walk(pkgs, ~log_msg(sprintf("Loaded: %s", .x), "DEBUG"))
 })
 
-## ── 2.  DATA PATH (DETECT macOS vs Windows) ──────────────────────────────────
-data_filename <- "all_geo_complete_dataset.csv"
-
-sys_os <- Sys.info()[["sysname"]]
-log_msg(sprintf("Detected OS: %s", sys_os), "DEBUG")
-
-if (identical(tolower(sys_os), "windows")) {
-  base_path <- file.path(Sys.getenv("USERPROFILE"),
-                         "OneDrive - RMI", "Documents - US Program",
-                         "6_Projects", "Clean Regional Economic Development",
-                         "ACRE", "Data", "Raw Data")
-} else {  # assume macOS / Linux
-  base_path <- file.path("~", "Library", "CloudStorage", "OneDrive-RMI",
-                         "Documents - US Program", "6_Projects",
-                         "Clean Regional Economic Development", "ACRE",
-                         "Data", "Raw Data")
+## ─────────────────────────── 2.  DATA LOADING ───────────────────────────────
+detect_csv_path <- function(fname) {
+  sys_os <- tolower(Sys.info()[["sysname"]])
+  base <- if (grepl("windows", sys_os)) {
+    file.path(Sys.getenv("USERPROFILE"), "OneDrive - RMI", "Documents - US Program",
+              "6_Projects", "Clean Regional Economic Development", "ACRE",
+              "Data", "Raw Data")
+  } else {
+    file.path("~", "Library", "CloudStorage", "OneDrive-RMI",
+              "Documents - US Program", "6_Projects",
+              "Clean Regional Economic Development", "ACRE", "Data", "Raw Data")
+  }
+  file.path(base, fname)
 }
 
-file_path <- file.path(base_path, data_filename)
-
-if (!file.exists(path.expand(file_path))) {
-  log_msg(sprintf("Default path not found: %s", file_path), "WARN")
-  log_msg("Opening file chooser – please locate the CSV manually …", "INFO")
-  file_path <- file.choose()
-  if (!file.exists(file_path)) stop("❌ CSV file was not selected or does not exist.")
+csv_file <- detect_csv_path("all_geo_complete_dataset.csv")
+if (!file.exists(path.expand(csv_file))) {
+  log_msg("Default CSV not found – prompting user to choose file.", "WARN")
+  csv_file <- file.choose()
+  if (!file.exists(csv_file)) stop("❌ CSV file not selected.")
 }
-
-log_msg(sprintf("Using data file: %s", file_path))
-
-## ── 3.  LOAD DATA ────────────────────────────────────────────────────────────
-log_msg("Reading CSV …")
-geo_df <- tryCatch(
-  read_csv(file_path, show_col_types = FALSE, progress = FALSE),
-  error = function(e) stop("❌ Failed to read CSV: ", e$message)
-)
-log_msg(sprintf("Loaded: %s rows × %s cols (%.1f MB)",
+log_msg(paste("Reading:", csv_file))
+geo_df <- read_csv(csv_file, show_col_types = FALSE)
+log_msg(sprintf("Loaded %s rows × %s columns (%.2f MB)",
                 scales::comma(nrow(geo_df)), ncol(geo_df),
                 as.numeric(object.size(geo_df))/2^20))
 
-## ── 4.  IDENTIFIER & GEO FILTER SETUP ────────────────────────────────────────
-possible_ids <- c("geo_name", "county_name", "msa_name")
-id_matches   <- intersect(possible_ids, names(geo_df))
-id_col <- if (length(id_matches)) id_matches[1] else NULL
-if (is.null(id_col)) log_msg("No identifier column found; row‑number labels will be used", "WARN")
+## ──────────────────────── 3.  COLUMN METADATA ───────────────────────────────
+id_col          <- intersect(c("geo_name", "county_name", "msa_name"), names(geo_df))[1]
+geo_type_col    <- "geo"
+has_geo_filter  <- geo_type_col %in% names(geo_df)
+geo_types       <- if (has_geo_filter) sort(unique(na.omit(geo_df[[geo_type_col]]))) else character(0)
+num_cols        <- setdiff(names(geo_df)[vapply(geo_df, is.numeric, logical(1))],
+                           c("...1", "X", "geo_code"))
+if (length(num_cols) < 2) stop("❌ Need ≥ 2 numeric columns to plot.")
 
-geo_type_col   <- "geo"
-has_geo_filter <- geo_type_col %in% names(geo_df)
-geo_types      <- if (has_geo_filter) sort(unique(na.omit(geo_df[[geo_type_col]]))) else character(0)
+unit_choices <- c("Number"="num","Thousands (K)"="k","Millions (M)"="m","Billions (B)"="b")
+unit_scale <- function(code) switch(code,
+                                    num = list(scale=1,     suffix=""),
+                                    k   = list(scale=1/1e3, suffix="K"),
+                                    m   = list(scale=1/1e6, suffix="M"),
+                                    b   = list(scale=1/1e9, suffix="B"))
 
-## ── 5.  NUMERIC COLUMNS ──────────────────────────────────────────────────────
-excluded_cols <- c("...1", "X", "geo_code")
-num_cols <- setdiff(names(geo_df)[vapply(geo_df, is.numeric, logical(1))], excluded_cols)
-if (length(num_cols) < 2) stop("❌ Need at least two numeric columns for plotting; found ", length(num_cols))
+make_axis_labeller <- function(code) {
+  us <- unit_scale(code)
+  scales::label_number(scale = us$scale, suffix = us$suffix,
+                       accuracy = 0.01, big.mark = ",")
+}
 
-## ── 6.  RMI BRAND COLORS & CSS ───────────────────────────────────────────────
-rmi_colors <- list(
-  blue_spruce = "#003B63",
-  energy      = "#45CFCC",
-  basalt      = "#58595B",
-  chart_palette = c("#003B63", "#45CFCC", "#2b8cbe", "#7fcdbb", "#c7e9b4")
-)
+label_with_units <- function(var, code) {
+  suf <- unit_scale(code)$suffix
+  if (suf == "") var else paste0(var, " (", suf, ")")
+}
 
+## ─────────────────────────── 4.  BRAND STYLES ───────────────────────────────
+rmi <- list(primary="#003B63", secondary="#45CFCC", text="#58595B",
+            seq_grad=c("#00263F","#045A7C","#0E9EB4","#9FD0C4","#CFE3C1"))
 font_import <- "
 @import url('https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600;700&display=swap');
 "
-
-rmi_css <- paste0(font_import, "
-:root{--primary:", rmi_colors$blue_spruce,";--secondary:",rmi_colors$energy,";--text:",rmi_colors$basalt,";--text-light:#6c8792;--shadow:rgba(0,0,0,0.1);}
-body{font-family:'Source Sans Pro',Helvetica,Arial,sans-serif;background:#fff;color:var(--text);line-height:1.6}
-h1,h2,h3,h4,h5,h6{font-weight:600;color:var(--primary)} label{font-weight:500;color:var(--primary)}
-.app-header{display:flex;align-items:center;gap:20px;background:var(--primary);color:#fff;padding:20px 30px;margin-bottom:30px;position:relative;overflow:hidden}
-.app-header .angle-decorator{position:absolute;right:0;top:0;height:100%;width:70%;clip-path:polygon(100% 0,0 0,100% 100%);background:linear-gradient(135deg,transparent,var(--secondary) 150%);opacity:.3}
-.app-header h1{margin:0;font-weight:700;font-size:1.75rem;z-index:2} .app-header p{margin:0;opacity:.9;z-index:2}
-.app-header img.rmi-logo{height:45px;width:auto;z-index:2}
+rmi_css <- sprintf("%s
+:root{--primary:%s;--secondary:%s;--text:%s;}
+body{font-family:'Source Sans Pro',Helvetica,Arial,sans-serif;background:#fff;color:var(--text);}
+.app-header{display:flex;align-items:center;gap:20px;background:var(--primary);color:#fff;padding:20px 30px;margin-bottom:20px;position:relative;overflow:hidden}
+.app-header .angle{position:absolute;right:0;top:0;height:100%%;width:70%%;clip-path:polygon(100%% 0,0 0,100%% 100%%);background:linear-gradient(135deg,transparent,var(--secondary) 150%%);opacity:.3}
+.app-header h1{margin:0;font-weight:700;font-size:1.6rem;z-index:2}
+.app-header p{margin:0;opacity:.9;z-index:2}
+.app-header img{height:60px;width:auto;z-index:2}
 .sidebar{background:#fff;padding:20px;border-right:1px solid #eee}
-.sidebar h3{border-bottom:2px solid var(--primary);padding-bottom:10px;margin-bottom:20px;color:var(--primary)}
-.form-control,.selectize-input{border:1px solid #e0e0e0;border-radius:3px;padding:8px 12px;transition:all .3s}
-.form-control:focus,.selectize-input.focus{border-color:var(--secondary);box-shadow:0 0 0 3px rgba(69,207,204,.25)}
-.btn-primary{background:var(--primary);border-color:var(--primary);color:#fff;border-radius:3px;font-weight:500;padding:8px 16px}
-.btn-primary:hover{background:var(--secondary);border-color:var(--secondary)} .download-button{margin-bottom:15px}
-.stat-card{background:#fff;border:1px solid #eee;border-left:4px solid var(--primary);border-radius:3px;box-shadow:0 1px 3px var(--shadow);padding:20px;margin-bottom:20px;transition:transform .3s}
-.stat-card:hover{transform:translateY(-3px)} .stat-value{font-size:28px;font-weight:600;color:var(--primary);margin:0}
-.stat-label{color:var(--text-light);font-size:14px;margin:0}
+.stat-card{background:#fff;border:1px solid #eee;border-left:4px solid var(--primary);padding:15px;margin-bottom:15px;border-radius:3px}
+.stat-value{font-size:26px;font-weight:600;color:var(--primary);margin:0}
+.stat-label{font-size:14px;color:#6c8792;margin:0}
 .filter-tag{display:inline-block;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:3px;padding:4px 12px;margin:0 8px 8px 0;font-size:13px;color:var(--primary)}
-.active-filters{margin-bottom:15px}
-.accordion-toggle{cursor:pointer;padding:10px 15px;background:#f8f8f8;border:1px solid #e5e5e5;border-radius:3px;font-weight:500;color:var(--primary);display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.accordion-toggle:after{content:'+';font-size:18px;color:var(--primary)} .accordion-toggle.open:after{content:'−'}
-.accordion-content{padding:15px;border:1px solid #e5e5e5;border-top:none;border-radius:0 0 3px 3px;margin-top:-10px;margin-bottom:15px;display:none}
-.accordion-toggle.open + .accordion-content{display:block}
+.download-section{margin-top:25px;padding-top:10px;border-top:1px solid #eee;text-align:center}
 @media(max-width:767px){.sidebar{border-right:none;border-bottom:1px solid #eee;margin-bottom:20px}}
-")
+", font_import, rmi$primary, rmi$secondary, rmi$text)
 
-## ── 7.  SHINY UI ─────────────────────────────────────────────────────────────
-log_msg("Building UI …")
+## ───────────────────────────── 5.  UI ───────────────────────────────────────
 ui <- fluidPage(
   title = "Economic Development & Cleantech Data Explorer",
-  tags$head(
-    tags$meta(name = "viewport", content = "width=device-width, initial-scale=1"),
-    tags$style(HTML(rmi_css)),
-    tags$script(HTML("$(document).on('click','.accordion-toggle',function(){$(this).toggleClass('open');$(this).next('.accordion-content').slideToggle('fast');});"))
-  ),
-  div(class = "app-header",
-      img(src = "https://rmi.org/wp-content/uploads/2021/08/rmi_logo_horitzontal_no_tagline.svg",
-          class = "rmi-logo", alt = "RMI Logo"),
-      div(class = "angle-decorator"),
+  tags$head(tags$style(HTML(rmi_css))),
+  div(class="app-header",
+      img(src="https://rmi.org/wp-content/uploads/2021/01/rmi_logo_stacked_tag_white.svg",
+          alt="RMI", style="height:60px"),
+      div(class="angle"),
       div(
         h1("Economic Development & Cleantech Data Explorer"),
         p("Interactive exploration of regional economic and cleantech indicators")
       )
   ),
   fluidRow(
-    div(class = "col-lg-3 col-md-4 col-sm-12",
-        div(class = "sidebar",
-            h3("Plot Controls"),
-            ## Downloads
-            div(class = "mb-20",
-                h4("Download Data"),
-                downloadButton("download_chart_data", "Download Chart Data",
-                               class = "btn-primary download-button"),
-                downloadButton("download_full_data", "Download Full Dataset",
-                               class = "btn-primary download-button")
-            ),
-            ## Geo filter
+    ## Sidebar ---------------------------------------------------------------
+    div(class="col-lg-3 col-md-4 col-sm-12",
+        div(class="sidebar",
+            h3("Controls"),
             if (has_geo_filter)
-              div(class = "mb-20",
-                  h4("Geography Filter"),
-                  selectInput("geo_filter", "Geography Type:",
-                              choices = c("All" = "", geo_types), selected = "")
-              ),
-            ## Variables
-            div(class = "mb-20",
-                h4("Variables"),
-                selectInput("xvar", "X‑axis variable", choices = num_cols, selected = num_cols[1]),
-                selectInput("yvar", "Y‑axis variable", choices = num_cols, selected = num_cols[2])
+              selectInput("geo_filter","Geography Type",c("All"="", geo_types),""),
+            selectInput("xvar","X‑axis variable", num_cols, num_cols[1]),
+            selectInput("x_units","X‑axis units",unit_choices,"num"),
+            selectInput("yvar","Y‑axis variable", num_cols, num_cols[2]),
+            selectInput("y_units","Y‑axis units",unit_choices,"num"),
+            selectInput("color_var","Colour by", c("None"="none",num_cols), "none"),
+            selectInput("size_var","Size by",  c("None"="none",num_cols), "none"),
+            conditionalPanel("input.size_var!='none'",
+                             radioButtons("size_mode","Size mode",c("Dynamic"="dynamic","Fixed"="fixed"),
+                                          "dynamic",inline=TRUE),
+                             conditionalPanel("input.size_mode=='dynamic'",
+                                              sliderInput("size_range","Size range",1,20,c(3,9),0.5)),
+                             conditionalPanel("input.size_mode=='fixed'",
+                                              sliderInput("fixed_size","Point size",1,10,3,0.5))
             ),
-            ## Axis options
-            div(class = "mb-20",
-                div(class = "accordion-toggle", "Advanced Axis Options"),
-                div(class = "accordion-content",
-                    h5("X‑Axis"),
-                    checkboxInput("x_invert", "Invert X‑axis", FALSE),
-                    checkboxInput("x_log",    "Log scale",    FALSE),
-                    checkboxInput("x_include_zero",     "Include zero",    FALSE),
-                    checkboxInput("x_include_negative", "Allow negative",  TRUE),
-                    sliderInput("x_expand", "Expansion", 0, 0.5, 0.05, 0.01),
-                    div(class = "panel-section"),
-                    h5("Y‑Axis"),
-                    checkboxInput("y_invert", "Invert Y‑axis", FALSE),
-                    checkboxInput("y_log",    "Log scale",    FALSE),
-                    checkboxInput("y_include_zero",     "Include zero",    FALSE),
-                    checkboxInput("y_include_negative", "Allow negative",  TRUE),
-                    sliderInput("y_expand", "Expansion", 0, 0.5, 0.05, 0.01)
-                )
-            ),
-            ## Visual options
-            div(class = "mb-20",
-                h4("Visual Options"),
-                sliderInput("point_opacity", "Point opacity", 0.1, 1, 0.7, 0.1),
-                selectInput("color_var", "Colour points by",
-                            choices = c("None" = "none", num_cols), selected = "none"),
-                selectInput("size_var", "Size points by",
-                            choices = c("None" = "none", num_cols), selected = "none"),
-                conditionalPanel("input.size_var != 'none'",
-                  radioButtons("size_mode", "Size mode",
-                               choices = c("Dynamic" = "dynamic", "Fixed" = "fixed"),
-                               selected = "dynamic", inline = TRUE),
-                  conditionalPanel("input.size_mode == 'fixed'",
-                    sliderInput("fixed_size", "Point size", 1, 10, 3, 0.5)),
-                  conditionalPanel("input.size_mode == 'dynamic'",
-                    sliderInput("size_range", "Dynamic size range", 1, 20, c(3, 9), 0.5))
-                ),
-                checkboxInput("show_trend", "Add trend line", FALSE),
-                conditionalPanel("input.show_trend",
-                                 radioButtons("trend_method", "Trend method",
-                                              c("LOESS" = "loess", "Linear" = "lm"),
-                                              "loess", inline = TRUE))
-            ),
-            ## Data filters
-            div(class = "mb-20",
-                h4("Data Filters"),
-                checkboxInput("exclude_zero", "Exclude rows where X or Y equals 0", FALSE)
-            ),
-            ## Performance
-            div(class = "mb-20",
-                h4("Performance"),
-                sliderInput("sample_n", "Sample size (for speed)",
-                            1000, nrow(geo_df), min(10000, nrow(geo_df)), 1000)
-            )
+            sliderInput("opacity","Point opacity",0.1,1,0.7,0.05),
+            checkboxInput("show_trend","Add trend line",FALSE),
+            checkboxInput("show_labels","Show point labels (≤500 obs)",FALSE),
+            checkboxInput("exclude_zero","Exclude X or Y = 0",FALSE),
+            sliderInput("sample_n","Sample size",1000,nrow(geo_df),
+                        min(10000,nrow(geo_df)),1000)
         )
     ),
-    div(class = "col-lg-9 col-md-8 col-sm-12",
-        if (has_geo_filter) uiOutput("active_filters"),
+    ## Main panel ------------------------------------------------------------
+    div(class="col-lg-9 col-md-8 col-sm-12",
+        uiOutput("active_filters"),
+        div(class="plot-container mb-3", plotlyOutput("scatter", height="600px")),
         fluidRow(
-          column(4, div(class = "stat-card primary",
-                        h3(textOutput("total_obs"), class = "stat-value"),
-                        p("Total Observations", class = "stat-label"))),
-          column(4, div(class = "stat-card secondary",
-                        h3(textOutput("displayed_points"), class = "stat-value"),
-                        p("Displayed Points", class = "stat-label"))),
-          column(4, div(class = "stat-card primary",
-                        uiOutput("correlation_with_sig"),
-                        p("Correlation", class = "stat-label")))
+          column(4, div(class="stat-card",
+                        h3(textOutput("total_obs"), class="stat-value"),
+                        p("Total Observations",class="stat-label"))),
+          column(4, div(class="stat-card",
+                        h3(textOutput("displayed"), class="stat-value"),
+                        p("Displayed Points",class="stat-label"))),
+          column(4, uiOutput("corr_card"))
         ),
-        tabsetPanel(
-          tabPanel("Scatter Plot",
-                   div(class = "plot-container",
-                       plotlyOutput("scatter_plot", height = "600px"))),
-          tabPanel("Statistics",
-                   div(class = "p-15",
-                       fluidRow(
-                         column(6, div(class = "stat-card", style = "height:300px;overflow-y:auto;",
-                                       h4("X‑Axis Summary"), verbatimTextOutput("x_summary"))),
-                         column(6, div(class = "stat-card", style = "height:300px;overflow-y:auto;",
-                                       h4("Y‑Axis Summary"), verbatimTextOutput("y_summary")))
-                       ),
-                       fluidRow(
-                         column(12, div(class = "stat-card mt-10",
-                                        h4("Correlation Analysis"),
-                                        verbatimTextOutput("cor_analysis")))
-                       )
-                   )
-          )
-        )
+        fluidRow(
+          column(6, div(class="stat-card",
+                        h4("X‑Axis Summary"), verbatimTextOutput("x_summary"))),
+          column(6, div(class="stat-card",
+                        h4("Y‑Axis Summary"), verbatimTextOutput("y_summary")))
+        ),
+        fluidRow(
+          column(12, div(class="stat-card",
+                         h4("Correlation Analysis"), verbatimTextOutput("corr_detail")))
+        ),
+        div(class="download-section",
+            downloadButton("download_chart","Download Chart Data",
+                           class="btn-primary me-2"),
+            downloadButton("download_full","Download Full Dataset",
+                           class="btn-primary"))
     )
   )
 )
 
-## ── 8.  SERVER LOGIC ─────────────────────────────────────────────────────────
-log_msg("Defining server …")
-server <- function(input, output, session) {
-
-  filtered_data <- reactive({
+## ─────────────────────── 6.  SERVER LOGIC ───────────────────────────────────
+server <- function(input, output, session){
+  
+  filtered <- reactive({
     df <- geo_df
     if (has_geo_filter && nzchar(input$geo_filter))
-      df <- dplyr::filter(df, .data[[geo_type_col]] == input$geo_filter)
+      df <- df %>% filter(.data[[geo_type_col]] == input$geo_filter)
     df
   })
-
+  
+  plot_df <- reactive({
+    req(input$xvar, input$yvar)
+    keep <- unique(c(input$xvar,input$yvar,id_col,
+                     if (input$color_var!="none") input$color_var,
+                     if (input$size_var!="none")  input$size_var))
+    df <- filtered() %>% select(all_of(keep)) %>% drop_na()
+    if (input$exclude_zero)
+      df <- df %>% filter(.data[[input$xvar]]!=0, .data[[input$yvar]]!=0)
+    if (nrow(df)>input$sample_n) df <- df[sample.int(nrow(df),input$sample_n),]
+    df
+  })
+  
+  ## Statistics --------------------------------------------------------------
+  safe_cor <- function(x,y){
+    tryCatch(cor.test(x,y), error = function(e) NULL)
+  }
+  corr <- reactive({
+    df <- plot_df(); if(nrow(df)<3) return(NULL)
+    safe_cor(df[[input$xvar]], df[[input$yvar]])
+  })
+  
+  output$total_obs <- renderText(scales::comma(nrow(filtered())))
+  output$displayed <- renderText(scales::comma(nrow(plot_df())))
+  
+  output$corr_card <- renderUI({
+    ct <- corr()
+    if (is.null(ct)) {
+      return(div(class="stat-card",
+                 h3("N/A", class="stat-value"),
+                 p("Correlation coefficient", class="stat-label")))
+    }
+    r      <- unname(ct$estimate)
+    p_val  <- ct$p.value
+    signif <- p_val < 0.05
+    dir    <- if (r >= 0) "Positive Correlation" else "Negative Correlation"
+    badge  <- span(class="filter-tag",
+                   if (signif) "Statistically Significant" else "Not Significant")
+    div(class="stat-card",
+        h3(sprintf("%.3f", r), class="stat-value"),
+        badge,
+        p(dir, class="stat-label"))
+  })
+  
+  output$x_summary <- renderPrint(summary(plot_df()[[input$xvar]]))
+  output$y_summary <- renderPrint(summary(plot_df()[[input$yvar]]))
+  output$corr_detail <- renderPrint({
+    ct <- corr(); if (is.null(ct)) cat("Insufficient data.") else print(ct)
+  })
+  
   output$active_filters <- renderUI({
     if (has_geo_filter && nzchar(input$geo_filter))
-      div(class = "active-filters",
-          span("Active Filters: "),
-          span(class = "filter-tag", paste("Geography:", input$geo_filter)))
+      div(class="filter-tag", paste("Geography:", input$geo_filter))
   })
-
-  plot_data <- reactive({
-    req(input$xvar, input$yvar)
-    df <- filtered_data()
-
-    cols <- unique(c(input$xvar, input$yvar, id_col))
-    if (input$color_var != "none") cols <- c(cols, input$color_var)
-    if (input$size_var  != "none") cols <- c(cols, input$size_var)
-    df <- tidyr::drop_na(dplyr::select(df, all_of(cols)))
-    if (isTRUE(input$exclude_zero))
-      df <- dplyr::filter(df, .data[[input$xvar]] != 0, .data[[input$yvar]] != 0)
-    if (nrow(df) > input$sample_n) {
-      set.seed(123); df <- df[sample.int(nrow(df), input$sample_n), , drop = FALSE]
+  
+  ## Scatter -----------------------------------------------------------------
+  output$scatter <- renderPlotly({
+    df <- plot_df()
+    if (nrow(df) < 2) return(plotly_empty() %>% layout(title="Not enough points"))
+    
+    # tool‑tip
+    tt <- paste0(
+      if(!is.null(id_col)) paste0(id_col,": ",df[[id_col]],"<br>"),
+      input$xvar,": ",scales::comma(df[[input$xvar]]),"<br>",
+      input$yvar,": ",scales::comma(df[[input$yvar]]))
+    if (input$color_var!="none")
+      tt <- paste0(tt,"<br>",input$color_var,": ",
+                   if(is.numeric(df[[input$color_var]]))
+                     scales::comma(df[[input$color_var]]) else df[[input$color_var]])
+    if (input$size_var!="none")
+      tt <- paste0(tt,"<br>",input$size_var,": ",
+                   if(is.numeric(df[[input$size_var]]))
+                     scales::comma(df[[input$size_var]]) else df[[input$size_var]])
+    
+    p <- ggplot(df, aes(.data[[input$xvar]], .data[[input$yvar]], text=tt))
+    
+    # colour mapping
+    if (input$color_var!="none") {
+      col_vec <- df[[input$color_var]]
+      if (is.numeric(col_vec)) {
+        p <- p + aes(colour=col_vec) +
+          scale_colour_gradientn(colours=rmi$seq_grad, name=input$color_var,
+                                 labels=make_axis_labeller("num"))
+      } else {
+        lvls <- length(unique(col_vec))
+        pal  <- if (lvls<=8) brewer.pal(max(lvls,3),"Set2") else scales::hue_pal()(lvls)
+        p <- p + aes(colour=as.factor(col_vec)) +
+          scale_colour_manual(values=pal, name=input$color_var)
+      }
     }
-    df
-  })
-
-  correlation_data <- reactive({
-    df <- plot_data()
-    if (nrow(df) < 3) return(list(r = NA, p = NA, sig = FALSE))
-    ct <- cor.test(df[[input$xvar]], df[[input$yvar]])
-    list(r = unname(ct$estimate), p = ct$p.value, sig = ct$p.value < 0.05)
-  })
-
-  output$total_obs        <- renderText(scales::comma(nrow(filtered_data())))
-  output$displayed_points <- renderText(scales::comma(nrow(plot_data())))
-  output$correlation_with_sig <- renderUI({
-    cd <- correlation_data()
-    if (is.na(cd$r)) return(h3("N/A", class = "stat-value"))
-    badge <- if (cd$sig) span(class = "sig-badge sig", "Significant")
-             else span(class = "sig-badge not-sig", "Not significant")
-    div(h3(format(round(cd$r, 3), nsmall = 3), class = "stat-value"), badge)
-  })
-
-  output$x_summary  <- renderPrint(summary(plot_data()[[input$xvar]]))
-  output$y_summary  <- renderPrint(summary(plot_data()[[input$yvar]]))
-  output$cor_analysis <- renderPrint({
-    cd <- correlation_data()
-    if (is.na(cd$r)) return(cat("Insufficient data for correlation analysis"))
-    ct <- cor.test(plot_data()[[input$xvar]], plot_data()[[input$yvar]])
-    cat("Correlation (r):", round(ct$estimate, 4), "\n",
-        "95% CI:", paste(round(ct$conf.int, 4), collapse = " to "), "\n",
-        "p‑value:", format.pval(ct$p.value, digits = 4), "\n",
-        "Significance:", if (cd$sig) "Statistically significant (p < 0.05)"
-                         else       "Not statistically significant", "\n")
-  })
-
-  output$download_chart_data <- downloadHandler(
-    filename = function() {
-      paste0("rmi_chart_",
-             str_replace_all(input$xvar, "\\W", "_"), "_vs_",
-             str_replace_all(input$yvar, "\\W", "_"),
-             "_", format(Sys.Date(), "%Y%m%d"), ".csv")
-    },
-    content = function(file) write.csv(plot_data(), file, row.names = FALSE)
-  )
-  output$download_full_data <- downloadHandler(
-    filename = function() paste0("rmi_full_dataset_", format(Sys.Date(), "%Y%m%d"), ".csv"),
-    content  = function(file) write.csv(filtered_data(), file, row.names = FALSE)
-  )
-
-  output$scatter_plot <- renderPlotly({
-    df <- plot_data()
-    if (nrow(df) < 2)
-      return(plotly_empty(type = "scatter") %>% layout(title = "Insufficient data for plotting"))
-
-    tooltip <- paste0(
-      if (!is.null(id_col)) paste0(id_col, ": ", df[[id_col]], "<br>") else "",
-      input$xvar, ": ", df[[input$xvar]], "<br>",
-      input$yvar, ": ", df[[input$yvar]],
-      if (input$color_var != "none") paste0("<br>", input$color_var, ": ", df[[input$color_var]]) else "",
-      if (input$size_var  != "none") paste0("<br>", input$size_var,  ": ", df[[input$size_var]])  else ""
-    )
-
-    p <- ggplot(df, aes(x = .data[[input$xvar]], y = .data[[input$yvar]], text = tooltip))
-
-    if (input$color_var != "none") {
-      p <- p + aes(color = .data[[input$color_var]]) +
-        scale_color_gradientn(colors = rmi_colors$chart_palette)
-    }
-
-    if (input$size_var != "none" && input$size_mode == "dynamic") {
-      p <- p + aes(size = .data[[input$size_var]]) +
-        scale_size_continuous(range = input$size_range, guide = "legend") +
-        geom_point(alpha = input$point_opacity)
+    
+    # size mapping
+    if (input$size_var!="none" && input$size_mode=="dynamic" &&
+        is.numeric(df[[input$size_var]])) {
+      p <- p + aes(size=.data[[input$size_var]]) +
+        scale_size_continuous(range=input$size_range, name=input$size_var) +
+        geom_point(alpha=input$opacity)
     } else {
-      p <- p + geom_point(alpha = input$point_opacity,
-                          size = if (input$size_var != "none" && input$size_mode == "fixed")
-                                   input$fixed_size else 1.8,
-                          colour = if (input$color_var == "none") rmi_colors$blue_spruce else NULL)
+      fixed_sz <- if(input$size_mode=="fixed"&&input$size_var!="none") input$fixed_size else 1.8
+      p <- p + geom_point(alpha=input$opacity,
+                          size=fixed_sz,
+                          colour=if(input$color_var=="none") rmi$primary else NULL)
     }
-
-    if (isTRUE(input$show_trend))
-      p <- p + geom_smooth(method = input$trend_method, se = FALSE,
-                           colour = rmi_colors$energy, linewidth = 1)
-
-    x_exp <- expansion(mult = input$x_expand); y_exp <- expansion(mult = input$y_expand)
-    x_scale <- if (input$x_log) scale_x_log10(expand = x_exp) else scale_x_continuous(expand = x_exp)
-    y_scale <- if (input$y_log) scale_y_log10(expand = y_exp) else scale_y_continuous(expand = y_exp)
-    if (input$x_invert) x_scale <- scale_x_reverse(expand = x_exp)
-    if (input$y_invert) y_scale <- scale_y_reverse(expand = y_exp)
-    p <- p + x_scale + y_scale
-
-    p <- p + labs(
-      x = input$xvar, y = input$yvar,
-      title = paste(input$yvar, "vs.", input$xvar),
-      subtitle = sprintf("Sample of %s observations", scales::comma(nrow(df)))
-    ) +
-      theme_minimal(base_family = "Source Sans Pro") +
-      theme(
-        plot.title    = element_text(face = "bold", colour = rmi_colors$blue_spruce, size = 16),
-        plot.subtitle = element_text(colour = rmi_colors$basalt, size = 12),
-        axis.title    = element_text(face = "bold", colour = rmi_colors$blue_spruce),
-        axis.text     = element_text(colour = rmi_colors$basalt),
-        panel.grid.major = element_line(colour = "#f0f0f0"),
-        panel.grid.minor = element_line(colour = "#f8f8f8")
-      )
-
-    ggplotly(p, tooltip = "text") %>%
-      layout(
-        hovermode = "closest",
-        font = list(family = "Source Sans Pro"),
-        hoverlabel = list(bgcolor = "white", bordercolor = rmi_colors$energy),
-        margin = list(l = 50, r = 30, b = 50, t = 80)
-      ) %>%
-      config(displayModeBar = TRUE,
-             modeBarButtonsToRemove = c("sendDataToCloud", "autoScale2d", "hoverClosestCartesian"),
-             toImageButtonOptions = list(format = "png", filename = "rmi_scatter", scale = 2))
+    
+    # labels
+    if (isTRUE(input$show_labels) && !is.null(id_col) && nrow(df)<=500)
+      p <- p + ggrepel::geom_text_repel(aes(label=.data[[id_col]]),
+                                        colour=rmi$primary, size=3,
+                                        max.overlaps=Inf, box.padding=0.3)
+    
+    if (input$show_trend)
+      p <- p + geom_smooth(method="loess", se=FALSE,
+                           colour=rmi$secondary, linewidth=1)
+    
+    p <- p +
+      scale_x_continuous(labels=make_axis_labeller(input$x_units)) +
+      scale_y_continuous(labels=make_axis_labeller(input$y_units)) +
+      labs(x=label_with_units(input$xvar, input$x_units),
+           y=label_with_units(input$yvar, input$y_units),
+           title=paste(input$yvar,"vs",input$xvar),
+           subtitle=paste("N =", nrow(df))) +
+      theme_minimal(base_family="Source Sans Pro") +
+      theme(axis.title=element_text(face="bold", colour=rmi$primary),
+            plot.title=element_text(face="bold", colour=rmi$primary, size=16),
+            plot.subtitle=element_text(size=12, colour=rmi$text))
+    
+    ggplotly(p, tooltip="text") %>%
+      layout(margin=list(l=55,r=30,b=55,t=80),
+             hoverlabel=list(bgcolor="white",bordercolor=rmi$secondary))
   })
-
-  session$onSessionEnded(function() log_msg("Session ended."))
+  
+  ## Downloads ---------------------------------------------------------------
+  output$download_chart <- downloadHandler(
+    filename=function() paste0("chart_data_", Sys.Date(), ".csv"),
+    content=function(f) write.csv(plot_df(), f, row.names=FALSE))
+  output$download_full <- downloadHandler(
+    filename=function() paste0("full_dataset_", Sys.Date(), ".csv"),
+    content=function(f) write.csv(filtered(), f, row.names=FALSE))
 }
 
-## ── 9.  RUN APP ─────────────────────────────────────────────────────────────
-log_msg("Launching RMI Shiny scatter explorer …")
-shinyApp(ui = ui, server = server)
+## ───────────────────────── 7.  LAUNCH APP ───────────────────────────────────
+log_msg("Launching Shiny app …")
+shinyApp(ui, server)
