@@ -23,7 +23,7 @@ temp_dir <- tempdir()
 unzip(temp_zip, exdir = temp_dir)
 files <- list.files(temp_dir, full.names = TRUE)
 
-gdp_ind_a <- read.csv(files[grepl("SAGDP9N__ALL_AREAS_1997_2023.csv", files)], stringsAsFactors = FALSE)
+gdp_ind_a <- read.csv(files[grepl("SAGDP9__ALL_AREAS_1997_2024.csv", files)], stringsAsFactors = FALSE)
 
 #Quarterly GDP by Industry----------------------------
 url <- "https://apps.bea.gov/regional/zip/SQGDP.zip"

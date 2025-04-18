@@ -482,7 +482,7 @@ facilities_clean_geo<-facilities_clean %>%
   distinct(Region,Division,State,`Economic Area`,`Metro Area`,`Congressional District`,`County`,Company,Decarb_Sector,Technology,Estimated_Total_Facility_CAPEX,Latitude,Longitude) 
 
 #Renewable Energy Capacity-------------------
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/december_generator2024.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/february_generator2025.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -1912,6 +1912,151 @@ pres2024<-pres2024 %>%
   filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
   dplyr::select(geo,geo_name,demshare,partisan)
 
+#StatsAmerica Innovation Intelligence -----------
+statsamerica_zip_url <- "https://www.statsamerica.org/downloads/Innovation-Intelligence.zip"
+
+# Download and Load StatsAmerica Data
+temp_zip <- tempfile(fileext = ".zip")
+download_success <- tryCatch({
+  safe_download_subproc(statsamerica_zip_url, temp_zip, mode = "wb")
+  TRUE
+}, error = function(e) {
+  debug_log(sprintf("Failed to download StatsAmerica zip file from %s: %s", statsamerica_zip_url, e$message), "ERROR")
+  FALSE
+})
+
+index_data <- NULL
+measures_data <- NULL
+if(download_success && file.exists(temp_zip)) {
+  debug_log("Downloaded StatsAmerica zip file.", "DEBUG")
+  unzip_dir <- tempdir()
+  unzip_success <- tryCatch({
+    unzip(temp_zip, exdir = unzip_dir)
+    TRUE
+  }, error = function(e) {
+    debug_log(sprintf("Failed to unzip StatsAmerica file %s: %s", temp_zip, e$message), "ERROR")
+    FALSE
+  })
+  
+  if (unzip_success) {
+    index_file <- file.path(unzip_dir, "Innovation Intelligence - Index Values - States and Counties.csv")
+    measures_file <- file.path(unzip_dir, "Innovation Intelligence - Measures - States and Counties.csv")
+    
+    if(file.exists(index_file)) {
+      index_data <- safe_read_csv_subproc(index_file, show_col_types = FALSE)
+      debug_log(sprintf("index_data loaded with %d rows.", nrow(index_data)), "DEBUG")
+      log_glimpse(index_data, "Glimpse of index_data (StatsAmerica)")
+    } else {
+      debug_log(sprintf("StatsAmerica index file not found after unzipping: %s", index_file), "WARN")
+    }
+    
+    if(file.exists(measures_file)) {
+      measures_data <- safe_read_csv_subproc(measures_file, show_col_types = FALSE)
+      debug_log(sprintf("measures_data loaded with %d rows.", nrow(measures_data)), "DEBUG")
+      log_glimpse(measures_data, "Glimpse of measures_data (StatsAmerica)")
+    } else {
+      debug_log(sprintf("StatsAmerica measures file not found after unzipping: %s", measures_file), "WARN")
+    }
+  }
+  # Clean up downloaded zip file
+  unlink(temp_zip)
+} else if (!download_success) {
+  debug_log("StatsAmerica data skipped due to download failure.", "WARN")
+}
+
+innovation_measures <- measures_data %>%
+  filter(`Summary Level` == "50") %>%
+  select(geo_id, `Code Description`, `Measure Value`) %>%
+  group_by(geo_id, `Code Description`) %>%
+  summarise(`Measure Value` = mean(`Measure Value`, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = `Code Description`, values_from = `Measure Value`)%>%
+  left_join(geo,by=c("geo_id"="fips")) 
+
+innovation_measures2 <- index_data %>%
+  select(geo_id, `description...5`, `Index Value`) %>%
+  group_by(geo_id, `description...5`) %>%
+  summarise(`Index Value` = mean(`Index Value`, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = `description...5`, values_from = `Index Value`)%>%
+  left_join(geo,by=c("geo_id"="fips")) %>%
+  filter(!is.na(GeoName))
+
+
+results_list <- list()
+
+for (geog in geographies) {
+  innovation_geo<-innovation_measures %>%
+    group_by(!!sym(geog)) %>%
+    summarize(across(c(`Technology-Based Knowledge Occupation Clusters`,
+                       `Average STEM Degree Creation (per 1,000 Population)`,
+                       `Average High-Tech Industry Employment Share`,
+                       `Average Annual Venture Capital (scaled by GDP)`,
+                       `Average Annual Expansion Stage Venture Capital (scaled by GDP)`,
+                      `Average Annual High-Tech Industry Venture Capital (scaled by GDP)`,
+                      `Industry Diversity`,
+                      `Industry Cluster Growth Factor`,
+                      `Average Gross Domestic Product (per Worker)`,
+                      `Change in Share of High-Tech Industry Employment`,
+                      `Per Capita Personal Income Growth`,
+                      `Income Inequality (Mean to Median Ratio)`,
+                      `Government Transfers to Total Personal Income Ratio`,
+                      `Average Net Migration`), 
+                     weighted.mean, 
+                     w = .data$gdp, 
+                     na.rm = TRUE))
+  
+  results_list[[geog]] <- innovation_geo
+  
+}
+
+innovation_geo <- bind_rows(results_list)
+
+
+results_list <- list()
+
+for (geog in geographies) {
+  innovation_geo2<-innovation_measures2 %>%
+    group_by(!!sym(geog)) %>%
+    summarize(across(c(`Headline Innovation Index`,
+                       `Educational Attainment`,
+                       `Economic Well-Being`,
+                       `Business Dynamics`,
+                       `Traded Sector Establishment Births to Deaths Ratio`,
+                       `Foreign Direct Investment Attractiveness`,
+                       `Industry Performance`,
+                       `Latent Innovation`,
+                       `Industry Cluster Performance`,
+                       `Industry Cluster Strength`), 
+                     weighted.mean, 
+                     w = .data$gdp, 
+                     na.rm = TRUE))
+  
+  results_list[[geog]] <- innovation_geo2
+  
+}
+
+innovation_geo2 <- bind_rows(results_list)
+
+
+innovation_geo<-left_join(innovation_geo,innovation_geo2,by=geographies)
+
+innovation_geo<-innovation_geo %>%
+  mutate(geo = case_when(
+    !is.na(State.Name) ~ "State",
+    !is.na(cd_119) ~ "Congressional District",
+    !is.na(PEA) ~ "Economic Area",
+    !is.na(GeoName) ~"County",
+    TRUE ~ "Metro Area"
+  )) %>%
+  mutate(geo_name = case_when(
+    !is.na(State.Name) ~ State.Name,
+    !is.na(cd_119) ~ cd_119,
+    !is.na(PEA) ~ PEA,
+    !is.na(GeoName) ~ GeoName,
+    TRUE ~ CBSA.Title
+  )) %>%
+  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") 
+
+
 #Put County-level Together---------------------
 
 all_geos <- geo_long_all %>%
@@ -1931,6 +2076,7 @@ all_geos <- geo_long_all %>%
   left_join(prop,by=c("geo","geo_name")) %>%
   left_join(life_geo,by=c("geo","geo_name")) %>%
   left_join(pres2024,by=c("geo","geo_name")) %>%
+  left_join(innovation_geo,by=c("geo","geo_name")) %>%
   distinct() %>%
   mutate(across(where(is.numeric), ~ replace_na(., 0))) %>%
   select(-state_abbr,-State,-Region,-Division)
@@ -1984,8 +2130,8 @@ gdp_q <- read.csv(files[grepl("SQGDP1__ALL_AREAS_2005_2024.csv", files)], string
 
 gdp_q<-gdp_q %>%
   filter(LineCode==1) %>%
-  mutate(state_gdp_1yr=round((`X2024.Q2`-`X2023.Q2`)/`X2023.Q2`*100,1),
-         state_gdp_5yr=round((`X2024.Q2`-`X2019.Q2`)/`X2019.Q2`*100,1)) %>%
+  mutate(state_gdp_1yr=round((`X2024.Q4`-`X2023.Q4`)/`X2023.Q4`*100,1),
+         state_gdp_5yr=round((`X2024.Q4`-`X2019.Q4`)/`X2019.Q4`*100,1)) %>%
   arrange(desc(state_gdp_5yr)) 
 
 
@@ -2005,7 +2151,8 @@ state_ems <- read_excel(file_path, sheet = 1,skip=4)
 
 state_ems<-state_ems %>%
   mutate(state_ems_change_1722 = round((`2022`-`2017`)/`2017`*100,3)) %>%
-  select(State,`2022`,state_ems_change_1722)
+  select(State,`2022`,state_ems_change_1722) %>%
+  rename("emissions_2022"="2022") 
 
 
 
@@ -2025,7 +2172,6 @@ corporate_tax<-corporate_tax %>%
 
 
 #Electricity Price in Industrial Sector----------
-
 
 #Natural Gas Prices--------------
 #https://www.eia.gov/dnav/ng/ng_pri_sum_a_epg0_pin_dmcf_m.htm
@@ -2104,25 +2250,11 @@ state_vars<- census_divisions %>%
   left_join(eia_gas_2024,by=c("State"="state")) %>%
   left_join(corporate_tax,by=c("State"="State")) %>%
   left_join(state_ems,by=c("State"="State")) %>%
-  rename("emissions_2022"="2022") %>%
   left_join(xchange_pol_index,by=c("State.Code"="abbr")) %>%
   left_join(gdp_q %>%
               select(GeoName,state_gdp_1yr,state_gdp_5yr),
             by=c("State"="GeoName")) %>%
   left_join(cnbc,by=c("State"="state")) 
-
-
-#Combine all data--------
-
-# Ensure consistent column names for matching
-
-# Join the `geo_long` dataframe with `all_geos`
-all_geos <- all_geos %>%
-  left_join(geo_long, by = c("geo_name")) %>%
-  left_join(census_divisions,by=c("state_abbr"="State.Code"))
-
-
-msa_data<-left_join(all_geos,state_vars,by=c("State","state_abbr"="State.Code","Region","Division"))
 
 
 ##Feasibility (ALL)------------------------------
@@ -2196,17 +2328,19 @@ eco_eti_2<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regi
 CIM_naics<-left_join(CIM_eco_eti %>%
                        select(-X),eco_eti_2 %>%
                        select(-X),by=c("clean_industry","Production.Phase"))
+clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>% select(-X)
 
 county_feas_strategic<- cgt_county %>%
-  left_join(geo,by=c("county"="fips")) %>%
-  inner_join(CIM_naics,by=c("industry_code"="X6.Digit.Code")) 
+  mutate(county_geoid=as.numeric(county_geoid)) %>%
+  left_join(geo,by=c("county_geoid"="fips")) %>%
+  inner_join(clean_industry_naics,by=c("industry_code"="X6.Digit.Code")) 
 
 results_list <- list()
 for (geog in geographies) {
   if (geog == "cd_119") {
     # Special case for cd_119
     geo_feas<- county_feas_strategic %>%
-      group_by(!!sym(geog),Technology,Segment) %>%
+      group_by(!!sym(geog),clean_industry,Production.Phase) %>%
       summarize(across(c(density),
                        weighted.mean,
                        w=.data$gdp*.data$percent_district/100,
@@ -2215,8 +2349,8 @@ for (geog in geographies) {
   } else {
     # General case for other geographies
     geo_feas<- county_feas_strategic %>%
-      group_by(!!sym(geog),Technology,Segment) %>%
-      distinct(!!sym(geog),Technology,Segment,density,pci,gdp) %>%
+      group_by(!!sym(geog),clean_industry,Production.Phase) %>%
+      distinct(!!sym(geog),clean_industry,Production.Phase,density,pci,gdp) %>%
       summarize(across(c(density),
                        weighted.mean,
                        w=.data$gdp,
@@ -2248,7 +2382,9 @@ feas_strategic <- county_feas_strategic %>%
     )
   ) %>%
   filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
-  mutate(industry=ifelse(Segment=="Manufacturing",paste(Technology,Segment),Technology)) %>%
+  mutate(industry=ifelse(Production.Phase=="Manufacturing",paste(clean_industry,Production.Phase),
+                         ifelse(Production.Phase=="Operations",clean_industry,NA))) %>%
+  filter(!is.na(industry)) %>%
   select(
     geo, geo_name,
     industry,density
@@ -2262,7 +2398,9 @@ write.csv(feas_strategic,'OneDrive - RMI/Documents - US Program/6_Projects/Clean
 #Economic Complexity Index----------------------------------
 
 county_eci<- cgt_county %>%
-  left_join(geo,by=c("county"="fips")) 
+  mutate(county_geoid=as.numeric(county_geoid)) %>%
+  left_join(geo,by=c("county_geoid"="fips")) 
+
 results_list <- list()
 for (geog in geographies) {
   if (geog == "cd_119") {
@@ -2316,11 +2454,33 @@ county_eci <- county_eci %>%
   ) %>%
   rename(economic_complexity=eci)
 
-msa_data<- msa_data %>%
+
+#Combine all data--------
+
+# Ensure consistent column names for matching
+
+# Join the `geo_long` dataframe with `all_geos`
+all_geos <- all_geos %>%
+  left_join(geo_long, by = c("geo_name")) %>%
+  left_join(census_divisions,by=c("state_abbr"="State.Code"))
+
+
+all_geos<-left_join(all_geos,state_vars,by=c("State","state_abbr"="State.Code","Region","Division"))
+
+all_geos<- all_geos %>%
   left_join(county_eci,by=c("geo","geo_name")) %>%
-  left_join(feas_strategic,by=c("geo","geo_name")) 
+  left_join(feas_strategic,by=c("geo","geo_name")) %>%
+  mutate(geo_name=case_when(geo_name=="ND-00" ~ "ND-AL",
+                            geo_name=="SD-00" ~ "SD-AL",
+                            geo_name=="VT-00" ~ "VT-AL",
+                            geo_name == "AK-00" ~ "AK-AL",
+                            geo_name=="WY-00" ~ "WY-AL",
+                            TRUE ~ geo_name)
+  ) 
+
 #Create the Indexes--------------
-index <- msa_data %>%
+normalized_geos <- all_geos %>%
+  filter(state_abbr != "CT") %>%
   # Replace NA and Inf values with group-wise mean
   group_by(geo) %>%
   mutate(across(
@@ -2347,6 +2507,7 @@ index <- msa_data %>%
       0.1 * (1 - man_pay) +
       0.1 * (man_share) +
       0.15 * (1 - ind_price_cents_kwh) +
+      0.15*(1-gas_price)+
       0.15 * (1 - PropertyValueUSD) +
       0.1 * (1 - cnbc_rank) +
       0.025 * state_gdp_5yr +
@@ -2362,13 +2523,18 @@ index <- msa_data %>%
       0.1 * inv_gdp +
       0.1 * `Electricity Consumption Carbon Intensity (CO2eq/kWh)` +
       0.1 * `Electricity Consumption Renewable Percentage` +
+      0.5 * (1-Solar_cost_rank)+
+      0.5 * (1-Wind_cost_rank)+
+      0.5 * (1-Geothermal_cost_rank)+
       0.1 * inv_gdp +
       0.1 * clean_share +
       0.1 * growth_19_24_Clean +
       0.1 * state_ems_change_1722
   ) %>%
   ungroup() %>% # Ungroup after rowwise operations
-  distinct() %>%
+  distinct()
+
+index <- normalized_geos %>%
   select(geo, geo_name, socioecon_index, invest_index, energy_clim_index) %>%
   # Normalize final indices within each geo group
   group_by(geo) %>%
@@ -2382,18 +2548,12 @@ write.csv(index %>%
             filter(geo=="Congressional District"),"Downloads/index.csv")
 
 #join indexes to msa data and upload-----------------------
-all_geo_data<-msa_data %>%
+all_geo_data<-all_geos %>%
   left_join(index,by=c("geo","geo_name")) %>%
-  distinct() %>%
-  mutate(geo_name=case_when(geo_name=="ND-00" ~ "ND-AL",
-                            geo_name=="SD-00" ~ "SD-AL",
-                            geo_name=="VT-00" ~ "VT-AL",
-                            geo_name == "AK-00" ~ "AK-AL",
-                            geo_name=="WY-00" ~ "WY-AL",
-                            TRUE ~ geo_name)
-  ) 
+  distinct() 
 
 saveRDS(all_geo_data,file="C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/ChatGPT/map_app/all_geo_data.rds")
+all_geos<-readRDS("C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/ChatGPT/map_app/all_geo_data.rds")
 
 write.csv(all_geo_data,'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Clean-growth-project/raw/ClimateandEconomicJusticeTool/all_geo_data_complete_dataset_q4_2024.csv')
 write.csv(all_geo_data %>%

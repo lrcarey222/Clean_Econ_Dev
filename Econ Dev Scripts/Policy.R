@@ -761,9 +761,16 @@ census_stc <- census_stc %>%
   mutate(state_abbr=substr(Name,1,2))
 
 stc_1823 <- census_stc %>%
+  select(-State) %>%
+  left_join(census_divisions,by=c("state_abbr"="State.Code")) %>%
+  left_join(gdp_ind_a %>%
+              filter(Description=="All industry total ") %>%
+              select(GeoName,X1997:X2024) %>%
+              pivot_longer(cols=c(X1997:X2024),names_to="Year",values_to="GDP") %>%
+              mutate(Year=as.numeric(str_replace(Year,"X",""))),by=c("Year","State"="GeoName")) %>%
   filter(Year %in% 2018:2023) %>%
   group_by(state_abbr) %>%
-  mutate(across(`Total Taxes`:`Taxes NEC (T99)`, as.numeric)) %>%
+  mutate(across(`Total Taxes`:GDP, as.numeric)) %>%
   summarize(total_tax=sum(`Total Taxes`,na.rm=T),
             property_tax=sum(`Property Tax (T01)`,na.rm=T),
             sales_receipt_tax=sum(`Tot Sales & Gr Rec Tax`,na.rm=T),
@@ -771,7 +778,8 @@ stc_1823 <- census_stc %>%
             total_income_tax=sum(`Total Income Taxes`,na.rm=T),
             individual_income_tax=sum(`Individual Income Tax (T40)`,na.rm=T),
             corp_income_tax=sum(`Corp Net Income Tax (T41)`,na.rm=T),
-            severance_tax=sum(`Severance Tax (T53)`,na.rm=T)) %>%
+            severance_tax=sum(`Severance Tax (T53)`,na.rm=T),
+            GDP=sum(GDP*1000,na.rm=T)) %>%
   ungroup() %>%
   mutate(property_tax_rate=property_tax/total_tax*100,
          sales_tax_rate=sales_receipt_tax/total_tax*100,
@@ -780,7 +788,14 @@ stc_1823 <- census_stc %>%
          ind_income_tax_rate=individual_income_tax/total_tax*100,
          corp_inc_tax_rate=corp_income_tax/total_tax*100,
          severance_tax_rate=severance_tax/total_tax*100) %>%
-  select(state_abbr,property_tax_rate,sales_tax_rate,fuel_tax_rate,income_tax_rate,corp_inc_tax_rate,ind_income_tax_rate,severance_tax_rate) %>%
+  mutate(total_tax_gdp=total_tax/GDP*100,
+         property_tax_gdp=property_tax/GDP*100,
+         sales_tax_gdp=sales_receipt_tax/GDP*100,
+         fuel_tax_gdp=fuel_tax/GDP*100,
+         income_tax_gdp=total_income_tax/GDP*100,
+         ind_income_tax_gdp=individual_income_tax/GDP*100,
+         corp_inc_tax_gdp=corp_income_tax/GDP*100,
+         severance_tax_gdp=severance_tax/GDP*100) %>%
   mutate(property_tax_lq=property_tax_rate/property_tax_rate[state_abbr=="US"],
          sales_tax_lq=sales_tax_rate/sales_tax_rate[state_abbr=="US"],
          fuel_tax_lq=fuel_tax_rate/fuel_tax_rate[state_abbr=="US"],
@@ -793,5 +808,22 @@ state_toptax <- stc_1823 %>%
   select(state_abbr,property_tax_lq,sales_tax_lq,fuel_tax_lq,income_tax_lq,corp_inc_tax_lq,ind_income_tax_lq,severance_tax_lq) %>%
   pivot_longer(cols=c(property_tax_lq:severance_tax_lq),values_to="LQ") %>%
   group_by(state_abbr) %>%
-  slice_max(order_by=LQ,n=1)
+  slice_max(order_by=LQ,n=1) %>%
+  mutate(name=str_replace_all(name,"_"," "),
+         name=str_replace(name,"lq",""),
+         name=str_to_title(name),
+         name=str_replace(name,"Corp Inc","Corporate Income"),
+         name=str_replace(name,"Ind","Individual"))
+
+write.csv(state_toptax,"Downloads/state_toptax.csv")
+
+mountain_division<-census_divisions %>% filter(Division=="Mountain")
+
+mountain_stc_1823<-stc_1823 %>%
+  filter(state_abbr %in% c("CA","NM","AZ","CO","TX","OK","ND","AK","UT","NV")) %>%
+  arrange(desc(total_tax_gdp)) %>%
+  select(state_abbr,property_tax_gdp,sales_tax_gdp,fuel_tax_gdp,corp_inc_tax_gdp,ind_income_tax_gdp,severance_tax_gdp) %>%
+  pivot_longer(cols=c(property_tax_gdp,sales_tax_gdp,fuel_tax_gdp,corp_inc_tax_gdp,ind_income_tax_gdp,severance_tax_gdp)) %>%
+  pivot_wider(names_from=state_abbr,values_from=value) %>%
+  write.csv("Downloads/mountain_taxes.csv")
 
