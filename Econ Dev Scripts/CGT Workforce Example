@@ -43,66 +43,9 @@ glimpse(transition)
 cat("Glimpsing soc_msa_data\n")
 glimpse(soc_msa_data)
 
-# 5. Filter soc_msa_data for Salt Lake City (MSA == "41620")
-cat("Filtering SOC MSA data for Salt Lake City\n")
-soc_msa_data_saltlake <- soc_msa_data %>%
-  filter(msa == "41620")
-
-cat("Filtered SOC MSA data for Salt Lake City\n")
-glimpse(soc_msa_data_saltlake)
-
 # 6. Glimpse naics_soc_data and soc_data
 cat("Glimpsing naics_soc_data\n")
 glimpse(naics_soc_data)
 
 cat("Glimpsing soc_data\n")
 glimpse(soc_data)
-
-# 7. Filter naics_msa_data for Salt Lake City MSA
-cat("Filtering NAICS MSA data for Salt Lake City MSA\n")
-naics_msa_data_saltlake <- naics_msa_data %>%
-  filter(msa == "41620")
-
-cat("Filtered NAICS MSA data for Salt Lake City\n")
-glimpse(naics_msa_data_saltlake)
-
-##############################################################################
-# Batteries & Components Workforce Analysis
-##############################################################################
-
-# ---- IMPORTANT: Use the actual 6-digit codes that represent battery manufacturing ----
-# Example battery NAICS codes (verify these with your domain knowledge):
-battery_6d_codes <- c(335911, 335912, 335913)  
-
-# Filter naics_soc_data for those battery NAICS codes at the 6-digit level.
-cat("Filtering naics_soc_data for known battery NAICS codes...\n")
-batteries_naics_soc <- naics_soc_data %>%
-  filter(
-    aggregation_level == 6,       # ensures 6-digit detail
-    naics %in% battery_6d_codes
-  )
-
-cat("Glimpsing filtered batteries_naics_soc...\n")
-glimpse(batteries_naics_soc)
-
-# Join to get (1) the SOC title from soc_data and (2) the Salt Lake City RCA from soc_msa_data_saltlake
-cat("Building final Batteries & Components workforce table for Salt Lake City...\n")
-batteries_soc_slc <- batteries_naics_soc %>%
-  distinct(soc) %>%
-  left_join(
-    soc_data %>% select(soc, soc_title),
-    by = "soc"
-  ) %>%
-  left_join(
-    soc_msa_data_saltlake %>% select(soc, rca),
-    by = "soc"
-  ) %>%
-  select(soc, soc_title, rca)
-
-cat("Final table: Batteries & Components workforce (Salt Lake City MSA):\n")
-glimpse(batteries_soc_slc)
-
-##############################################################################
-# (Optional) Source another script if you wish
-##############################################################################
-# source("~/Documents/CGT_R_notes/scripts/CGT Workforce.R")
