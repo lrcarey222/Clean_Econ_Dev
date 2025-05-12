@@ -1,51 +1,78 @@
 ##############################################################################
-# CGT Workforce
+# CGT Workforce – Green Buildings Occupation-Level Data for Pittsburgh MSA
+# (filtered to user-supplied list of SOC codes)
 ##############################################################################
 
-# 1. Set working directory
+#NOTE: Sometimes you need to go into the online version of the Clean Growth Tool to get a list of the target SOC codes; that's what I did here. —Ben
+
+# 0. Load libraries ----------------------------------------------------------
+library(tidyverse)   # dplyr, readr, stringr, etc.
+
+# 1. Set working directory ---------------------------------------------------
 setwd("~/Library/CloudStorage/OneDrive-RMI/")
 
-# 2. Load Latest Clean Growth Tool Data
+# 2. Load Clean Growth Tool data --------------------------------------------
 cgt <- readRDS(
   "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Clean-growth-project/clean_growth_toolkit_data/acre_tool_final_data.rds"
 )
 
-# 3. Extract relevant tables
+# 3. Extract relevant tables -------------------------------------------------
 msa_data        <- cgt$msa_data
 naics_msa_data  <- cgt$naics_msa_data
 naics_data      <- cgt$naics_data
-states_msa      <- cgt$states_msa
-naics6d_data    <- cgt$naics6d_data
-transition      <- cgt$transition_sector_data
 soc_msa_data    <- cgt$soc_msa_data
 naics_soc_data  <- cgt$naics_soc_data
 soc_data        <- cgt$soc_data
 
-# 4. Glimpse each table
-cat("Glimpsing msa_data\n")
-glimpse(msa_data)
+# 4. SOC codes to keep  ------------------------------------------------------
+target_soc_codes <- c(
+  "11-1021","11-9021","13-1051","13-1082","17-2051","17-2071","17-2111",
+  "17-2151","17-3011","17-3012","17-3013","17-3019","19-5011","19-5012",
+  "27-1025","37-2019","41-3091","43-3031","43-3051","43-5032","43-5061",
+  "43-6014","43-9061","47-1011","47-2011","47-2021","47-2022","47-2031",
+  "47-2042","47-2044","47-2051","47-2053","47-2061","47-2071","47-2072",
+  "47-2073","47-2081","47-2082","47-2111","47-2121","47-2131","47-2132",
+  "47-2141","47-2142","47-2151","47-2152","47-2161","47-2171","47-2181",
+  "47-2211","47-2221","47-2231","47-3011","47-3012","47-3013","47-3014",
+  "47-3015","47-3016","47-3019","47-4011","47-4021","47-4031","47-4041",
+  "47-4071","47-4098","47-5022","47-5023","47-5032","49-1011","49-2022",
+  "49-2092","49-2093","49-2094","49-2097","49-2098","49-3042","49-9011",
+  "49-9021","49-9031","49-9044","49-9045","49-9051","49-9052","49-9061",
+  "49-9095","49-9096","49-9098","49-9099","51-2041","51-4032","51-4121",
+  "51-7011","51-7041","51-7042","53-7021","53-7041"
+)
 
-cat("Glimpsing naics_msa_data\n")
-glimpse(naics_msa_data)
+# 5. Filter data to Pittsburgh MSA (CBSA 38300) ------------------------------
+pgh_soc_msa     <- soc_msa_data %>% filter(msa == "38300")
+pgh_naics_msa   <- naics_msa_data %>% filter(msa == "38300")
 
-cat("Glimpsing naics_data\n")
-glimpse(naics_data)
+# 6. Identify NAICS codes tagged as “Green Buildings” ------------------------
+green_naics <- naics_data %>%
+  filter(str_detect(naics_desc, regex("Green Buildings", ignore_case = TRUE))) %>%
+  distinct(naics) %>%
+  pull()                                # returns 8000000 in current data
 
-cat("Glimpsing states_msa\n")
-glimpse(states_msa)
+# 7. Find all SOC codes linked to those NAICS codes --------------------------
+green_soc_codes <- naics_soc_data %>%
+  filter(naics %in% green_naics) %>%
+  distinct(soc) %>%
+  pull()
 
-cat("Glimpsing naics6d_data\n")
-glimpse(naics6d_data)
+# 8. Assemble final Pittsburgh table ----------------------------------------
+pittsburgh_green_soc_filtered <- pgh_soc_msa %>%
+  # keep only SOCs that are (a) tied to Green-Building NAICS **and**
+  # (b) in the user-supplied list
+  filter(soc %in% green_soc_codes, soc %in% target_soc_codes) %>%
+  select(soc, rca) %>%
+  left_join(soc_data %>% select(soc, soc_title), by = "soc") %>%
+  select(soc, soc_title, rca) %>%
+  arrange(desc(rca))
 
-cat("Glimpsing transition\n")
-glimpse(transition)
+# 9. View / export results ---------------------------------------------------
+print(pittsburgh_green_soc_filtered)
 
-cat("Glimpsing soc_msa_data\n")
-glimpse(soc_msa_data)
-
-# 6. Glimpse naics_soc_data and soc_data
-cat("Glimpsing naics_soc_data\n")
-glimpse(naics_soc_data)
-
-cat("Glimpsing soc_data\n")
-glimpse(soc_data)
+# Optional: write to disk
+# write_csv(
+#   pittsburgh_green_soc_filtered,
+#   "~/Library/CloudStorage/OneDrive-RMI/pgh_green_building_soc_filtered.csv"
+# )
