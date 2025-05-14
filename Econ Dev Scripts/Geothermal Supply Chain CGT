@@ -1,0 +1,365 @@
+# ------------------------------------------------------------------------------
+# 1) Load libraries
+# ------------------------------------------------------------------------------
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(classInt)  # for Jenks (natural breaks)
+
+# ------------------------------------------------------------------------------
+# 2) Read in the data (making sure to specify the correct encoding).
+#    If the file is truly UTF-8, keep locale(encoding = "UTF-8").
+#    Otherwise, change to "Latin1" or "windows-1252" if needed.
+# ------------------------------------------------------------------------------
+cgt_county_data <- read_csv(
+  "~/Library/CloudStorage/OneDrive-RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/modified_CGT_files/cgt_county_data_with_CD_and_EC_20250213_130456.csv",
+  locale = locale(encoding = "UTF-8")  # Or "Latin1"/"windows-1252"
+)
+
+# ------------------------------------------------------------------------------
+# 3) Debug: Ensure all relevant NAICS codes exist in the source data
+#
+#    Relevant industries:
+#      333132 (Oil & Gas Field Machinery),
+#      331210 (Iron & Steel Pipe & Tube),
+#      334513 (Instruments & Related Products),
+#      333611 (Turbines & Generator Set Units),
+#      332410 (Power Boiler & Heat Exchanger),
+#      333914 (Measuring, Dispensing, & Other Pumping Equipment)
+# ------------------------------------------------------------------------------
+relevant_codes <- c(333132, 331210, 334513, 333611, 332410, 333914)
+
+unique_codes_in_source <- unique(cgt_county_data$industry_code)
+missing_in_source <- setdiff(relevant_codes, unique_codes_in_source)
+
+if (length(missing_in_source) == 0) {
+  cat("All relevant NAICS codes are present in the source data.\n")
+} else {
+  cat(
+    "The following NAICS codes are missing from the source data:",
+    paste(missing_in_source, collapse = ", "), "\n"
+  )
+}
+
+# ------------------------------------------------------------------------------
+# 4) Filter data for the relevant NAICS codes
+# ------------------------------------------------------------------------------
+cgt_filtered_geothermal <- cgt_county_data %>%
+  filter(industry_code %in% relevant_codes)
+
+# Debug: Confirm these NAICS codes also appear in our filtered data
+unique_codes_in_filtered <- unique(cgt_filtered_geothermal$industry_code)
+missing_in_filtered <- setdiff(relevant_codes, unique_codes_in_filtered)
+
+if (length(missing_in_filtered) == 0) {
+  cat("All relevant NAICS codes are present in the filtered (geothermal) data.\n")
+} else {
+  cat(
+    "The following NAICS codes are missing in the filtered geothermal data:",
+    paste(missing_in_filtered, collapse = ", "), "\n"
+  )
+}
+
+# ------------------------------------------------------------------------------
+# 5) Add 'presence' (RCA != 0) and 'advantage' (RCA >= 1) columns
+#    Also round density_county_percentile_from_rank to two decimals
+# ------------------------------------------------------------------------------
+cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
+  mutate(
+    density_county_percentile_from_rank = round(density_county_percentile_from_rank, 2),
+    presence = (rca != 0),
+    advantage = (rca >= 1)
+  )
+
+# ------------------------------------------------------------------------------
+# (New Step) 5a) Add RCA Bin Columns (Quartile-based & Jenks-based)
+#    We'll do this by iterating over each relevant industry_code.
+#    For each code, we find quartile-based bins and Jenks-based bins,
+#    then store them back into `cgt_filtered_geothermal` in new columns:
+#      - rca_quartile_bin
+#      - rca_jenks_bin
+#    (One row per county-industry pair.)
+# ------------------------------------------------------------------------------
+cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
+  mutate(
+    # Initialize columns as NA so we can fill them in for each code
+    rca_quartile_bin = NA_integer_,
+    rca_jenks_bin = NA_integer_
+  )
+
+for (code in relevant_codes) {
+  # Subset for this code
+  idx <- cgt_filtered_geothermal$industry_code == code & !is.na(cgt_filtered_geothermal$rca)
+  industry_data <- cgt_filtered_geothermal[idx, , drop = FALSE]
+  
+  if (nrow(industry_data) == 0) {
+    next  # No data for this code
+  }
+  
+  # 1) Quartile-based bins
+  #    Some industries might have all zeros or minimal variation => leads to repeated breaks
+  q_breaks <- quantile(industry_data$rca, probs = seq(0, 1, 0.25), na.rm = TRUE)
+  q_breaks_unique <- unique(q_breaks)
+  
+  # If we can't form at least 2 unique breaks, skip
+  if (length(q_breaks_unique) < 2) {
+    # All same or no variation => all bins remain NA
+    cat("Cannot create quartile bins for code:", code, 
+        "- all RCA values are identical or missing.\n")
+  } else {
+    # Otherwise, create bin factor. Use numeric labels = FALSE or factor levels
+    industry_bins <- cut(
+      industry_data$rca, 
+      breaks = q_breaks_unique,
+      include.lowest = TRUE,
+      labels = FALSE  # numeric bin labels 1,2,3,4
+    )
+    # Place these bins back into cgt_filtered_geothermal
+    cgt_filtered_geothermal$rca_quartile_bin[idx] <- industry_bins
+  }
+  
+  # 2) Jenks-based bins
+  #    We'll attempt to create 4 classes. If there's no variation or error => skip
+  if (length(unique(industry_data$rca)) == 1) {
+    cat("All RCA values identical for code:", code, "- skipping Jenks.\n")
+  } else {
+    tryCatch({
+      jenks_result <- classIntervals(industry_data$rca, n = 4, style = "jenks")
+      jenks_bins <- cut(
+        industry_data$rca,
+        breaks = jenks_result$brks,
+        include.lowest = TRUE,
+        labels = FALSE  # numeric bin labels 1,2,3,4
+      )
+      cgt_filtered_geothermal$rca_jenks_bin[idx] <- jenks_bins
+    }, error = function(e) {
+      cat("Jenks binning failed for code:", code, "\n")
+    })
+  }
+}
+
+# ------------------------------------------------------------------------------
+# 6) Create a county-level summary with the extra requested columns:
+#      1.  Presence of Geothermal-Adjacent Supply Chain Manufacturing
+#      2.  Industries Present
+#      3.  Existing Comparative Advantage: Geothermal-Adjacent Supply Chain Manufacturing
+#      4.  Comparative-Advantage Industries
+#      5.  Highest Density Score
+#      6.  Highest-Density Industry
+#      7.  Highest Density Percentile Score
+#      8.  Highest-Percentile Industry
+#      9.  Industry Presence Count
+#      10. Industry Comparative Advantage Count
+#      11. Top 5% Feasibility Industry Count & Industries
+#      12. Top 10% Feasibility Industry Count & Industries
+#      13. Top 25% Feasibility Industry Count & Industries
+#
+#    Each semicolon-separated column is set to NA if otherwise empty.
+# ------------------------------------------------------------------------------
+cgt_county_summary <- cgt_filtered_geothermal %>%
+  group_by(
+    State_Name,
+    County_Name,
+    county_geoid,
+    eci,
+    diversity,
+    coi,
+    `119th Congressional District(s)`,
+    `119th Congressional District(s) - Detailed`
+  ) %>%
+  summarise(
+    # 1. TRUE if any industry is present
+    `Presence of Geothermal-Adjacent Supply Chain Manufacturing` = any(presence),
+    
+    # 2. Semicolon-separated list of industries where presence == TRUE
+    `Industries Present` = {
+      val <- str_c(
+        unique(
+          str_c(industry_desc, " (NAICS ", industry_code, ")")[presence]
+        ),
+        collapse = "; "
+      )
+      if (val == "") NA_character_ else val
+    },
+    
+    # 3. TRUE if any industry has comparative advantage
+    `Existing Comparative Advantage: Geothermal-Adjacent Supply Chain Manufacturing` = any(advantage),
+    
+    # 4. Semicolon-separated list of industries where advantage == TRUE
+    `Comparative-Advantage Industries` = {
+      val <- str_c(
+        unique(
+          str_c(industry_desc, " (NAICS ", industry_code, ")")[advantage]
+        ),
+        collapse = "; "
+      )
+      if (val == "") NA_character_ else val
+    },
+    
+    # 5. Highest (max) density across all relevant industries
+    `Highest Density Score` = max(density, na.rm = TRUE),
+    
+    # 6. Industry corresponding to the highest density
+    `Highest-Density Industry` = {
+      idx <- which.max(density)
+      if (length(idx) == 0 || all(is.na(density))) {
+        NA_character_
+      } else {
+        str_c(industry_desc[idx], " (NAICS ", industry_code[idx], ")")
+      }
+    },
+    
+    # 7. Highest (max) density percentile
+    `Highest Density Percentile Score` = max(density_county_percentile_from_rank, na.rm = TRUE),
+    
+    # 8. Industry corresponding to the highest density percentile
+    `Highest-Percentile Industry` = {
+      idx2 <- which.max(density_county_percentile_from_rank)
+      if (length(idx2) == 0 || all(is.na(density_county_percentile_from_rank))) {
+        NA_character_
+      } else {
+        str_c(industry_desc[idx2], " (NAICS ", industry_code[idx2], ")")
+      }
+    },
+    
+    # 9. Number of industries with presence == TRUE
+    `Industry Presence Count` = sum(presence, na.rm = TRUE),
+    
+    # 10. Number of industries with advantage == TRUE
+    `Industry Comparative Advantage Count` = sum(advantage, na.rm = TRUE),
+    
+    # 11. Top 5% Feasibility: density_county_percentile_from_rank >= 95
+    `Top 5% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 95, na.rm = TRUE),
+    `Top 5% Feasibility Industries` = {
+      val <- str_c(
+        unique(
+          str_c(industry_desc, " (NAICS ", industry_code, ")")[density_county_percentile_from_rank >= 95]
+        ),
+        collapse = "; "
+      )
+      if (val == "") NA_character_ else val
+    },
+    
+    # 12. Top 10% Feasibility: density_county_percentile_from_rank >= 90
+    `Top 10% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 90, na.rm = TRUE),
+    `Top 10% Feasibility Industries` = {
+      val <- str_c(
+        unique(
+          str_c(industry_desc, " (NAICS ", industry_code, ")")[density_county_percentile_from_rank >= 90]
+        ),
+        collapse = "; "
+      )
+      if (val == "") NA_character_ else val
+    },
+    
+    # 13. Top 25% Feasibility: density_county_percentile_from_rank >= 75
+    `Top 25% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 75, na.rm = TRUE),
+    `Top 25% Feasibility Industries` = {
+      val <- str_c(
+        unique(
+          str_c(industry_desc, " (NAICS ", industry_code, ")")[density_county_percentile_from_rank >= 75]
+        ),
+        collapse = "; "
+      )
+      if (val == "") NA_character_ else val
+    },
+    
+    .groups = "drop"
+  )
+
+# ------------------------------------------------------------------------------
+# 7) Pivot the data wide
+#    We'll also pivot the new RCA bin columns:
+#      - rca_quartile_bin
+#      - rca_jenks_bin
+#
+#    So each industry_desc + industry_code yields columns:
+#      rca, density, density_county_percentile_from_rank,
+#      Industry Presence in County, Existing Comparative Advantage for County,
+#      rca_quartile_bin, rca_jenks_bin
+# ------------------------------------------------------------------------------
+cgt_geothermal_wide <- cgt_filtered_geothermal %>%
+  select(
+    State_Name,
+    County_Name,
+    county_geoid,
+    eci,
+    diversity,
+    coi,
+    `119th Congressional District(s)`,
+    `119th Congressional District(s) - Detailed`,
+    industry_desc,
+    industry_code,
+    rca,
+    density,
+    density_county_percentile_from_rank,
+    presence,
+    advantage,
+    rca_quartile_bin,
+    rca_jenks_bin
+  ) %>%
+  distinct() %>%
+  pivot_wider(
+    id_cols = c(
+      State_Name,
+      County_Name,
+      county_geoid,
+      eci,
+      diversity,
+      coi,
+      `119th Congressional District(s)`,
+      `119th Congressional District(s) - Detailed`
+    ),
+    names_from = c(industry_desc, industry_code),
+    names_glue = "{industry_desc} (NAICS {industry_code}): {.value}",
+    values_from = c(
+      rca,
+      density,
+      density_county_percentile_from_rank,
+      presence,
+      advantage,
+      rca_quartile_bin,
+      rca_jenks_bin
+    )
+  ) %>%
+  # Rename the pivoted presence & advantage columns
+  {
+    colnames(.) <- sub(": presence$", ": Industry Presence in County", colnames(.))
+    colnames(.) <- sub(": advantage$", ": Existing Comparative Advantage for County", colnames(.))
+    .
+  }
+
+# ------------------------------------------------------------------------------
+# 8) Join the summary columns with the wide pivot columns so the final dataset
+#    includes everything.
+# ------------------------------------------------------------------------------
+final_cgt_geothermal <- cgt_county_summary %>%
+  left_join(
+    cgt_geothermal_wide,
+    by = c(
+      "State_Name", 
+      "County_Name",
+      "county_geoid",
+      "eci",
+      "diversity",
+      "coi",
+      "119th Congressional District(s)",
+      "119th Congressional District(s) - Detailed"
+    )
+  )
+
+# ------------------------------------------------------------------------------
+# 9) Inspect the final dataset (optional)
+# ------------------------------------------------------------------------------
+glimpse(final_cgt_geothermal)
+
+# ------------------------------------------------------------------------------
+# 10) (Optional) Write out the final data to CSV
+# ------------------------------------------------------------------------------
+write_csv(final_cgt_geothermal, "cgt_geothermal_wide_plus_summary_with_bins.csv")
+
+# ------------------------------------------------------------------------------
+# End of Script
+# ------------------------------------------------------------------------------
+
