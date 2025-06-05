@@ -1,0 +1,250 @@
+# Load necessary libraries
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(writexl) # For writing to Excel
+
+# --- User specified file path ---
+# Please ensure this path is correct for your system.
+excel_file_path <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_06_03_2025.xlsx"
+
+# 1. Read in your Excel data
+# Store the original data before modifications
+unmodified_source_data <- read_excel(excel_file_path)
+# Warning message from user context: "Expecting date in A1643 / R1643C1: got 'Applied filters: Investment View is Investment'"
+# This suggests there might be non-data rows at the end of the sheet.
+# read_excel might handle this by stopping at the first completely empty row,
+# or you might need to specify `n_max` if issues arise. For now, proceeding as if data is read correctly.
+
+# Work with a copy for modifications
+clean_economy_tracker_data <- unmodified_source_data
+
+# 2. Add date-based columns
+# Ensure the 'Date' column is in POSIXct format for date functions
+clean_economy_tracker_data <- clean_economy_tracker_data %>%
+  mutate(
+    Date = as.POSIXct(Date), # Ensure Date is POSIXct
+    Post_Inflation_Reduction_Act = Date >= as.Date("2022-08-16"),
+    Post_Election_2024           = Date >= as.Date("2024-11-05"),
+    Post_Inauguration_2025       = Date >= as.Date("2025-01-20"),
+    Announcement_Year            = year(Date),
+    Announcement_Quarter         = paste0(year(Date), "-Q", quarter(Date)),
+    Announcement_Month_Year      = format(Date, "%Y-%m")
+  )
+
+# 3. Add a column "New_OR_Canceled"
+clean_economy_tracker_data <- clean_economy_tracker_data %>%
+  mutate(
+    New_OR_Canceled = ifelse(
+      Phase == "Update" & `Operating Status` == "Canceled", # Backticks for column name with space
+      "Canceled",
+      "New"
+    )
+  )
+
+# Diagnostic: List out the number of rows where "New_OR_Canceled" is "Canceled"
+# and the "Investment" amount is positive/negative.
+# Ensure 'Investment' column is numeric.
+if("Investment" %in% names(clean_economy_tracker_data) && is.numeric(clean_economy_tracker_data$Investment)) {
+  canceled_positive_investment <- clean_economy_tracker_data %>%
+    filter(New_OR_Canceled == "Canceled" & Investment > 0) %>%
+    nrow()
+  
+  canceled_negative_investment <- clean_economy_tracker_data %>%
+    filter(New_OR_Canceled == "Canceled" & Investment < 0) %>%
+    nrow()
+  
+  # Print the counts
+  cat("Number of Canceled entries with positive Investment:", canceled_positive_investment, "\n")
+  cat("Number of Canceled entries with negative Investment:", canceled_negative_investment, "\n")
+  
+  # Diagnostic: List out the rows where "New_OR_Canceled" is "Canceled" and "Investment" is positive
+  # canceled_positive_investment_rows <- clean_economy_tracker_data %>%
+  #   filter(New_OR_Canceled == "Canceled" & Investment > 0)
+  # print(canceled_positive_investment_rows) # This can be lengthy, uncomment if needed
+  
+} else {
+  cat("Warning: 'Investment' column not found or not numeric. Skipping Canceled Investment diagnostics.\n")
+  # Ensure 'Investment' column exists and is numeric if it's critical and might be missing/wrong type
+  if (!"Investment" %in% names(clean_economy_tracker_data)) {
+    # clean_economy_tracker_data$Investment <- 0 # Or handle as error
+    stop("Critical 'Investment' column is missing.")
+  } else if (!is.numeric(clean_economy_tracker_data$Investment)) {
+    # clean_economy_tracker_data$Investment <- as.numeric(clean_economy_tracker_data$Investment) # Or handle as error
+    stop("Critical 'Investment' column is not numeric.")
+  }
+}
+
+
+# Make sure that for all rows where "New_OR_Canceled" is "Canceled",
+# the "Investment" amount is negative
+clean_economy_tracker_data <- clean_economy_tracker_data %>%
+  mutate(
+    Investment = ifelse(
+      New_OR_Canceled == "Canceled" & Investment > 0 & !is.na(Investment), # Added !is.na check
+      -Investment,
+      Investment
+    )
+  )
+
+# Show structure of the data
+cat("Structure of the clean_economy_tracker_data after initial processing:\n")
+str(clean_economy_tracker_data)
+
+
+# ---- Create the pivoted data frames ----
+
+# Helper function to ensure 'New' and 'Canceled' columns exist after pivoting
+ensure_new_canceled_cols <- function(df) {
+  if (!"New" %in% names(df)) {
+    df <- mutate(df, New = 0)
+  }
+  if (!"Canceled" %in% names(df)) {
+    df <- mutate(df, Canceled = 0)
+  }
+  return(df)
+}
+
+# Data Frame 1: Annual_New_Canceled_Investment
+Annual_New_Canceled_Investment <- clean_economy_tracker_data %>%
+  filter(!is.na(Announcement_Year) & !is.na(New_OR_Canceled)) %>%
+  group_by(Announcement_Year, New_OR_Canceled) %>%
+  summarise(Total_Investment = sum(Investment, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = New_OR_Canceled,
+              values_from = Total_Investment,
+              values_fill = 0) %>%
+  ensure_new_canceled_cols() %>%
+  rename(Year = Announcement_Year,
+         `New Investment` = New,
+         `Canceled Investment` = Canceled) %>%
+  select(Year, `New Investment`, `Canceled Investment`) %>%
+  arrange(Year)
+
+# Data Frame 2: Quarterly_New_Canceled_Investment
+Quarterly_New_Canceled_Investment <- clean_economy_tracker_data %>%
+  filter(!is.na(Announcement_Quarter) & !is.na(New_OR_Canceled)) %>%
+  group_by(Announcement_Quarter, New_OR_Canceled) %>%
+  summarise(Total_Investment = sum(Investment, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = New_OR_Canceled,
+              values_from = Total_Investment,
+              values_fill = 0) %>%
+  ensure_new_canceled_cols() %>%
+  rename(Quarter = Announcement_Quarter,
+         `New Investment` = New,
+         `Canceled Investment` = Canceled) %>%
+  select(Quarter, `New Investment`, `Canceled Investment`) %>%
+  arrange(Quarter)
+
+# Data Frame 3: Quarterly_Change_New_Canceled_Investment
+Quarterly_Change_New_Canceled_Investment <- Quarterly_New_Canceled_Investment %>%
+  arrange(Quarter) %>%
+  mutate(
+    Lag_New_Investment = lag(`New Investment`),
+    Lag_Canceled_Investment = lag(`Canceled Investment`)
+  ) %>%
+  mutate(
+    `Change in New Investment` = ifelse(is.na(Lag_New_Investment), 0, abs(`New Investment` - Lag_New_Investment)),
+    `Change in Canceled Investment` = ifelse(is.na(Lag_Canceled_Investment), 0, abs(`Canceled Investment` - Lag_Canceled_Investment))
+  ) %>%
+  select(Quarter, `Change in New Investment`, `Change in Canceled Investment`)
+
+# Data Frame 4: Net_Announced_Investment_Quarterly
+Net_Announced_Investment_Quarterly <- Quarterly_New_Canceled_Investment %>%
+  mutate(
+    `Net Announced Investment` = `New Investment` - abs(`Canceled Investment`)
+  ) %>%
+  select(Quarter, `Net Announced Investment`) %>%
+  arrange(Quarter)
+
+# Data Frame 5: Net_Announced_Investment_Year
+Net_Announced_Investment_Year <- Annual_New_Canceled_Investment %>%
+  mutate(
+    `Net Announced Investment` = `New Investment` - abs(`Canceled Investment`)
+  ) %>%
+  select(Year, `Net Announced Investment`) %>%
+  arrange(Year)
+
+# Data Frame 6: Net_Announced_Investment_Monthly
+# Step 1: Monthly sums
+Monthly_Investment_Summary <- clean_economy_tracker_data %>%
+  filter(!is.na(Announcement_Month_Year) & !is.na(Date) & !is.na(New_OR_Canceled)) %>% # Ensure Date is not NA for year/month extraction
+  mutate(
+    Announcement_Year_Num = year(Date),
+    Announcement_Month_Num = month(Date)
+  ) %>%
+  group_by(Announcement_Month_Year, Announcement_Year_Num, Announcement_Month_Num, New_OR_Canceled) %>%
+  summarise(Total_Investment = sum(Investment, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = New_OR_Canceled,
+              values_from = Total_Investment,
+              values_fill = 0) %>%
+  ensure_new_canceled_cols() %>%
+  rename(Month = Announcement_Month_Year,
+         `New Investment` = New,
+         `Canceled Investment` = Canceled) %>%
+  select(Month, Announcement_Year_Num, Announcement_Month_Num, `New Investment`, `Canceled Investment`) %>%
+  arrange(Announcement_Year_Num, Announcement_Month_Num)
+
+# Step 2: Calculate YoY change for Monthly data
+prior_year_monthly_data <- Monthly_Investment_Summary %>%
+  select(
+    PY_Ann_Year_Num = Announcement_Year_Num,
+    PY_Ann_Month_Num = Announcement_Month_Num,
+    Prior_Year_New_Investment = `New Investment`,
+    Prior_Year_Canceled_Investment = `Canceled Investment`
+  )
+
+Net_Announced_Investment_Monthly <- Monthly_Investment_Summary %>%
+  mutate(Target_Prior_Year = Announcement_Year_Num - 1) %>%
+  left_join(
+    prior_year_monthly_data,
+    by = c("Target_Prior_Year" = "PY_Ann_Year_Num", "Announcement_Month_Num" = "PY_Ann_Month_Num")
+  ) %>%
+  mutate(
+    `New Investment Versus Same Month Prior Year` = `New Investment` - Prior_Year_New_Investment,
+    `Canceled Investment Versus Same Month Prior Year` = `Canceled Investment` - Prior_Year_Canceled_Investment
+  ) %>%
+  select(
+    Month,
+    `New Investment`,
+    `Canceled Investment`,
+    `New Investment Versus Same Month Prior Year`,
+    `Canceled Investment Versus Same Month Prior Year`
+  ) %>%
+  arrange(Month)
+
+
+# ---- Export all data frames to a single Excel file ----
+
+# Define the list of data frames to export
+list_of_datasets <- list(
+  "Annual_New_Canceled_Inv" = Annual_New_Canceled_Investment,
+  "Quarterly_New_Canceled_Inv" = Quarterly_New_Canceled_Investment,
+  "Quarterly_Change_Inv" = Quarterly_Change_New_Canceled_Investment,
+  "Net_Announced_Inv_Quarterly" = Net_Announced_Investment_Quarterly,
+  "Net_Announced_Inv_Year" = Net_Announced_Investment_Year,
+  "Net_Announced_Inv_Monthly" = Net_Announced_Investment_Monthly,
+  "clean_tracker_data_modified" = clean_economy_tracker_data,
+  "unmodified_source_data" = unmodified_source_data
+)
+
+# --- User specified output file path ---
+# Please verify this path and change it if necessary.
+output_excel_path <- "~/Library/CloudStorage/OneDrive-RMI/Clean_Economy_Tracker_Investment_Analysis_05_June_2025.xlsx"
+
+# **FIX**: Create the directory if it doesn't exist
+output_dir <- dirname(output_excel_path)
+if (!dir.exists(output_dir)){
+  cat(paste0("Output directory '", output_dir, "' does not exist. Attempting to create it.\n"))
+  dir.create(output_dir, recursive = TRUE, showWarnings = TRUE)
+}
+
+# Write the data frames to Excel, each in a separate sheet
+if (dir.exists(output_dir)) {
+  write_xlsx(list_of_datasets, path = output_excel_path)
+  cat(paste0("\nAll data frames successfully exported to: ", output_excel_path, "\n"))
+} else {
+  cat(paste0("\nERROR: Output directory '", output_dir, "' could not be created or accessed. File not saved.\n"))
+  cat("Please check permissions or create the directory manually: ", output_dir, "\n")
+}
+
+# End of script
