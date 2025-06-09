@@ -1,0 +1,611 @@
+###############################################################################
+# R SCRIPT FOR SCRAPING ---
+# Columbia Critical Minerals Dashboard:
+#   - BFS crawl to discover HTML pages, JS references, potential endpoints
+#   - Save raw responses, parse & store in master data frame
+#   - Then specialized scraping of /minerals -> Commodities
+#   - Then building "flow", "summary", and "commodity-specific" endpoints
+#   - Fetch & store JSON from each endpoint in CSV-friendly format
+###############################################################################
+
+
+# -------------------- 1) LOAD LIBRARIES --------------------------------------
+needed <- c("rvest", "httr", "stringr", "jsonlite", "dplyr", "purrr", "urltools", 
+            "tibble", "xml2", "readr")
+for (pkg in needed) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+library(rvest)
+library(httr)
+library(stringr)
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(urltools)  # domain() for checking internal links
+library(tibble)
+library(xml2)
+library(readr)
+
+
+# -------------------- 2) CONFIG & DIRECTORY SETUP ----------------------------
+base_url  <- "https://criticalmaterials.energypolicy.columbia.edu"
+domain_nm <- domain(base_url)           # e.g. "criticalmaterials.energypolicy.columbia.edu"
+max_depth <- 2                          # BFS depth limit (adjust as needed)
+outdir    <- "DynamicScrapeData"        # Directory for raw responses
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+# Polite crawl delay (seconds)
+delay_sec <- 0.5
+
+
+# -------------------- 3) HELPER FUNCTIONS ------------------------------------
+# Polite HTML fetch
+fetch_html <- function(url) {
+  message("Fetching HTML: ", url)
+  Sys.sleep(delay_sec)
+  out <- tryCatch(
+    read_html(url),
+    error = function(e) {
+      message("  -> Error fetching HTML: ", e$message)
+      NULL
+    }
+  )
+  out
+}
+
+# Save raw response to disk
+save_raw_response <- function(res, url, suffix = "raw") {
+  if (is.null(res)) return(NA_character_)
+  safe_name <- gsub("^https?://|[/?=&]", "_", url)
+  safe_name <- gsub("__+", "_", safe_name)
+  fpath     <- file.path(outdir, paste0(safe_name, ".", suffix))
+  writeBin(content(res, as = "raw"), fpath)
+  fpath
+}
+
+# Attempt to parse the response as JSON or HTML. Return a list with:
+#   content_type, parse_status, parsed_data
+parse_response <- function(res) {
+  if (is.null(res)) {
+    return(list(
+      content_type = NA_character_,
+      parse_status = "No response",
+      parsed_data  = NULL
+    ))
+  }
+  
+  ctype        <- http_type(res)
+  text_content <- content(res, as = "text", encoding = "UTF-8")
+  
+  # If JSON
+  if (grepl("application/json", ctype, ignore.case = TRUE)) {
+    parse_attempt <- tryCatch({
+      data_obj <- fromJSON(text_content, flatten = TRUE)
+      list(
+        content_type = "application/json",
+        parse_status = "OK",
+        parsed_data  = data_obj
+      )
+    }, error = function(e) {
+      list(
+        content_type = "application/json",
+        parse_status = paste0("JSON parse error: ", e$message),
+        parsed_data  = NULL
+      )
+    })
+    return(parse_attempt)
+    
+    # If HTML
+  } else if (grepl("text/html", ctype, ignore.case = TRUE)) {
+    parse_attempt <- tryCatch({
+      doc    <- read_html(text_content)
+      tables <- html_table(doc, fill = TRUE)
+      if (length(tables) == 0) {
+        # store raw HTML text in a simple data frame
+        df <- data.frame(html_text = text_content, stringsAsFactors = FALSE)
+        list(
+          content_type = "text/html",
+          parse_status = "OK",
+          parsed_data  = df
+        )
+      } else if (length(tables) == 1) {
+        list(
+          content_type = "text/html",
+          parse_status = "OK",
+          parsed_data  = tables[[1]]
+        )
+      } else {
+        # multiple tables
+        list(
+          content_type = "text/html",
+          parse_status = "OK",
+          parsed_data  = tables
+        )
+      }
+    }, error = function(e) {
+      list(
+        content_type = "text/html",
+        parse_status = paste0("HTML parse error: ", e$message),
+        parsed_data  = NULL
+      )
+    })
+    return(parse_attempt)
+    
+    # Otherwise not parseable
+  } else {
+    return(list(
+      content_type = ctype,
+      parse_status = "Unparseable type",
+      parsed_data  = NULL
+    ))
+  }
+}
+
+# BFS queue item: list(url=..., depth=...)
+
+# Parse an HTML doc => return internal links + script links
+parse_html_for_links_and_scripts <- function(doc, page_url) {
+  # <a> tags
+  a_nodes <- html_elements(doc, "a")
+  hrefs   <- unique(na.omit(html_attr(a_nodes, "href")))
+  
+  # <script src=...>
+  script_nodes <- html_elements(doc, "script[src]")
+  script_srcs  <- unique(na.omit(html_attr(script_nodes, "src")))
+  
+  # Convert relative => absolute
+  abs_href   <- purrr::map_chr(hrefs,       ~ url_absolute(.x, page_url))
+  abs_script <- purrr::map_chr(script_srcs, ~ url_absolute(.x, page_url))
+  
+  # Filter only same-domain links
+  internal_links   <- abs_href[   domain(abs_href)   == domain_nm ]
+  internal_scripts <- abs_script[ domain(abs_script) == domain_nm ]
+  
+  list(
+    internal_links   = internal_links,
+    script_links     = internal_scripts
+  )
+}
+
+# Parse .js text for references to potential endpoints
+parse_js_for_api_endpoints <- function(js_text, base_url=base_url) {
+  # We'll look for patterns like:
+  #   (1) (https?://[^"'\s]+)
+  #   (2) /api/[^"'\s]*
+  #   (3) /[^"'\s]+\.json
+  #   (4) /explore/[^"'\s]+
+  #   (5) /minerals/..., /countries/..., /technologies/...
+  patterns <- c(
+    "(https?://[^\"'\\s]+)",  
+    "(/api/[^\"'\\s]+)",
+    "(/[^\"'\\s]+\\.json)",
+    "(/explore/[^\"'\\s]+)",
+    "(/minerals/[^\"'\\s]+)",
+    "(/countries/[^\"'\\s]+)",
+    "(/technologies/[^\"'\\s]+)"
+  )
+  
+  all_matches <- character()
+  for (pat in patterns) {
+    mm <- str_extract_all(js_text, pat)
+    mm <- unlist(mm)
+    if (length(mm)) {
+      all_matches <- c(all_matches, mm)
+    }
+  }
+  all_matches <- unique(all_matches)
+  
+  # Convert relative => absolute
+  abs_urls <- purrr::map_chr(all_matches, function(m) {
+    if (grepl("^https?://", m)) {
+      return(m)
+    } else if (grepl("^/", m)) {
+      return(paste0(base_url, m))
+    } else {
+      return(m)   # ignore or just return as-is
+    }
+  })
+  
+  unique(abs_urls)
+}
+
+
+###############################################################################
+# 4) BFS TO DISCOVER HTML PAGES & .JS FILES
+###############################################################################
+visited_html  <- character()
+discovered_js <- character()
+
+queue <- list(list(url = base_url, depth = 0))
+visited_html <- c(base_url)
+
+while (length(queue) > 0) {
+  item <- queue[[1]]
+  queue <- queue[-1]
+  
+  current_url   <- item$url
+  current_depth <- item$depth
+  
+  if (current_depth > max_depth) next
+  
+  doc <- fetch_html(current_url)
+  if (is.null(doc)) next
+  
+  found        <- parse_html_for_links_and_scripts(doc, current_url)
+  new_links    <- setdiff(found$internal_links, visited_html)
+  new_scripts  <- setdiff(found$script_links, discovered_js)
+  
+  # Enqueue new HTML links
+  for (l in new_links) {
+    visited_html <- c(visited_html, l)
+    queue <- append(queue, list(list(url = l, depth = current_depth + 1)))
+  }
+  
+  # Collect .js references
+  discovered_js <- c(discovered_js, new_scripts)
+}
+
+discovered_js <- unique(discovered_js)
+
+
+# 4B) DOWNLOAD & PARSE EACH .JS FOR REFERENCES
+js_api_endpoints <- character()
+
+for (jsu in discovered_js) {
+  message("Downloading JS: ", jsu)
+  Sys.sleep(delay_sec)
+  r <- tryCatch(GET(jsu), error = function(e) NULL)
+  
+  # If it's JS content, parse it
+  if (!is.null(r) && http_type(r) == "application/javascript") {
+    js_text     <- content(r, as = "text", encoding = "UTF-8")
+    found_eps   <- parse_js_for_api_endpoints(js_text, base_url)
+    js_api_endpoints <- c(js_api_endpoints, found_eps)
+  }
+}
+js_api_endpoints <- unique(js_api_endpoints)
+
+# Combine everything:
+#   1) visited_html (HTML pages from BFS)
+#   2) discovered_js (the .js file URLs)
+#   3) js_api_endpoints (API-like references from .js)
+all_potential <- unique(c(visited_html, discovered_js, js_api_endpoints))
+
+
+###############################################################################
+# 5) FETCH & PARSE ALL DISCOVERED URLS
+###############################################################################
+results_list <- vector("list", length(all_potential))
+
+for (i in seq_along(all_potential)) {
+  u <- all_potential[i]
+  message(sprintf("[%d/%d] GET: %s", i, length(all_potential), u))
+  Sys.sleep(delay_sec)
+  
+  resp  <- tryCatch(GET(u, timeout(15)), error = function(e) NULL)
+  fpath <- NA_character_
+  if (!is.null(resp)) {
+    fpath <- save_raw_response(resp, u, suffix = "raw")
+  }
+  
+  parse_out <- parse_response(resp)
+  
+  results_list[[i]] <- list(
+    url          = u,
+    file_path    = fpath,
+    content_type = parse_out$content_type,
+    parse_status = parse_out$parse_status,
+    parsed_data  = parse_out$parsed_data
+  )
+}
+
+result_df <- map_dfr(results_list, function(x) {
+  tibble(
+    url          = x$url,
+    file_path    = x$file_path,
+    content_type = x$content_type,
+    parse_status = x$parse_status,
+    parsed_data  = list(x$parsed_data)  # ensures a list-column
+  )
+})
+
+cat("\n=== BFS & Parsing SUMMARY ===\n")
+cat("Unique items scanned:", nrow(result_df), "\n\n")
+
+cat("Parse status distribution:\n")
+print(table(result_df$parse_status, useNA = "ifany"))
+
+cat("\nContent type distribution:\n")
+print(table(result_df$content_type, useNA = "ifany"))
+
+cat("\n--- BFS & parse step complete. 'result_df' has:\n",
+    "  url, file_path, content_type, parse_status, parsed_data\n",
+    "========================================================\n\n", sep="")
+
+
+
+###############################################################################
+# 6) SCRAPE AND FETCH COMPREHENSIVE COMMODITY / FLOWS / SUMMARY DATA
+###############################################################################
+cat("Now proceeding with specialized commodity scraping from /minerals/ ...\n\n")
+
+# Directory for final CSV exports (adjust to your needs)
+final_outdir <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Columbia University Critical Minerals Dashboard"
+dir.create(final_outdir, showWarnings=FALSE, recursive=TRUE)
+
+# Debugging function to print a line with a label
+debug_msg <- function(..., prefix="DEBUG:") {
+  cat(prefix, ..., "\n")
+}
+
+# Helper: fetch & parse JSON from an endpoint (returns list or NULL on error)
+fetch_json_data <- function(url) {
+  tryCatch({
+    debug_msg("Fetching:", url)
+    resp <- httr::GET(url)
+    code <- httr::status_code(resp)
+    
+    if (code != 200) {
+      warning("  -> Non-200 status code: ", code, " for URL: ", url)
+      return(NULL)
+    }
+    
+    content_text <- httr::content(resp, as="text", encoding="UTF-8")
+    parsed       <- jsonlite::fromJSON(content_text, simplifyVector = FALSE)
+    return(parsed)
+    
+  }, error = function(e) {
+    warning("  -> ERROR fetching ", url, ": ", e$message)
+    return(NULL)
+  })
+}
+
+# Helper: convert a nested list (JSON) to a JSON string for CSV
+nested_list_to_json_string <- function(x) {
+  if (is.null(x)) return(NA_character_)
+  jsonlite::toJSON(x, auto_unbox=TRUE)
+}
+
+
+###############################################################################
+# 6A) SCRAPE COMMODITY SLUGS FROM /minerals/
+###############################################################################
+minerals_index_url <- paste0(base_url, "/minerals/")
+
+debug_msg("Reading main minerals index page:", minerals_index_url)
+minerals_index_doc <- tryCatch(
+  read_html(minerals_index_url),
+  error = function(e) {
+    stop("FATAL ERROR reading the main minerals page: ", e$message)
+  }
+)
+
+# Extract subpage links under /minerals/
+element_links <- minerals_index_doc %>%
+  html_elements("a") %>%
+  html_attr("href") %>%
+  grep("^/minerals/", x=., value=TRUE)
+
+element_links <- unique(element_links)
+cat("Found", length(element_links), "potential mineral subpages.\n")
+
+commodity_ids <- character(0)
+
+for (link in element_links) {
+  full_link <- paste0(base_url, link)
+  debug_msg(" - Accessing subpage:", full_link)
+  
+  subpage_doc <- tryCatch({
+    read_html(full_link)
+  }, error = function(e) {
+    cat("   ERROR reading subpage:", e$message, "\n")
+    return(NULL)
+  })
+  
+  if (is.null(subpage_doc)) next
+  
+  # Find all /explore/ links
+  subpage_explore_links <- subpage_doc %>%
+    html_elements("a") %>%
+    html_attr("href") %>%
+    grep("^/explore/", x=., value=TRUE)
+  
+  cat("   Found", length(subpage_explore_links), "'explore' links on this subpage.\n")
+  
+  if (length(subpage_explore_links) > 0) {
+    for (clink in subpage_explore_links) {
+      # Extract "m=" param
+      m_val <- sub(".*m=", "", clink)
+      m_val <- sub("&.*", "", m_val)  # remove anything after next param
+      if (identical(m_val, clink)) next  # skip if no m= param
+      commodity_ids <- c(commodity_ids, m_val)
+    }
+  }
+}
+
+commodity_ids <- unique(commodity_ids)
+cat("Total unique commodity slugs extracted:", length(commodity_ids), "\n\n")
+
+if (length(commodity_ids) > 0) {
+  cat("Example commodity slugs:\n")
+  print(head(commodity_ids, 5))
+  cat("\n")
+} else {
+  cat("WARNING: No commodity slugs found. Possibly site structure changed.\n")
+}
+
+
+###############################################################################
+# 6B) BUILD ENDPOINTS (FLOWS, SUMMARY, COMMODITY-SPECIFIC)
+###############################################################################
+country_code <- 156           # For example, China
+flows       <- c("import", "export")
+years       <- 2017:2022
+category    <- "minerals"
+
+# Flow endpoints
+flow_grid <- expand.grid(
+  country  = country_code,
+  flow     = flows,
+  category = category,
+  year     = years,
+  stringsAsFactors=FALSE
+)
+flow_grid <- flow_grid[order(flow_grid$year, flow_grid$flow), ]
+flow_grid$endpoint_url <- with(flow_grid, 
+                               paste0(base_url, "/api/explore/flows/?",
+                                      "c=", country,
+                                      "&f=", flow,
+                                      "&ct=", category,
+                                      "&y=", year)
+)
+
+cat("Flow endpoints built:", nrow(flow_grid), "rows.\n")
+
+# Commodity summary endpoints
+summary_grid <- expand.grid(
+  country  = country_code,
+  flow     = flows,
+  category = category,
+  year     = years,
+  stringsAsFactors=FALSE
+)
+summary_grid <- summary_grid[order(summary_grid$year, summary_grid$flow), ]
+summary_grid$endpoint_url <- with(summary_grid,
+                                  paste0(base_url, "/api/explore/commodities/?",
+                                         "c=", country,
+                                         "&f=", flow,
+                                         "&ct=", category,
+                                         "&y=", year)
+)
+
+cat("Commodity summary endpoints built:", nrow(summary_grid), "rows.\n")
+
+# Commodity-specific endpoints
+if (length(commodity_ids) > 0) {
+  specific_grid <- expand.grid(
+    country      = country_code,
+    commodity_id = commodity_ids,
+    flow         = flows,
+    category     = category,
+    year         = years,
+    stringsAsFactors=FALSE
+  )
+  specific_grid <- specific_grid[order(specific_grid$commodity_id, 
+                                       specific_grid$year, 
+                                       specific_grid$flow), ]
+  
+  specific_grid$endpoint_url <- with(specific_grid,
+                                     paste0(base_url, "/api/explore/commodities/?",
+                                            "c=", country,
+                                            "&m=", commodity_id,
+                                            "&t=", "",
+                                            "&f=", flow,
+                                            "&ct=", category,
+                                            "&y=", year)
+  )
+  
+  cat("Commodity-specific endpoints built:", nrow(specific_grid), "rows.\n\n")
+} else {
+  specific_grid <- data.frame()
+  cat("No commodity IDs found, so no commodity-specific endpoints built.\n")
+}
+
+
+###############################################################################
+# 6C) FETCH DATA (FLOW, SUMMARY, SPECIFIC)
+###############################################################################
+# We'll define a robust function that creates a new list of the correct length
+# and assigns each request's result exactly once to avoid row mismatch.
+fetch_all_endpoints <- function(df, label="endpoints", endpoint_col="endpoint_url") {
+  n <- nrow(df)
+  if (n == 0) {
+    cat("No rows in", label, "data frame. Skipping fetch.\n")
+    df$data <- list()
+    return(df)
+  }
+  
+  cat("Fetching from", n, label, "...\n\n")
+  
+  # Prepare an empty list for the data
+  results_list <- vector("list", length = n)
+  
+  for (i in seq_len(n)) {
+    # Show progress occasionally
+    if (i %% 20 == 1) {
+      debug_msg(label, "- row", i, "of", n)
+    }
+    url_i <- df[[endpoint_col]][i]
+    results_list[[i]] <- fetch_json_data(url_i)  # list or NULL
+  }
+  
+  cat("Done fetching from", label, "\n\n")
+  df$data <- results_list
+  return(df)
+}
+
+flow_data_df    <- fetch_all_endpoints(flow_grid,      "flow endpoints")
+summary_data_df <- fetch_all_endpoints(summary_grid,   "commodity summary endpoints")
+specific_data_df<- fetch_all_endpoints(specific_grid,  "commodity-specific endpoints")
+
+
+###############################################################################
+# 6D) CONVERT NESTED LIST -> JSON STRING & EXPORT CSV
+###############################################################################
+cat("Converting nested JSON data to text for CSV export...\n")
+
+flow_data_df <- flow_data_df %>%
+  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
+  select(-data)
+
+summary_data_df <- summary_data_df %>%
+  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
+  select(-data)
+
+specific_data_df <- specific_data_df %>%
+  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
+  select(-data)
+
+# Write CSVs
+cat("Exporting CSVs to:\n  ", final_outdir, "\n\n", sep="")
+
+flow_csv    <- file.path(final_outdir, "flow_data.csv")
+summary_csv <- file.path(final_outdir, "summary_data.csv")
+specific_csv<- file.path(final_outdir, "specific_data.csv")
+
+cat("Writing flow_data_df ->", flow_csv, "\n")
+readr::write_csv(flow_data_df, flow_csv)
+
+cat("Writing summary_data_df ->", summary_csv, "\n")
+readr::write_csv(summary_data_df, summary_csv)
+
+cat("Writing specific_data_df ->", specific_csv, "\n")
+readr::write_csv(specific_data_df, specific_csv)
+
+cat("\nCSV export complete.\n\n")
+
+
+###############################################################################
+# 6E) GLIMPSE DATA
+###############################################################################
+cat("Glimpse each final data frame in R:\n\n")
+
+cat("### flow_data_df ###\n")
+glimpse(flow_data_df)
+
+cat("\n### summary_data_df ###\n")
+glimpse(summary_data_df)
+
+cat("\n### specific_data_df ###\n")
+glimpse(specific_data_df)
+
+cat("\n=== SCRIPT COMPLETE ===\n",
+    "You have:\n",
+    "  - 'result_df' from BFS (all discovered pages, JS, endpoints)\n",
+    "  - 3 CSVs in '", final_outdir, "' (flow_data.csv, summary_data.csv, specific_data.csv)\n",
+    "  - In-memory data frames:\n",
+    "       flow_data_df, summary_data_df, specific_data_df\n",
+    sep="")
