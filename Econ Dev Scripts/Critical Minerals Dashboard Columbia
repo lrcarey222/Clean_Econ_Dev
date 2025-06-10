@@ -1,611 +1,565 @@
-###############################################################################
-# R SCRIPT FOR SCRAPING ---
-# Columbia Critical Minerals Dashboard:
-#   - BFS crawl to discover HTML pages, JS references, potential endpoints
-#   - Save raw responses, parse & store in master data frame
-#   - Then specialized scraping of /minerals -> Commodities
-#   - Then building "flow", "summary", and "commodity-specific" endpoints
-#   - Fetch & store JSON from each endpoint in CSV-friendly format
-###############################################################################
+# ---
+# Columbia Critical Materials Data Fetcher
+# Fetches 2023 import/export data for a hard-coded list of materials
+# across a hard-coded list of countries.
+# Date: 2025-06-10
+# ---
 
+# SECTION 1: SETUP
+# --------------------------------------------------------------------------
+cat("=== MULTI-COUNTRY 2023 CRITICAL MATERIALS FETCHER ===\n")
 
-# -------------------- 1) LOAD LIBRARIES --------------------------------------
-needed <- c("rvest", "httr", "stringr", "jsonlite", "dplyr", "purrr", "urltools", 
-            "tibble", "xml2", "readr")
-for (pkg in needed) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg)
+# Load required packages
+required_packages <- c("httr", "jsonlite", "dplyr", "purrr", "tibble", "writexl")
+
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    cat(sprintf("Installing package: %s\n", pkg))
+    install.packages(pkg, dependencies = TRUE)
+    library(pkg, character.only = TRUE)
   }
 }
 
-library(rvest)
-library(httr)
-library(stringr)
-library(jsonlite)
-library(dplyr)
-library(purrr)
-library(urltools)  # domain() for checking internal links
-library(tibble)
-library(xml2)
-library(readr)
+cat("All required packages loaded.\n\n")
+
+# SECTION 2: CONFIGURATION
+# --------------------------------------------------------------------------
+BASE_URL <- "https://criticalmaterials.energypolicy.columbia.edu"
+API_BASE <- paste0(BASE_URL, "/api/explore/flows/")
+DELAY_SEC <- 0.3  # Polite crawl delay
+
+# Output directory
+OUTPUT_DIR <- getwd()
+
+# Headers to avoid issues
+HEADERS <- c(
+  "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  "Accept" = "application/json, */*",
+  "Accept-Encoding" = "gzip, deflate",
+  "Accept-Language" = "en-US,en;q=0.9"
+)
+
+# --- HARD-CODED PARAMETERS ---
+TARGET_YEAR <- "2023"
+
+# SECTION 3: HARD-CODED LISTS
+# --------------------------------------------------------------------------
+cat("Using hard-coded lists for countries, minerals, and technologies.\n")
+
+# Hard-coded list of all unique Country Codes
+TARGET_COUNTRY_CODES <- c("842")
+
+# Hard-coded list of all unique "m" values (Minerals) - UPDATED
+all_mineral_ids <- c(
+  "Al_aluminium-ores-and-concentrates_260600", "Al_aluminium-oxide", "Al_aluminium-oxide_281810",
+  "Al_aluminium-oxide_281820", "Al_aluminium-hydroxide_281830", "Al_aluminium-fluorides_282612",
+  "Al_aluminium-chlorides_282732", "Al_aluminium-sulphates_283322", "Al_aluminium-unwrought_760110",
+  "Al_aluminium-alloys-unwrought_760120", "Al_aluminium-powders", "Al_aluminium-powders_760310",
+  "Al_aluminium-powders_760320", "Al_aluminium-articles", "Al_aluminium-articles_760410",
+  "Al_aluminium-articles_760421", "Al_aluminium-articles_760429", "Al_aluminium-articles_760511",
+  "Al_aluminium-articles_760519", "Al_aluminium-articles_760521", "Al_aluminium-articles_760529",
+  "Al_aluminium-articles_760611", "Al_aluminium-articles_760612", "Al_aluminium-articles_760691",
+  "Al_aluminium-articles_760692", "Al_aluminium-articles_760711", "Al_aluminium-articles_760719",
+  "Al_aluminium-articles_760720", "Al_aluminium-articles_760810", "Al_aluminium-articles_760820",
+  "Al_aluminium-articles_760900", "Al_aluminium-articles_761010", "Al_aluminium-articles_761090",
+  "Al_aluminium-articles_761100", "Al_aluminium-articles_761210", "Al_aluminium-articles_761290",
+  "Al_aluminium-articles_761300", "Al_aluminium-articles_761410", "Al_aluminium-articles_761490",
+  "Al_aluminium-articles_761510", "Al_aluminium-articles_761520", "Al_aluminium-articles_761610",
+  "Al_aluminium-articles_761691", "Al_aluminium-articles_761699", "Al_aluminium-residues_262040",
+  "Al_aluminium-waste-and-scrap_760200", "As_arsenic_280480", "As_arsenic-trichloride_281219",
+  "As_arsenic-residues_262060", "Ba_barium_280522", "Ba_barium-sulphate", "Ba_barium-sulphate_251110",
+  "Ba_barium-sulphate_283327", "Ba_barium-carbonate", "Ba_barium-carbonate_251120",
+  "Ba_barium-carbonate_283660", "Ba_barium-oxide-hydroxide-and-peroxide_281630", "Ba_barium-chloride_282738",
+  "Be_beryllium-unwrought_811212", "Be_beryllium-unwrought-waste-and-scrap-powders_811211",
+  "Be_beryllium-wrought_811219", "Be_beryllium-articles_811213", "Be_antimony-beryllium-cadmium-chromium_262091",
+  "B_natural-borates_252800", "B_natural-sodium-borates_252810", "B_boron-tellurium_280450",
+  "B_borates-(disodium-tetraborate-anhydrous)_284011", "B_borates-(disodium-tetraborate-other-than-anhydrous)_284019",
+  "B_borates-(other)_284020", "B_peroxoborates_284030", "B_boric-acids_281000", "B_boron-enriched_284520",
+  "Cd_cadmium-sulphides_283030", "Cd_cadmium-unwrought-powders_810720", "Cd_cadmium-other-than-waste-and-scrap_811269",
+  "Cd_cadmium-unwrought-waste-and-scrap_810710", "Cd_cadmium-other-than-unwrought_810790",
+  "Cd_cadmium-pigments_320630", "Cd_cadmium-waste-and-scrap", "Cd_cadmium-waste-and-scrap_810730",
+  "Cd_cadmium-waste-and-scrap_811261", "Ce_cerium-compounds_284610", "Ce_rare-earth-metals_280530",
+  "Cr_chromium-ores-and-concentrates_261000", "Cr_chromium-trioxide_281910", "Cr_chromium-oxide-and-dioxide_281990",
+  "Cr_chromium-sulphates_283323", "Cr_chromium-wrought_811221", "Cr_chromium-unwrought_811229",
+  "Cr_chromium_811220", "Cr_chromium-waste-and-scrap_811222", "Co_cobalt-ores-and-concentrates_260500",
+  "Co_cobalt-oxides-and-hydroxides_282200", "Co_cobalt-chlorides_282734", "Co_cobalt-products_810520",
+  "Co_cobalt-acetates_291523", "Co_cobalt-intermediates-unwrough-waste-and-scrap-powders_810510",
+  "Co_cobalt-products_810590", "Co_cobalt-waste-and-scrap_810530", "Cu_copper-ores-and-concentrates_260300",
+  "Cu_copper-oxides-and-hydroxides_282550", "Cu_copper-chlorides_282741", "Cu_copper-sulphates_283325",
+  "Cu_copper-articles", "Cu_copper-articles_740200", "Cu_copper-articles_740311", "Cu_copper-articles_740312",
+  "Cu_copper-articles_740313", "Cu_copper-articles_740319", "Cu_copper-articles_740321", "Cu_copper-articles_740322",
+  "Cu_copper-articles_740610", "Cu_copper-articles_740620", "Cu_copper-articles_740100", "Cu_copper-articles_740329",
+  "Cu_copper-articles_740500", "Cu_copper-articles_740710", "Cu_copper-articles_740721", "Cu_copper-articles_740729",
+  "Cu_copper-articles_740811", "Cu_copper-articles_740819", "Cu_copper-articles_740821", "Cu_copper-articles_740822",
+  "Cu_copper-articles_740829", "Cu_copper-articles_740911", "Cu_copper-articles_740919", "Cu_copper-articles_740921",
+  "Cu_copper-articles_740929", "Cu_copper-articles_740931", "Cu_copper-articles_740939", "Cu_copper-articles_740940",
+  "Cu_copper-articles_740990", "Cu_copper-articles_741011", "Cu_copper-articles_741012", "Cu_copper-articles_741021",
+  "Cu_copper-articles_741022", "Cu_copper-articles_741110", "Cu_copper-articles_741121", "Cu_copper-articles_741122",
+  "Cu_copper-articles_741129", "Cu_copper-articles_741210", "Cu_copper-articles_741220", "Cu_copper-articles_741300",
+  "Cu_copper-articles_741410", "Cu_copper-articles_741510", "Cu_copper-articles_741521", "Cu_copper-articles_741529",
+  "Cu_copper-articles_741533", "Cu_copper-articles_741539", "Cu_copper-articles_741600", "Cu_copper-articles_741700",
+  "Cu_copper-articles_741810", "Cu_copper-articles_741820", "Cu_copper-articles_741910", "Cu_copper-articles_741920",
+  "Cu_copper-articles_741980", "Cu_copper-articles_741991", "Cu_copper-articles_741999",
+  "Cu_copper-slag-ash-and-residues_262030", "Cu_copper-waste-and-scrap_740400", "Dy_rare-earth-metals_280530",
+  "Dy_rare-earth-metals-compounds_284690", "Er_rare-earth-metals_280530", "Er_rare-earth-metals-compounds_284690",
+  "Eu_rare-earth-metals_280530", "Eu_rare-earth-metals-compounds_284690", "Gd_rare-earth-metals_280530",
+  "Gd_rare-earth-metals-compounds_284690", "Gd_radioactive-elements_284442",
+  "Ga_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-articles-and-waste_811299",
+  "Ga_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-unwrought_811292",
+  "Ge_germanium-oxides-and-zirconium-dioxide_282560", "Ge_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-articles-and-waste",
+  "Ge_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-articles-and-waste_811299",
+  "Ge_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-articles-and-waste_811292",
+  "Ge_germanium-waste-and-scrap_811230", "Gr_graphite-natural", "Gr_graphite-natural_250410",
+  "Gr_graphite-natural_250490", "Gr_synthetic-graphite-input-petroleum-coke_271312",
+  "Gr_synthetic-graphite-input-pitch-coke_270820", "Gr_graphite-artificial_380110",
+  "Gr_graphite-colloidal-or-semi-colloidal_380120", "Gr_graphite-articles_380190",
+  "Hf_hafnium-and-articles-thereof-unwrought-powders-waste-and-scrap_811231",
+  "Hf_hafnium-and-articles-thereof-unwrought-other-than-powders-waste-and-scrap_811239",
+  "Ho_rare-earth-metals_280530", "Ho_rare-earth-metals-compounds_284690", "In_germanium-oxides-and-zirconium-dioxide_811292",
+  "In_germanium-oxides-and-zirconium-dioxide_811299", "In_germanium-oxides-and-zirconium-dioxide",
+  "Ir_iridium-osmium-ruthenium-unwrought_711041", "Ir_iridium-osmium-ruthenium-semi-manufactured_711049",
+  "Fe_iron-ores-and-concentrates", "Fe_iron-ores-and-concentrates_260111", "Fe_iron-ores-and-concentrates_260112",
+  "Fe_iron-pyrites_260120", "Fe_earth-colours-iron_282120", "Fe_iron-oxides-and-hydroxides_282110",
+  "Fe_ferro-silico-chromium-alloys_720250", "Fe_iron-non-alloy-pig", "Fe_iron-non-alloy-pig_720110",
+  "Fe_iron-non-alloy-pig_720120", "Fe_iron-alloy-pig_720150", "Fe_ferro-manganese-alloys",
+  "Fe_ferro-manganese-alloys_720211", "Fe_ferro-manganese-alloys_720219", "Fe_ferro-silicon-alloys",
+  "Fe_ferro-silicon-alloys_720221", "Fe_ferro-silicon-alloys_720229", "Fe_ferro-silico-manganese-alloys_720230",
+  "Fe_ferro-chromium-alloys", "Fe_ferro-chromium-alloys_720241", "Fe_ferro-chromium-alloys_720249",
+  "Fe_ferro-nickel-alloys_720260", "Fe_ferro-molybdenum-alloys_720270", "Fe_ferro-tungsten-alloys_720280",
+  "Fe_ferro-titanium-alloys_720291", "Fe_ferro-vanadium-alloys_720292", "Fe_ferro-niobium-alloys_720293",
+  "Fe_ferro-alloys-other_720299", "Fe_ferrous-products", "Fe_ferrous-products_720310",
+  "Fe_ferrous-products_720390", "Fe_ferrous-products_720450", "Fe_pig-iron", "Fe_pig-iron_720510",
+  "Fe_pig-iron_720529", "Fe_alloy-steel-powders_720521", "Fe_iron-or-non-alloy-steel-articles",
+  "Fe_iron-or-non-alloy-steel-articles_720610", "Fe_iron-or-non-alloy-steel-articles_720690",
+  "Fe_iron-or-non-alloy-steel-articles_720711", "Fe_iron-or-non-alloy-steel-articles_720712",
+  "Fe_iron-or-non-alloy-steel-articles_720719", "Fe_iron-or-non-alloy-steel-articles_720720",
+  "Fe_iron-or-non-alloy-steel-articles_720810", "Fe_iron-or-non-alloy-steel-articles_720825",
+  "Fe_iron-or-non-alloy-steel-articles_720826", "Fe_iron-or-non-alloy-steel-articles_720827",
+  "Fe_iron-or-non-alloy-steel-articles_720836", "Fe_iron-or-non-alloy-steel-articles_720837",
+  "Fe_iron-or-non-alloy-steel-articles_720838", "Fe_iron-or-non-alloy-steel-articles_720839",
+  "Fe_iron-or-non-alloy-steel-articles_720840", "Fe_iron-or-non-alloy-steel-articles_720851",
+  "Fe_iron-or-non-alloy-steel-articles_720852", "Fe_iron-or-non-alloy-steel-articles_720853",
+  "Fe_iron-or-non-alloy-steel-articles_720854", "Fe_iron-or-non-alloy-steel-articles_720890",
+  "Fe_iron-or-non-alloy-steel-articles_720915", "Fe_iron-or-non-alloy-steel-articles_720916",
+  "Fe_iron-or-non-alloy-steel-articles_720917", "Fe_iron-or-non-alloy-steel-articles_720918",
+  "Fe_iron-or-non-alloy-steel-articles_720925", "Fe_iron-or-non-alloy-steel-articles_720926",
+  "Fe_iron-or-non-alloy-steel-articles_720927", "Fe_iron-or-non-alloy-steel-articles_720928",
+  "Fe_iron-or-non-alloy-steel-articles_720990", "Fe_iron-or-non-alloy-steel-articles_721011",
+  "Fe_iron-or-non-alloy-steel-articles_721012", "Fe_iron-or-non-alloy-steel-articles_721020",
+  "Fe_iron-or-non-alloy-steel-articles_721030", "Fe_iron-or-non-alloy-steel-articles_721041",
+  "Fe_iron-or-non-alloy-steel-articles_721049", "Fe_iron-or-non-alloy-steel-articles_721050",
+  "Fe_iron-or-non-alloy-steel-articles_721061", "Fe_iron-or-non-alloy-steel-articles_721069",
+  "Fe_iron-or-non-alloy-steel-articles_721070", "Fe_iron-or-non-alloy-steel-articles_721090",
+  "Fe_iron-or-non-alloy-steel-articles_721113", "Fe_iron-or-non-alloy-steel-articles_721114",
+  "Fe_iron-or-non-alloy-steel-articles_721119", "Fe_iron-or-non-alloy-steel-articles_721123",
+  "Fe_iron-or-non-alloy-steel-articles_721129", "Fe_iron-or-non-alloy-steel-articles_721190",
+  "Fe_iron-or-non-alloy-steel-articles_721210", "Fe_iron-or-non-alloy-steel-articles_721220",
+  "Fe_iron-or-non-alloy-steel-articles_721230", "Fe_iron-or-non-alloy-steel-articles_721240",
+  "Fe_iron-or-non-alloy-steel-articles_721250", "Fe_iron-or-non-alloy-steel-articles_721260",
+  "Fe_iron-or-non-alloy-steel-articles_721310", "Fe_iron-or-non-alloy-steel-articles_721320",
+  "Fe_iron-or-non-alloy-steel-articles_721391", "Fe_iron-or-non-alloy-steel-articles_721399",
+  "Fe_iron-or-non-alloy-steel-articles_721410", "Fe_iron-or-non-alloy-steel-articles_721420",
+  "Fe_iron-or-non-alloy-steel-articles_721430", "Fe_iron-or-non-alloy-steel-articles_721491",
+  "Fe_iron-or-non-alloy-steel-articles_721499", "Fe_iron-or-non-alloy-steel-articles_721510",
+  "Fe_iron-or-non-alloy-steel-articles_721550", "Fe_iron-or-non-alloy-steel-articles_721590",
+  "Fe_iron-or-non-alloy-steel-articles_721610", "Fe_iron-or-non-alloy-steel-articles_721621",
+  "Fe_iron-or-non-alloy-steel-articles_721622", "Fe_iron-or-non-alloy-steel-articles_721631",
+  "Fe_iron-or-non-alloy-steel-articles_721632", "Fe_iron-or-non-alloy-steel-articles_721633",
+  "Fe_iron-or-non-alloy-steel-articles_721640", "Fe_iron-or-non-alloy-steel-articles_721650",
+  "Fe_iron-or-non-alloy-steel-articles_721661", "Fe_iron-or-non-alloy-steel-articles_721669",
+  "Fe_iron-or-non-alloy-steel-articles_721691", "Fe_iron-or-non-alloy-steel-articles_721699",
+  "Fe_iron-or-non-alloy-steel-articles_721710", "Fe_iron-or-non-alloy-steel-articles_721720",
+  "Fe_iron-or-non-alloy-steel-articles_721730", "Fe_iron-or-non-alloy-steel-articles_721790",
+  "Fe_iron-or-non-alloy-steel-articles_730630", "Fe_steel-alloy-articles", "Fe_steel-alloy-articles_722619",
+  "Fe_steel-alloy-articles_722620", "Fe_steel-alloy-articles_722511", "Fe_steel-alloy-articles_722519",
+  "Fe_steel-alloy-articles_722530", "Fe_steel-alloy-articles_722540", "Fe_steel-alloy-articles_722550",
+  "Fe_steel-alloy-articles_722591", "Fe_steel-alloy-articles_722592", "Fe_steel-alloy-articles_722599",
+  "Fe_steel-alloy-articles_722611", "Fe_steel-alloy-articles_722691", "Fe_steel-alloy-articles_722692",
+  "Fe_steel-alloy-articles_722699", "Fe_steel-alloy-articles_722710", "Fe_steel-alloy-articles_722720",
+  "Fe_steel-alloy-articles_722790", "Fe_steel-alloy-articles_722810", "Fe_steel-alloy-articles_722820",
+  "Fe_steel-alloy-articles_722830", "Fe_steel-alloy-articles_722840", "Fe_steel-alloy-articles_722850",
+  "Fe_steel-alloy-articles_722860", "Fe_steel-alloy-articles_722870", "Fe_steel-alloy-articles_722880",
+  "Fe_steel-alloy-articles_722920", "Fe_steel-alloy-articles_722990", "Fe_steel-alloy-articles_730451",
+  "Fe_steel-alloy-articles_730459", "Fe_stainless-steel-primary-forms_721810", "Fe_stainless-steel-semi-finished-products",
+  "Fe_stainless-steel-semi-finished-products_721891", "Fe_stainless-steel-semi-finished-products_721899",
+  "Fe_stainless-steel-articles", "Fe_stainless-steel-articles_721911", "Fe_stainless-steel-articles_721912",
+  "Fe_stainless-steel-articles_721913", "Fe_stainless-steel-articles_721914", "Fe_stainless-steel-articles_721921",
+  "Fe_stainless-steel-articles_721922", "Fe_stainless-steel-articles_721923", "Fe_stainless-steel-articles_721924",
+  "Fe_stainless-steel-articles_721931", "Fe_stainless-steel-articles_721932", "Fe_stainless-steel-articles_721933",
+  "Fe_stainless-steel-articles_721934", "Fe_stainless-steel-articles_721935", "Fe_stainless-steel-articles_721990",
+  "Fe_stainless-steel-articles_722011", "Fe_stainless-steel-articles_722012", "Fe_stainless-steel-articles_722020",
+  "Fe_stainless-steel-articles_722090", "Fe_stainless-steel-articles_722100", "Fe_stainless-steel-articles_722211",
+  "Fe_stainless-steel-articles_722219", "Fe_stainless-steel-articles_722220", "Fe_stainless-steel-articles_722230",
+  "Fe_stainless-steel-articles_722240", "Fe_stainless-steel-articles_722300", "Fe_stainless-steel-articles_730422",
+  "Fe_stainless-steel-articles_730424", "Fe_stainless-steel-articles_730441", "Fe_stainless-steel-articles_730449",
+  "Fe_stainless-steel-articles_730611", "Fe_stainless-steel-articles_730621", "Fe_stainless-steel-articles_730640",
+  "Fe_stainless-steel-articles_730721", "Fe_stainless-steel-articles_730722", "Fe_stainless-steel-articles_730723",
+  "Fe_stainless-steel-articles_730729", "Fe_stainless-steel-articles_732393", "Fe_steel-alloy-primary-forms_722410",
+  "Fe_steel-alloy-semi-finished-products_722490", "Fe_iron-or-steel-articles", "Fe_iron-or-steel-articles_730110",
+  "Fe_iron-or-steel-articles_730120", "Fe_iron-or-steel-articles_730210", "Fe_iron-or-steel-articles_730230",
+  "Fe_iron-or-steel-articles_730240", "Fe_iron-or-steel-articles_730290", "Fe_iron-or-steel-articles_730300",
+  "Fe_iron-or-steel-articles_730411", "Fe_iron-or-steel-articles_730419", "Fe_iron-or-steel-articles_730423",
+  "Fe_iron-or-steel-articles_730429", "Fe_iron-or-steel-articles_730431", "Fe_iron-or-steel-articles_730439",
+  "Fe_iron-or-steel-articles_730490", "Fe_iron-or-steel-articles_730511", "Fe_iron-or-steel-articles_730512",
+  "Fe_iron-or-steel-articles_730519", "Fe_iron-or-steel-articles_730520", "Fe_iron-or-steel-articles_730531",
+  "Fe_iron-or-steel-articles_730539", "Fe_iron-or-steel-articles_730590", "Fe_iron-or-steel-articles_730619",
+  "Fe_iron-or-steel-articles_730629", "Fe_iron-or-steel-articles_730650", "Fe_iron-or-steel-articles_730661",
+  "Fe_iron-or-steel-articles_730669", "Fe_iron-or-steel-articles_730690", "Fe_iron-or-steel-articles_730711",
+  "Fe_iron-or-steel-articles_730719", "Fe_iron-or-steel-articles_730791", "Fe_iron-or-steel-articles_730792",
+  "Fe_iron-or-steel-articles_730793", "Fe_iron-or-steel-articles_730799", "Fe_iron-or-steel-articles_730810",
+  "Fe_iron-or-steel-articles_730820", "Fe_iron-or-steel-articles_730830", "Fe_iron-or-steel-articles_730840",
+  "Fe_iron-or-steel-articles_730890", "Fe_iron-or-steel-articles_730900", "Fe_iron-or-steel-articles_731010",
+  "Fe_iron-or-steel-articles_731021", "Fe_iron-or-steel-articles_731029", "Fe_iron-or-steel-articles_731100",
+  "Fe_iron-or-steel-articles_731210", "Fe_iron-or-steel-articles_731290", "Fe_iron-or-steel-articles_731300",
+  "Fe_iron-or-steel-articles_731412", "Fe_iron-or-steel-articles_731414", "Fe_iron-or-steel-articles_731419",
+  "Fe_iron-or-steel-articles_731420", "Fe_iron-or-steel-articles_731431", "Fe_iron-or-steel-articles_731439",
+  "Fe_iron-or-steel-articles_731441", "Fe_iron-or-steel-articles_731442", "Fe_iron-or-steel-articles_731449",
+  "Fe_iron-or-steel-articles_731450", "Fe_iron-or-steel-articles_731511", "Fe_iron-or-steel-articles_731512",
+  "Fe_iron-or-steel-articles_731519", "Fe_iron-or-steel-articles_731520", "Fe_iron-or-steel-articles_731581",
+  "Fe_iron-or-steel-articles_731582", "Fe_iron-or-steel-articles_731589", "Fe_iron-or-steel-articles_731590",
+  "Fe_iron-or-steel-articles_731600", "Fe_iron-or-steel-articles_731700", "Fe_iron-or-steel-articles_731811",
+  "Fe_iron-or-steel-articles_731812", "Fe_iron-or-steel-articles_731813", "Fe_iron-or-steel-articles_731814",
+  "Fe_iron-or-steel-articles_731815", "Fe_iron-or-steel-articles_731816", "Fe_iron-or-steel-articles_731819",
+  "Fe_iron-or-steel-articles_731821", "Fe_iron-or-steel-articles_731822", "Fe_iron-or-steel-articles_731823",
+  "Fe_iron-or-steel-articles_731824", "Fe_iron-or-steel-articles_731829", "Fe_iron-or-steel-articles_731940",
+  "Fe_iron-or-steel-articles_731990", "Fe_iron-or-steel-articles_732010", "Fe_iron-or-steel-articles_732020",
+  "Fe_iron-or-steel-articles_732090", "Fe_iron-or-steel-articles_732111", "Fe_iron-or-steel-articles_732112",
+  "Fe_iron-or-steel-articles_732119", "Fe_iron-or-steel-articles_732181", "Fe_iron-or-steel-articles_732182",
+  "Fe_iron-or-steel-articles_732189", "Fe_iron-or-steel-articles_732190", "Fe_iron-or-steel-articles_732211",
+  "Fe_iron-or-steel-articles_732219", "Fe_iron-or-steel-articles_732290", "Fe_iron-or-steel-articles_732310",
+  "Fe_iron-or-steel-articles_732391", "Fe_iron-or-steel-articles_732392", "Fe_iron-or-steel-articles_732394",
+  "Fe_iron-or-steel-articles_732399", "Fe_iron-or-steel-articles_732410", "Fe_iron-or-steel-articles_732421",
+  "Fe_iron-or-steel-articles_732429", "Fe_iron-or-steel-articles_732490", "Fe_iron-or-steel-articles_732510",
+  "Fe_iron-or-steel-articles_732591", "Fe_iron-or-steel-articles_732599", "Fe_iron-or-steel-articles_732611",
+  "Fe_iron-or-steel-articles_732619", "Fe_iron-or-steel-articles_732620", "Fe_iron-or-steel-articles_732690",
+  "Fe_ferrous-waste-and-scrap", "Fe_ferrous-waste-and-scrap_720410", "Fe_ferrous-waste-and-scrap_720421",
+  "Fe_ferrous-waste-and-scrap_720429", "Fe_ferrous-waste-and-scrap_720430", "Fe_ferrous-waste-and-scrap_720441",
+  "Fe_ferrous-waste-and-scrap_720449", "La_rare-earth-metals_280530", "La_rare-earth-metals-compounds_284690",
+  "Li_mineral-substances_253090", "Li_lithium-oxide-and-hydroxide_282520", "Li_lithium-carbonates_283691",
+  "Li_chlorides-including-lithium_282739", "Li_lithium_284530", "Mg_magnesium-sulphates_253020",
+  "Mg_magnesium-carbonate_251910", "Mg_magnesia_251990", "Mg_magnesium-hydroxide-and-peroxide_281610",
+  "Mg_magnesium-chlorides_282731", "Mg_magensium-sulphates_283321", "Mg_magnesium-unwrought",
+  "Mg_magnesium-unwrought_810411", "Mg_magnesium-unwrought_810419", "Mg_magnesium-articles",
+  "Mg_magnesium-articles_810430", "Mg_magnesium-articles_810490", "Mg_magnesium-waste-and-scrap_810420",
+  "Mn_manganese-ores-and-concentrats_260200", "Mn_manganese-dioxide_282010",
+  "Mn_manganese-oxides-excluding-manganese-dioxide_282090", "Mn_sulphates-including-manganese_283329",
+  "Mn_manganese-articles_811100", "Mo_molybdenum-ores-and-concentrates", "Mo_molybdenum-ores-and-concentrates_261310",
+  "Mo_molybdenum-ores-and-concentrates_261390", "Mo_molybdenum-oxides-and-hydroxides_282570",
+  "Mo_molybdenum-unwrought", "Mo_molybdenum-unwrought_810294", "Mo_molybdenum-unwrought_810291",
+  "Mo_molybdenum-articles", "Mo_molybdenum-articles_810292", "Mo_molybdenum-articles_810293",
+  "Mo_molybdenum-articles_810295", "Mo_molybdenum-articles_810296", "Mo_molybdenum-articles_810299",
+  "Mo_molybdenum-articles_810210", "Mo_molybdenum-waste-and-scrap_810297", "Nd_rare-earth-metals_280530",
+  "Nd_rare-earth-metals-compounds_284690", "Ni_nickel-ores-and-concentrates_260400", "Ni_nickel-articles",
+  "Ni_nickel-articles_750400", "Ni_nickel-articles_750110", "Ni_nickel-articles_750120",
+  "Ni_nickel-oxides-and-hydroxides_282540", "Ni_nickel-chlorides_282735", "Ni_nickel-sulphates_283324",
+  "Ni_nickel-unwrought", "Ni_nickel-unwrought_750210", "Ni_nickel-unwrought_750220",
+  "Ni_nickel-articles_750511", "Ni_nickel-articles_750512", "Ni_nickel-articles_750521",
+  "Ni_nickel-articles_750522", "Ni_nickel-articles_750610", "Ni_nickel-articles_750620",
+  "Ni_nickel-articles_750711", "Ni_nickel-articles_750712", "Ni_nickel-articles_750720",
+  "Ni_nickel-articles_750800", "Ni_nickel-articles_750810", "Ni_nickel-articles_750890",
+  "Ni_nickel-waste-and-scrap_750300", "Nb_niobium-tantalum-vanadium-ores-and-concentrates_261590",
+  "Nb_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-unwrought_811292",
+  "Nb_gallium-germanium-hafnium-indium-niobium-rhenium-vanadium-articles-and-waste_811299",
+  "Os_iridium-osmium-ruthenium-unwrought_711041", "Os_iridium-osmium-ruthenium-semi-manufactured_711049",
+  "Pd_palladium-unwrought_711021", "Pd_palladium-semi-manufactured_711029", "P_phosphate-rock",
+  "P_phosphate-rock_251010", "P_phosphate-rock_251020", "P_elemental-phosphorus_280470",
+  "P_phosphoric-acid_280920", "P_phosphates_283529", "P_phosphorus-oxides_280910",
+  "P_phosphorus-chlorides", "P_phosphorus-chlorides_281212", "P_phosphorus-chlorides_281213",
+  "P_phosphorus-chlorides_281214", "P_polyphosphates", "P_polyphosphates_283531",
+  "P_polyphosphates_283539", "Pt_platinum-unwrought_711011", "Pt_platinum-semi-factured_711019",
+  "Pt_platinum-catalysts_711510", "Pt_platinum-waste-and-scrap", "Pt_platinum-waste-and-scrap_711292",
+  "Pt_platinum-waste-and-scrap_711220", "Pr_rare-earth-metals_280530", "Pr_rare-earth-metals-compounds_284690",
+  "Rh_rhodium-unwrought_711031", "Rh_rhodium-semi-manufactured_711039", "Ru_iridium-osmium-ruthenium-unwrought_711041",
+  "Ru_iridium-osmium-ruthenium-semi-manufactured_711049", "Sm_rare-earth-metals_280530",
+  "Sm_rare-earth-metals-compounds_284690", "Sc_rare-earth-metals_280530", "Sc_rare-earth-metals-compounds_284690",
+  "Se_selenium_280490", "Si_silicon", "Si_silicon_280461", "Si_silicon_280469", "Si_silicon-dioxide_281122",
+  "Si_silicon-carbides_284920", "Si_silicones-in-primary-forms_391000", "Ag_silver-ores-and-concentrates_261610",
+  "Ag_silver-nitrates_284321", "Ag_silver-compounds_284329", "Ag_silver-unwrought",
+  "Ag_silver-unwrought_710610", "Ag_silver-unwrought_710691", "Ag_silver-semi-manufactured_710692",
+  "Ta_niobium-tantalum-vanadium-ores-and-concentrates_261590", "Ta_tantalum-unwrought_810320",
+  "Ta_tantalum-unwrought-waste-and-scrap-powders_810310", "Ta_tantalum-articles",
+  "Ta_tantalum-articles_810390", "Ta_tantalum-articles_810391", "Ta_tantalum-articles_810399",
+  "Ta_tantalum-waste-and-scrap_810330", "Te_boron-tellurium_280450", "Tb_rare-earth-metals_280530",
+  "Tb_rare-earth-metals-compounds_284690", "Th_thorium-ores-and-concentrates_261220",
+  "Th_uranium-depleted-thorium_284430", "Tm_rare-earth-metals_280530", "Tm_rare-earth-metals-compounds_284690",
+  "Sn_tin-ores-and-concentrates_260900", "Sn_tin-chlorides_282737", "Sn_tin-unwrought-not-alloyed_800110",
+  "Sn_tin-unwrought-alloyed_800120", "Sn_tin-powders-and-flakes_800520", "Sn_tin-bars-rods-wire_800300",
+  "Sn_tin-plates-sheets_800400", "Sn_tin-foil_800510", "Sn_tin-tubes-pipes_800600",
+  "Sn_tin-articles_800700", "Sn_tin-waste-and-scrap_800200", "Ti_titanium-ores-and-concentrates_261400",
+  "Ti_titanium-pigments-and-preparations", "Ti_titanium-pigments-and-preparations_320610",
+  "Ti_titanium-pigments-and-preparations_320611", "Ti_titanium-pigments-and-preparations_320619",
+  "Ti_titanium-oxides_282300", "Ti_titanium-unwrought-waste-or-scrap-powders_810810",
+  "Ti_titanium-unwrought-powders_810820", "Ti_titanium-other-than-unwrought_810890",
+  "Ti_titanium-waste-and-scrap_810830", "W_tungsten-ores-and-concentrates_261100",
+  "W_tungsten-unwrought_810194", "W_tungsten-articles", "W_tungsten-articles_810110",
+  "W_tungsten-articles_810191", "W_tungsten-articles_810196", "W_tungsten-articles_810199",
+  "W_tungsten-waste-and-scrap_810197", "U_uranium-ores-and-concentrates_261210", "U_uranium-radioactive_284442",
+  "U_uranium-natural-and-its-compounds_284410", "U_uranium-enriched-plutonium-and-their-compounds_284420",
+  "U_uranium-depleted-thorium-and-their-compounds_284430", "V_niobium-tantalum-vanadium-ores-and-concentrates_261590",
+  "V_vanadium-oxides-and-hydroxides_282530", "V_vanadium-articles-unwrought_811292",
+  "V_vanadium-articles-including-waste-and-scrap_811240", "V_vanadium-articles-other-than-unwrought_811299",
+  "V_vanadium-slag-ash-and-residues_262050", "Yb_rare-earth-metals_280530", "Yb_rare-earth-metals-compounds_284690",
+  "Y_rare-earth-metals_280530", "Y_rare-earth-metals-compounds_284690", "Zn_zinc-ores-and-concentrates_260800",
+  "Zn_zinc-unwrought", "Zn_zinc-unwrought_790112", "Zn_zinc-unwrought_790111", "Zn_zinc-dust_790310",
+  "Zn_zinc-oxide-and-peroxide_281700", "Zn_zinc-chloride_282736", "Zn_zing-suplhide_283020",
+  "Zn_zinc-sulphate_283326", "Zn_zinc-unwrought-alloys_790120", "Zn_zinc-articles_790390",
+  "Zn_zinc-articles", "Zn_zinc-articles_790400", "Zn_zinc-articles_790500", "Zn_zinc-articles_790600",
+  "Zn_zinc-articles_790700", "Zn_zinc-articles_790790", "Zn_zinc-articles_790710",
+  "Zn_zinc-ash-and-residues", "Zn_zinc-ash-and-residues_262011", "Zn_zinc-ash-and-residues_262019",
+  "Zn_zinc-waste-and-scrap_790200", "Zr_zirconium-ores-and-concentrates_261510",
+  "Zr_germanium-oxides-and-zirconium-dioxide_282560", "Zr_zirconium-articles", "Zr_zirconium-articles_810910",
+  "Zr_zirconium-articles_810921", "Zr_zirconium-articles_810929", "Zr_zirconium-unwrought_810920",
+  "Zr_zirconium-articles_810990", "Zr_zirconium-articles_810991", "Zr_zirconium-articles_810999",
+  "Zr_zirconium-waste-and-scrap_810930", "Zr_zirconium-articles_810931", "Zr_zirconium-articles_810939"
+)
+
+# Hard-coded list of all unique "t" values (Technologies)
+all_technology_ids <- c(
+  "batteries-cathodes_salts-of-oxometallic-or-peroxometalic-acids", "batteries-cathodes_salts-of-inorganic-acids-or-peroxoacids",
+  "batteries-cathodes_chlorcyan", "batteries-cathodes_phosphides", "batteries-cathodes_mixed-methal-hydroxides",
+  "batteries-cathodes_chemical-mixtures-and-preparations", "batteries-cathodes_electrical-capacitors",
+  "batteries-anodes_carbon-and-graphite-articles", "batteries-electrolyte_chemical-mixtures-and-preparations",
+  "batteries-electrolyte_mixed-methal-hydroxides", "batteries-electrolyte_chemical-residues",
+  "batteries-electrolyte_fluorides-other-than-aluminum", "batteries-electrolyte_fluorides-including-fluorisilicates-and-fluoroaluminates",
+  "batteries-separator_plastic-self-adhesive-flat-shapes", "batteries-separator_ethylene-polymers-laminated-not-self-adhesive",
+  "batteries-separator_propylene-polymers-laminated-not-self-adhesive", "batteries-separator_syterne-polymers-laminated-not-self-adhesive",
+  "batteries-batteries_electric-accumulators-nickel-cadmium", "batteries-batteries_electric-accumulators-nickel-iron",
+  "batteries-batteries_electric-accumulators-nickel-metal-hydride", "batteries-batteries_electric-accumulators-lithium-ion",
+  "batteries-batteries_electric-accumulators", "batteries-batteries_end-of-life-batteries-of-primary-cells-primary-batteries-and-electric-accumulators",
+  "batteries-batteries_end-of-life-batteries-containing-lead-cadmium-or-mercury-other-than-lead-acid-accumulators",
+  "batteries-batteries_end-of-life-batteries-sorted-by-chemical-type-and-not-containing-lead-cadmium-or-mercury",
+  "batteries-batteries_end-of-life-batteries-spent-or-not-unsorted-and-not-containing-lead-cadmium-or-mercury",
+  "batteries-batteries_end-of-life-batteries-other", "batteries-batteries_end-of-life-batteries-electrical-and-electronic-waste-and-scrap-containing-batteries",
+  "batteries-batteries_end-of-life-batteries-other-2", "solar-cells_wafers", "solar-glass_glass",
+  "solar-encapsulant_plastics-ethylene-polymers", "solar-encapsulant_polyethylene-plastic-sheet-and-film",
+  "solar-encapsulant_fluoro-polymers-primary-forms", "solar-encapsulant_polypropylene-primary-forms",
+  "solar-other_solar-panel-frames", "solar-other_junction-box", "solar-other_solar-panel-racks",
+  "solar-cells_photovoltaic-cells-unassembled", "solar-cells_photovoltaic-cells-assembled",
+  "solar-cells_photosensitive-semiconductor-devices", "solar-generator_photovoltaic-dc-generators-under-50w",
+  "solar-generator_photovoltaic-dc-generators-over-50w", "solar-generator_photovoltaic-ac-generators",
+  "wind-nacelle_permanent-magnets", "wind-blades_wind-powered-generating-sets", "wind-blades_blades-and-other-components",
+  "wind-blades_wind-powered-engines", "wind-nacelle_generating-set-components", "wind-nacelle_electric-ac-generators-over-750kva",
+  "wind-nacelle_engines-and-motors", "wind-tower_iron-or-steel-towers", "wind-tower_aluminium-structures",
+  "nuclear-nuclear-fuel_uranium-compounds", "nuclear-nuclear-fuel_enriched-uranium-plutonium",
+  "nuclear-nuclear-fuel_depleted-uranium-thorium", "nuclear-nuclear-fuel_tritium-and-its-compounds",
+  "nuclear-nuclear-fuel_other-radioactive-elements-and-isotopes-and-compounds", "nuclear-nuclear-fuel_zirconium-unwrought",
+  "nuclear-nuclear-fuel_zirconium-other-than-unwrought", "nuclear-moderator_heavy-water",
+  "nuclear-moderator_artificial-graphite", "nuclear-moderator_fluorides", "nuclear-coolant_boric-acid",
+  "nuclear-coolant_heavy-water", "nuclear-coolant_fluorides", "nuclear-other_refractory-cements",
+  "nuclear-other_refractory-ceramics", "nuclear-other_boilers", "nuclear-other_turbines",
+  "nuclear-nuclear-fuel_fuel-elements", "nuclear-other_nuclear-reactors", "nuclear-other_nuclear-reactor-parts",
+  "nuclear-other_nuclear-reactor-machinery", "nuclear-nuclear-fuel_radioactive-residues",
+  "nuclear-nuclear-fuel_spent-fuel-elements", "electrolyzer-electrolyte_ger-oxides-and-zir-dioxide",
+  "electrolyzer-electrolyte_potassium-hydroxide", "electrolyzer-electrolyte_sodium-hydroxide",
+  "electrolyzer-electrode_platinum-catalysts", "electrolyzer-electrode_nickel-catalysts",
+  "electrolyzer-electrode_precious-metal-catalysts", "electrolyzer-electrode_metal-catalysts",
+  "electrolyzer-electrolyte_polymer-ion-exchangers", "electrolyzer-gas-diffusion-layer_graphite-composites",
+  "semiconductors-semiconductor_semiconductor-material", "magnets-magnets_magnets"
+)
 
 
-# -------------------- 2) CONFIG & DIRECTORY SETUP ----------------------------
-base_url  <- "https://criticalmaterials.energypolicy.columbia.edu"
-domain_nm <- domain(base_url)           # e.g. "criticalmaterials.energypolicy.columbia.edu"
-max_depth <- 2                          # BFS depth limit (adjust as needed)
-outdir    <- "DynamicScrapeData"        # Directory for raw responses
-dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+# SECTION 4: HELPER FUNCTION
+# --------------------------------------------------------------------------
 
-# Polite crawl delay (seconds)
-delay_sec <- 0.5
-
-
-# -------------------- 3) HELPER FUNCTIONS ------------------------------------
-# Polite HTML fetch
-fetch_html <- function(url) {
-  message("Fetching HTML: ", url)
-  Sys.sleep(delay_sec)
-  out <- tryCatch(
-    read_html(url),
-    error = function(e) {
-      message("  -> Error fetching HTML: ", e$message)
-      NULL
-    }
-  )
-  out
-}
-
-# Save raw response to disk
-save_raw_response <- function(res, url, suffix = "raw") {
-  if (is.null(res)) return(NA_character_)
-  safe_name <- gsub("^https?://|[/?=&]", "_", url)
-  safe_name <- gsub("__+", "_", safe_name)
-  fpath     <- file.path(outdir, paste0(safe_name, ".", suffix))
-  writeBin(content(res, as = "raw"), fpath)
-  fpath
-}
-
-# Attempt to parse the response as JSON or HTML. Return a list with:
-#   content_type, parse_status, parsed_data
-parse_response <- function(res) {
-  if (is.null(res)) {
-    return(list(
-      content_type = NA_character_,
-      parse_status = "No response",
-      parsed_data  = NULL
-    ))
-  }
+#' Safe JSON fetch with retries
+fetch_json <- function(url, query = list(), retries = 3) {
+  Sys.sleep(DELAY_SEC)
   
-  ctype        <- http_type(res)
-  text_content <- content(res, as = "text", encoding = "UTF-8")
-  
-  # If JSON
-  if (grepl("application/json", ctype, ignore.case = TRUE)) {
-    parse_attempt <- tryCatch({
-      data_obj <- fromJSON(text_content, flatten = TRUE)
-      list(
-        content_type = "application/json",
-        parse_status = "OK",
-        parsed_data  = data_obj
-      )
-    }, error = function(e) {
-      list(
-        content_type = "application/json",
-        parse_status = paste0("JSON parse error: ", e$message),
-        parsed_data  = NULL
-      )
-    })
-    return(parse_attempt)
-    
-    # If HTML
-  } else if (grepl("text/html", ctype, ignore.case = TRUE)) {
-    parse_attempt <- tryCatch({
-      doc    <- read_html(text_content)
-      tables <- html_table(doc, fill = TRUE)
-      if (length(tables) == 0) {
-        # store raw HTML text in a simple data frame
-        df <- data.frame(html_text = text_content, stringsAsFactors = FALSE)
-        list(
-          content_type = "text/html",
-          parse_status = "OK",
-          parsed_data  = df
-        )
-      } else if (length(tables) == 1) {
-        list(
-          content_type = "text/html",
-          parse_status = "OK",
-          parsed_data  = tables[[1]]
-        )
-      } else {
-        # multiple tables
-        list(
-          content_type = "text/html",
-          parse_status = "OK",
-          parsed_data  = tables
-        )
+  for (i in 1:retries) {
+    tryCatch({
+      response <- GET(url, query = query, add_headers(.headers = HEADERS), timeout(30))
+      
+      if (http_error(response)) {
+        cat(sprintf("  -> HTTP Error %d for URL with params: %s\n", status_code(response), http_build_url(response$url)))
+        if (status_code(response) %in% c(500, 502, 503, 504)) {
+          cat(sprintf("  -> Retrying in %d seconds...\n", i*2))
+          Sys.sleep(i*2) # Exponential backoff
+          next # next iteration of the loop
+        }
+        return(NULL) # Fail for other client/server errors
       }
+      
+      # Success, return parsed content
+      return(content(response, "parsed", encoding = "UTF-8"))
+      
     }, error = function(e) {
-      list(
-        content_type = "text/html",
-        parse_status = paste0("HTML parse error: ", e$message),
-        parsed_data  = NULL
-      )
+      cat(sprintf("  -> Request Error: %s\n", e$message))
+      Sys.sleep(i*2) # Wait before retrying
     })
-    return(parse_attempt)
-    
-    # Otherwise not parseable
-  } else {
-    return(list(
-      content_type = ctype,
-      parse_status = "Unparseable type",
-      parsed_data  = NULL
-    ))
   }
+  
+  cat("  -> Request failed after multiple retries.\n")
+  return(NULL) # Return NULL if all retries fail
 }
 
-# BFS queue item: list(url=..., depth=...)
 
-# Parse an HTML doc => return internal links + script links
-parse_html_for_links_and_scripts <- function(doc, page_url) {
-  # <a> tags
-  a_nodes <- html_elements(doc, "a")
-  hrefs   <- unique(na.omit(html_attr(a_nodes, "href")))
-  
-  # <script src=...>
-  script_nodes <- html_elements(doc, "script[src]")
-  script_srcs  <- unique(na.omit(html_attr(script_nodes, "src")))
-  
-  # Convert relative => absolute
-  abs_href   <- purrr::map_chr(hrefs,       ~ url_absolute(.x, page_url))
-  abs_script <- purrr::map_chr(script_srcs, ~ url_absolute(.x, page_url))
-  
-  # Filter only same-domain links
-  internal_links   <- abs_href[   domain(abs_href)   == domain_nm ]
-  internal_scripts <- abs_script[ domain(abs_script) == domain_nm ]
-  
-  list(
-    internal_links   = internal_links,
-    script_links     = internal_scripts
-  )
+# SECTION 5: BUILD FETCH GRID AND CONFIRM
+# --------------------------------------------------------------------------
+cat("\n=== PREPARING TO FETCH DATA ===\n")
+
+n_countries <- length(TARGET_COUNTRY_CODES)
+n_minerals <- length(all_mineral_ids)
+n_technologies <- length(all_technology_ids)
+n_flows <- 2  # import, export
+
+total_endpoints <- (n_minerals + n_technologies) * n_countries * n_flows
+
+cat(sprintf("Target Year: %s\n", TARGET_YEAR))
+cat(sprintf("\nQuery scope:\n"))
+cat(sprintf("  - Countries to query: %d\n", n_countries))
+cat(sprintf("  - Minerals to query: %d\n", n_minerals))
+cat(sprintf("  - Technologies to query: %d\n", n_technologies))
+cat(sprintf("  - Total unique materials: %d\n", n_minerals + n_technologies))
+cat(sprintf("\nTotal API requests to be made: %s\n", format(total_endpoints, big.mark = ",")))
+
+# Ask for confirmation
+response <- readline("Continue with data fetching? (y/n): ")
+if (tolower(response) != "y") {
+  stop("Script cancelled by user.")
 }
 
-# Parse .js text for references to potential endpoints
-parse_js_for_api_endpoints <- function(js_text, base_url=base_url) {
-  # We'll look for patterns like:
-  #   (1) (https?://[^"'\s]+)
-  #   (2) /api/[^"'\s]*
-  #   (3) /[^"'\s]+\.json
-  #   (4) /explore/[^"'\s]+
-  #   (5) /minerals/..., /countries/..., /technologies/...
-  patterns <- c(
-    "(https?://[^\"'\\s]+)",  
-    "(/api/[^\"'\\s]+)",
-    "(/[^\"'\\s]+\\.json)",
-    "(/explore/[^\"'\\s]+)",
-    "(/minerals/[^\"'\\s]+)",
-    "(/countries/[^\"'\\s]+)",
-    "(/technologies/[^\"'\\s]+)"
-  )
+# SECTION 6: DATA COLLECTION
+# --------------------------------------------------------------------------
+cat("\n=== FETCHING DATA ===\n")
+cat("This will take a while. Progress updates periodically.\n\n")
+
+all_data <- list()
+successful <- 0
+failed <- 0
+empty <- 0
+request_count <- 0
+start_time <- Sys.time()
+
+# Function to make request and store result
+fetch_and_store <- function(params, description) {
+  request_count <<- request_count + 1
   
-  all_matches <- character()
-  for (pat in patterns) {
-    mm <- str_extract_all(js_text, pat)
-    mm <- unlist(mm)
-    if (length(mm)) {
-      all_matches <- c(all_matches, mm)
-    }
-  }
-  all_matches <- unique(all_matches)
+  # Print progress
+  cat(sprintf("[%d/%d] Fetching %s...\n", request_count, total_endpoints, description))
   
-  # Convert relative => absolute
-  abs_urls <- purrr::map_chr(all_matches, function(m) {
-    if (grepl("^https?://", m)) {
-      return(m)
-    } else if (grepl("^/", m)) {
-      return(paste0(base_url, m))
+  response <- fetch_json(API_BASE, params)
+  
+  if (!is.null(response)) {
+    if (is.list(response) && length(response) > 0) {
+      response_df <- tryCatch(
+        bind_rows(lapply(response, function(x) as_tibble(x))),
+        error = function(e) {
+          cat(sprintf("  -> Could not bind response to data frame for: %s\n", description))
+          return(NULL)
+        }
+      )
+      
+      if(!is.null(response_df) && nrow(response_df) > 0) {
+        # Add metadata
+        response_df$country_code_queried <- params$c
+        response_df$year <- params$y
+        response_df$flow_type <- params$f
+        response_df$category <- params$ct
+        response_df$material_id <- ifelse(!is.null(params$m) && params$m != "", params$m,
+                                          ifelse(!is.null(params$t) && params$t != "", params$t, NA))
+        response_df$query_description <- description
+        
+        all_data[[length(all_data) + 1]] <<- response_df
+        successful <<- successful + 1
+        cat("  -> Success, data found.\n")
+      } else {
+        empty <<- empty + 1
+        cat("  -> Success, but no trade data returned.\n")
+      }
     } else {
-      return(m)   # ignore or just return as-is
+      empty <<- empty + 1
+      cat("  -> Success, but no trade data returned.\n")
     }
-  })
-  
-  unique(abs_urls)
-}
-
-
-###############################################################################
-# 4) BFS TO DISCOVER HTML PAGES & .JS FILES
-###############################################################################
-visited_html  <- character()
-discovered_js <- character()
-
-queue <- list(list(url = base_url, depth = 0))
-visited_html <- c(base_url)
-
-while (length(queue) > 0) {
-  item <- queue[[1]]
-  queue <- queue[-1]
-  
-  current_url   <- item$url
-  current_depth <- item$depth
-  
-  if (current_depth > max_depth) next
-  
-  doc <- fetch_html(current_url)
-  if (is.null(doc)) next
-  
-  found        <- parse_html_for_links_and_scripts(doc, current_url)
-  new_links    <- setdiff(found$internal_links, visited_html)
-  new_scripts  <- setdiff(found$script_links, discovered_js)
-  
-  # Enqueue new HTML links
-  for (l in new_links) {
-    visited_html <- c(visited_html, l)
-    queue <- append(queue, list(list(url = l, depth = current_depth + 1)))
-  }
-  
-  # Collect .js references
-  discovered_js <- c(discovered_js, new_scripts)
-}
-
-discovered_js <- unique(discovered_js)
-
-
-# 4B) DOWNLOAD & PARSE EACH .JS FOR REFERENCES
-js_api_endpoints <- character()
-
-for (jsu in discovered_js) {
-  message("Downloading JS: ", jsu)
-  Sys.sleep(delay_sec)
-  r <- tryCatch(GET(jsu), error = function(e) NULL)
-  
-  # If it's JS content, parse it
-  if (!is.null(r) && http_type(r) == "application/javascript") {
-    js_text     <- content(r, as = "text", encoding = "UTF-8")
-    found_eps   <- parse_js_for_api_endpoints(js_text, base_url)
-    js_api_endpoints <- c(js_api_endpoints, found_eps)
+  } else {
+    failed <<- failed + 1
+    cat("  -> FAILED.\n")
   }
 }
-js_api_endpoints <- unique(js_api_endpoints)
-
-# Combine everything:
-#   1) visited_html (HTML pages from BFS)
-#   2) discovered_js (the .js file URLs)
-#   3) js_api_endpoints (API-like references from .js)
-all_potential <- unique(c(visited_html, discovered_js, js_api_endpoints))
 
 
-###############################################################################
-# 5) FETCH & PARSE ALL DISCOVERED URLS
-###############################################################################
-results_list <- vector("list", length(all_potential))
-
-for (i in seq_along(all_potential)) {
-  u <- all_potential[i]
-  message(sprintf("[%d/%d] GET: %s", i, length(all_potential), u))
-  Sys.sleep(delay_sec)
+# Main fetching loops
+for (country_code in TARGET_COUNTRY_CODES) {
   
-  resp  <- tryCatch(GET(u, timeout(15)), error = function(e) NULL)
-  fpath <- NA_character_
-  if (!is.null(resp)) {
-    fpath <- save_raw_response(resp, u, suffix = "raw")
+  cat(sprintf("\n--- Starting Country Code: %s ---\n", country_code))
+  
+  # 1. Fetch detailed mineral data for the current country
+  for (mineral_id in all_mineral_ids) {
+    for (flow in c("import", "export")) {
+      fetch_and_store(
+        list(c = country_code, y = TARGET_YEAR, ct = "minerals", m = mineral_id, t = "", f = flow),
+        sprintf("Country %s | %s %s '%s'", country_code, TARGET_YEAR, flow, mineral_id)
+      )
+    }
   }
   
-  parse_out <- parse_response(resp)
+  # 2. Fetch detailed technology data for the current country
+  for (tech_id in all_technology_ids) {
+    for (flow in c("import", "export")) {
+      fetch_and_store(
+        list(c = country_code, y = TARGET_YEAR, ct = "technologies", m = "", t = tech_id, f = flow),
+        sprintf("Country %s | %s %s '%s'", country_code, TARGET_YEAR, flow, tech_id)
+      )
+    }
+  }
+}
+
+total_runtime <- as.numeric(difftime(Sys.time(), start_time, units = "mins"))
+cat(sprintf("\n[COLLECTION COMPLETE] Runtime: %.1f minutes\n", total_runtime))
+cat(sprintf("Results: %d Successful, %d Failed, %d Empty\n", successful, failed, empty))
+
+
+# SECTION 7: DATA PROCESSING AND OUTPUT
+# --------------------------------------------------------------------------
+cat("\n=== PROCESSING AND SAVING DATA ===\n")
+
+if (length(all_data) > 0) {
+  # Combine all data frames into one
+  combined_data <- bind_rows(all_data)
   
-  results_list[[i]] <- list(
-    url          = u,
-    file_path    = fpath,
-    content_type = parse_out$content_type,
-    parse_status = parse_out$parse_status,
-    parsed_data  = parse_out$parsed_data
+  cat(sprintf("Combined data into a single table with %d rows.\n", nrow(combined_data)))
+  
+  # Clean up data types
+  numeric_cols <- c("primaryValue", "value", "quantity", "netWeight", "tradeValue")
+  for (col in numeric_cols) {
+    if (col %in% names(combined_data)) {
+      combined_data[[col]] <- suppressWarnings(as.numeric(as.character(combined_data[[col]])))
+    }
+  }
+  
+  # Create a summary by material and country
+  summary_by_country_material <- combined_data %>%
+    filter(!is.na(material_id)) %>%
+    group_by(country_code_queried, category, material_id, flow_type) %>%
+    summarise(
+      total_trade_value = sum(primaryValue, na.rm = TRUE),
+      trade_partners = n_distinct(partnerName, na.rm = TRUE),
+      n_records = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(country_code_queried, category, material_id, flow_type)
+  
+  # Save results to an Excel file
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  output_file <- file.path(OUTPUT_DIR, sprintf("Multi-Country_2023_Critical_Materials_%s.xlsx", timestamp))
+  
+  sheets <- list(
+    "All_Trade_Data" = combined_data,
+    "Summary_By_Country_Material" = summary_by_country_material,
+    "Country_Codes_Queried" = tibble(country_code = TARGET_COUNTRY_CODES),
+    "Mineral_List_Queried" = tibble(mineral_id = all_mineral_ids),
+    "Technology_List_Queried" = tibble(technology_id = all_technology_ids)
   )
-}
-
-result_df <- map_dfr(results_list, function(x) {
-  tibble(
-    url          = x$url,
-    file_path    = x$file_path,
-    content_type = x$content_type,
-    parse_status = x$parse_status,
-    parsed_data  = list(x$parsed_data)  # ensures a list-column
-  )
-})
-
-cat("\n=== BFS & Parsing SUMMARY ===\n")
-cat("Unique items scanned:", nrow(result_df), "\n\n")
-
-cat("Parse status distribution:\n")
-print(table(result_df$parse_status, useNA = "ifany"))
-
-cat("\nContent type distribution:\n")
-print(table(result_df$content_type, useNA = "ifany"))
-
-cat("\n--- BFS & parse step complete. 'result_df' has:\n",
-    "  url, file_path, content_type, parse_status, parsed_data\n",
-    "========================================================\n\n", sep="")
-
-
-
-###############################################################################
-# 6) SCRAPE AND FETCH COMPREHENSIVE COMMODITY / FLOWS / SUMMARY DATA
-###############################################################################
-cat("Now proceeding with specialized commodity scraping from /minerals/ ...\n\n")
-
-# Directory for final CSV exports (adjust to your needs)
-final_outdir <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Columbia University Critical Minerals Dashboard"
-dir.create(final_outdir, showWarnings=FALSE, recursive=TRUE)
-
-# Debugging function to print a line with a label
-debug_msg <- function(..., prefix="DEBUG:") {
-  cat(prefix, ..., "\n")
-}
-
-# Helper: fetch & parse JSON from an endpoint (returns list or NULL on error)
-fetch_json_data <- function(url) {
-  tryCatch({
-    debug_msg("Fetching:", url)
-    resp <- httr::GET(url)
-    code <- httr::status_code(resp)
-    
-    if (code != 200) {
-      warning("  -> Non-200 status code: ", code, " for URL: ", url)
-      return(NULL)
-    }
-    
-    content_text <- httr::content(resp, as="text", encoding="UTF-8")
-    parsed       <- jsonlite::fromJSON(content_text, simplifyVector = FALSE)
-    return(parsed)
-    
-  }, error = function(e) {
-    warning("  -> ERROR fetching ", url, ": ", e$message)
-    return(NULL)
-  })
-}
-
-# Helper: convert a nested list (JSON) to a JSON string for CSV
-nested_list_to_json_string <- function(x) {
-  if (is.null(x)) return(NA_character_)
-  jsonlite::toJSON(x, auto_unbox=TRUE)
-}
-
-
-###############################################################################
-# 6A) SCRAPE COMMODITY SLUGS FROM /minerals/
-###############################################################################
-minerals_index_url <- paste0(base_url, "/minerals/")
-
-debug_msg("Reading main minerals index page:", minerals_index_url)
-minerals_index_doc <- tryCatch(
-  read_html(minerals_index_url),
-  error = function(e) {
-    stop("FATAL ERROR reading the main minerals page: ", e$message)
+  
+  write_xlsx(sheets, path = output_file)
+  
+  cat(sprintf("\n[SUCCESS] Results saved to: %s\n", output_file))
+  cat("\nFile contents:\n")
+  for (sheet in names(sheets)) {
+    cat(sprintf("  - Sheet '%s' contains %d rows\n", sheet, nrow(sheets[[sheet]])))
   }
-)
-
-# Extract subpage links under /minerals/
-element_links <- minerals_index_doc %>%
-  html_elements("a") %>%
-  html_attr("href") %>%
-  grep("^/minerals/", x=., value=TRUE)
-
-element_links <- unique(element_links)
-cat("Found", length(element_links), "potential mineral subpages.\n")
-
-commodity_ids <- character(0)
-
-for (link in element_links) {
-  full_link <- paste0(base_url, link)
-  debug_msg(" - Accessing subpage:", full_link)
   
-  subpage_doc <- tryCatch({
-    read_html(full_link)
-  }, error = function(e) {
-    cat("   ERROR reading subpage:", e$message, "\n")
-    return(NULL)
-  })
-  
-  if (is.null(subpage_doc)) next
-  
-  # Find all /explore/ links
-  subpage_explore_links <- subpage_doc %>%
-    html_elements("a") %>%
-    html_attr("href") %>%
-    grep("^/explore/", x=., value=TRUE)
-  
-  cat("   Found", length(subpage_explore_links), "'explore' links on this subpage.\n")
-  
-  if (length(subpage_explore_links) > 0) {
-    for (clink in subpage_explore_links) {
-      # Extract "m=" param
-      m_val <- sub(".*m=", "", clink)
-      m_val <- sub("&.*", "", m_val)  # remove anything after next param
-      if (identical(m_val, clink)) next  # skip if no m= param
-      commodity_ids <- c(commodity_ids, m_val)
-    }
-  }
-}
-
-commodity_ids <- unique(commodity_ids)
-cat("Total unique commodity slugs extracted:", length(commodity_ids), "\n\n")
-
-if (length(commodity_ids) > 0) {
-  cat("Example commodity slugs:\n")
-  print(head(commodity_ids, 5))
-  cat("\n")
 } else {
-  cat("WARNING: No commodity slugs found. Possibly site structure changed.\n")
+  cat("\n[ERROR] No data was collected. No file will be saved.\n")
 }
 
-
-###############################################################################
-# 6B) BUILD ENDPOINTS (FLOWS, SUMMARY, COMMODITY-SPECIFIC)
-###############################################################################
-country_code <- 156           # For example, China
-flows       <- c("import", "export")
-years       <- 2017:2022
-category    <- "minerals"
-
-# Flow endpoints
-flow_grid <- expand.grid(
-  country  = country_code,
-  flow     = flows,
-  category = category,
-  year     = years,
-  stringsAsFactors=FALSE
-)
-flow_grid <- flow_grid[order(flow_grid$year, flow_grid$flow), ]
-flow_grid$endpoint_url <- with(flow_grid, 
-                               paste0(base_url, "/api/explore/flows/?",
-                                      "c=", country,
-                                      "&f=", flow,
-                                      "&ct=", category,
-                                      "&y=", year)
-)
-
-cat("Flow endpoints built:", nrow(flow_grid), "rows.\n")
-
-# Commodity summary endpoints
-summary_grid <- expand.grid(
-  country  = country_code,
-  flow     = flows,
-  category = category,
-  year     = years,
-  stringsAsFactors=FALSE
-)
-summary_grid <- summary_grid[order(summary_grid$year, summary_grid$flow), ]
-summary_grid$endpoint_url <- with(summary_grid,
-                                  paste0(base_url, "/api/explore/commodities/?",
-                                         "c=", country,
-                                         "&f=", flow,
-                                         "&ct=", category,
-                                         "&y=", year)
-)
-
-cat("Commodity summary endpoints built:", nrow(summary_grid), "rows.\n")
-
-# Commodity-specific endpoints
-if (length(commodity_ids) > 0) {
-  specific_grid <- expand.grid(
-    country      = country_code,
-    commodity_id = commodity_ids,
-    flow         = flows,
-    category     = category,
-    year         = years,
-    stringsAsFactors=FALSE
-  )
-  specific_grid <- specific_grid[order(specific_grid$commodity_id, 
-                                       specific_grid$year, 
-                                       specific_grid$flow), ]
-  
-  specific_grid$endpoint_url <- with(specific_grid,
-                                     paste0(base_url, "/api/explore/commodities/?",
-                                            "c=", country,
-                                            "&m=", commodity_id,
-                                            "&t=", "",
-                                            "&f=", flow,
-                                            "&ct=", category,
-                                            "&y=", year)
-  )
-  
-  cat("Commodity-specific endpoints built:", nrow(specific_grid), "rows.\n\n")
-} else {
-  specific_grid <- data.frame()
-  cat("No commodity IDs found, so no commodity-specific endpoints built.\n")
-}
-
-
-###############################################################################
-# 6C) FETCH DATA (FLOW, SUMMARY, SPECIFIC)
-###############################################################################
-# We'll define a robust function that creates a new list of the correct length
-# and assigns each request's result exactly once to avoid row mismatch.
-fetch_all_endpoints <- function(df, label="endpoints", endpoint_col="endpoint_url") {
-  n <- nrow(df)
-  if (n == 0) {
-    cat("No rows in", label, "data frame. Skipping fetch.\n")
-    df$data <- list()
-    return(df)
-  }
-  
-  cat("Fetching from", n, label, "...\n\n")
-  
-  # Prepare an empty list for the data
-  results_list <- vector("list", length = n)
-  
-  for (i in seq_len(n)) {
-    # Show progress occasionally
-    if (i %% 20 == 1) {
-      debug_msg(label, "- row", i, "of", n)
-    }
-    url_i <- df[[endpoint_col]][i]
-    results_list[[i]] <- fetch_json_data(url_i)  # list or NULL
-  }
-  
-  cat("Done fetching from", label, "\n\n")
-  df$data <- results_list
-  return(df)
-}
-
-flow_data_df    <- fetch_all_endpoints(flow_grid,      "flow endpoints")
-summary_data_df <- fetch_all_endpoints(summary_grid,   "commodity summary endpoints")
-specific_data_df<- fetch_all_endpoints(specific_grid,  "commodity-specific endpoints")
-
-
-###############################################################################
-# 6D) CONVERT NESTED LIST -> JSON STRING & EXPORT CSV
-###############################################################################
-cat("Converting nested JSON data to text for CSV export...\n")
-
-flow_data_df <- flow_data_df %>%
-  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
-  select(-data)
-
-summary_data_df <- summary_data_df %>%
-  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
-  select(-data)
-
-specific_data_df <- specific_data_df %>%
-  mutate(data_json = vapply(data, nested_list_to_json_string, FUN.VALUE=character(1))) %>%
-  select(-data)
-
-# Write CSVs
-cat("Exporting CSVs to:\n  ", final_outdir, "\n\n", sep="")
-
-flow_csv    <- file.path(final_outdir, "flow_data.csv")
-summary_csv <- file.path(final_outdir, "summary_data.csv")
-specific_csv<- file.path(final_outdir, "specific_data.csv")
-
-cat("Writing flow_data_df ->", flow_csv, "\n")
-readr::write_csv(flow_data_df, flow_csv)
-
-cat("Writing summary_data_df ->", summary_csv, "\n")
-readr::write_csv(summary_data_df, summary_csv)
-
-cat("Writing specific_data_df ->", specific_csv, "\n")
-readr::write_csv(specific_data_df, specific_csv)
-
-cat("\nCSV export complete.\n\n")
-
-
-###############################################################################
-# 6E) GLIMPSE DATA
-###############################################################################
-cat("Glimpse each final data frame in R:\n\n")
-
-cat("### flow_data_df ###\n")
-glimpse(flow_data_df)
-
-cat("\n### summary_data_df ###\n")
-glimpse(summary_data_df)
-
-cat("\n### specific_data_df ###\n")
-glimpse(specific_data_df)
-
-cat("\n=== SCRIPT COMPLETE ===\n",
-    "You have:\n",
-    "  - 'result_df' from BFS (all discovered pages, JS, endpoints)\n",
-    "  - 3 CSVs in '", final_outdir, "' (flow_data.csv, summary_data.csv, specific_data.csv)\n",
-    "  - In-memory data frames:\n",
-    "       flow_data_df, summary_data_df, specific_data_df\n",
-    sep="")
+cat("\n=== SCRIPT COMPLETE ===\n")
