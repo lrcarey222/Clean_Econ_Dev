@@ -1,7 +1,8 @@
 # ==============================================================================
-# Geothermal‑Adjacent Supply‑Chain Analysis
-# Updated to include suggested industries from CATF 
-# Map here: https://www.datawrapper.de/_/U23j9/
+# Geothermal-Adjacent Supply-Chain Analysis
+# Updated to include the full set of six-digit NAICS codes requested
+# Industry titles are always taken from the `industry_desc` field in the CGT
+# dataset, so no hard-coded names appear in this script.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -14,7 +15,7 @@ library(stringr)
 library(classInt)    # for Jenks (natural breaks)
 
 # ------------------------------------------------------------------------------
-# 2) Read in the data (specify the correct encoding if UTF‑8 is wrong for you)
+# 2) Read in the data (specify the correct encoding if UTF-8 is wrong for you)
 # ------------------------------------------------------------------------------
 cgt_county_data <- read_csv(
   "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/CGT_county_data/modified_CGT_files/cgt_county_data_with_CD_and_EC_20250213_130456.csv",
@@ -27,37 +28,37 @@ cgt_county_data <- read_csv(
 
 # --- Original six codes --------------------------------------
 original_codes <- c(
-  333132, # Oil & Gas Field Machinery mfg
-  331210, # Iron & Steel Pipe & Tube mfg
-  334513, # Instruments & Related Products mfg
-  333611, # Turbines & Generator Sets mfg
-  332410, # Power Boiler & Heat Exchanger mfg
-  333914  # Measuring, Dispensing & Other Pumping Equip. mfg
+  333132, # Oil & Gas Field Machinery mfg
+  331210, # Iron & Steel Pipe & Tube mfg
+  334513, # Instruments & Related Products mfg
+  333611, # Turbines & Generator Sets mfg
+  332410, # Power Boiler & Heat Exchanger mfg
+  333914  # Measuring, Dispensing & Other Pumping Equip. mfg
 )
 
-# --- Newly added geothermal‑specific manufacturing codes (via CATF)----------------------
+# --- Newly added geothermal-specific manufacturing codes (via CATF)----------------------
 catf_suggested_additions <- c(
-  334519, # Geophysical Instruments mfg
-  333998, # Steam Separating Machinery mfg
-  327310, # Cement mfg
-  332911, # Industrial Valve mfg
-  333415, # A/C, Warm‑Air, & Commercial Refrigeration Equip. mfg
-  334511, # Search, Detection, Navigation & Nautical Sys./Instr. mfg
-  335311, # Power, Distribution & Specialty Transformer mfg
-  335312, # Motor & Generator mfg
-  335313, # Switchgear & Switchboard Apparatus mfg
-  335314  # Relay & Industrial Control mfg
+  334519, # Geophysical Instruments mfg
+  333998, # Steam Separating Machinery mfg
+  327310, # Cement mfg
+  332911, # Industrial Valve mfg
+  333415, # A/C, Warm-Air, & Commercial Refrigeration Equip. mfg
+  334511, # Search, Detection, Navigation & Nautical Sys./Instr. mfg
+  335311, # Power, Distribution & Specialty Transformer mfg
+  335312, # Motor & Generator mfg
+  335313, # Switchgear & Switchboard Apparatus mfg
+  335314  # Relay & Industrial Control mfg
 )
 
-# --- Broader “stretch” supply‑chain codes (via CATF) -------------------------------------
+# --- Broader "stretch" supply-chain codes (via CATF) -------------------------------------
 support_codes <- c(
-  325180, 325199,                     # Inorganic & Organic Basic Chemicals mfg
+  325180, 325199,                     # Inorganic & Organic Basic Chemicals mfg
   326220, 326291,                     # Rubber & Plastic Hoses/Belting; Rubber Prod. for Mech. Use
-  332111, 332312, 332420, 332710,     # Forging; Structural Metal; Heavy‑Gauge Tanks; Machine Shops
+  332111, 332312, 332420, 332710,     # Forging; Structural Metal; Heavy-Gauge Tanks; Machine Shops
   332811, 332912, 332996,             # Metal Heat Treating; Fluid Power Valves; Fabricated Pipe
   333120,                             # Construction Machinery mfg
-  334416, 334516,                     # Capacitors/Resistors/Coils; Analytical Instruments mfg
-  335931                              # Current‑Carrying Wiring Devices mfg
+  334416, 334516,                     # Capacitors/Resistors/Coils; Analytical Instruments mfg
+  335931                              # Current-Carrying Wiring Devices mfg
 )
 
 # --- Combine, deduplicate, and sort (exclude "stretch" codes for now) ------------------------------------------
@@ -75,7 +76,26 @@ if (length(missing_in_source) == 0) {
 }
 
 # ------------------------------------------------------------------------------
-# 4) Filter CGT data for these NAICS codes
+# 4) Calculate normalized PCI scores for complexity weighting
+# ------------------------------------------------------------------------------
+# Get unique industry PCI scores where aggregation_level is 4
+industry_pci <- cgt_county_data %>%
+  filter(aggregation_level == 4) %>%
+  select(industry_code, industry_desc, pci) %>%
+  distinct() %>%
+  group_by(industry_code, industry_desc) %>%
+  summarise(pci = mean(pci, na.rm = TRUE), .groups = "drop")
+
+# Normalize PCI scores to 0-100 scale
+min_pci <- min(industry_pci$pci, na.rm = TRUE)
+max_pci <- max(industry_pci$pci, na.rm = TRUE)
+industry_pci <- industry_pci %>%
+  mutate(
+    industry_complexity_normalized = (pci - min_pci) / (max_pci - min_pci) * 100
+  )
+
+# ------------------------------------------------------------------------------
+# 5) Filter CGT data for these NAICS codes
 # ------------------------------------------------------------------------------
 cgt_filtered_geothermal <- cgt_county_data %>%
   filter(industry_code %in% relevant_codes)
@@ -90,7 +110,7 @@ if (length(missing_after_filter) > 0) {
 }
 
 # ------------------------------------------------------------------------------
-# 5) Add presence/advantage flags and round density percentile
+# 6) Add presence/advantage flags and round density percentile
 # ------------------------------------------------------------------------------
 cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
   mutate(
@@ -100,7 +120,7 @@ cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
   )
 
 # ------------------------------------------------------------------------------
-# 5a) Create RCA quartile and Jenks bins (per industry_code)
+# 6a) Create RCA quartile and Jenks bins (per industry_code)
 # ------------------------------------------------------------------------------
 cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
   mutate(
@@ -142,7 +162,16 @@ for (code in relevant_codes) {
 }
 
 # ------------------------------------------------------------------------------
-# 6) County‑level summary with requested metrics
+# 7) Add complexity scores to filtered data
+# ------------------------------------------------------------------------------
+cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
+  left_join(
+    industry_pci %>% select(industry_code, industry_complexity_normalized),
+    by = "industry_code"
+  )
+
+# ------------------------------------------------------------------------------
+# 8) County-level summary with requested metrics
 # ------------------------------------------------------------------------------
 cgt_county_summary <- cgt_filtered_geothermal %>%
   group_by(
@@ -191,6 +220,18 @@ cgt_county_summary <- cgt_filtered_geothermal %>%
     `Industry Presence Count`           = sum(presence,   na.rm = TRUE),
     `Industry Comparative Advantage Count` = sum(advantage, na.rm = TRUE),
     
+    # Add top 1% feasibility metrics
+    `Top 1% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 99, na.rm = TRUE),
+    `Top 1% Feasibility Industries` = {
+      out <- str_c(
+        unique(str_c(
+          industry_desc[density_county_percentile_from_rank >= 99],
+          " (NAICS ", industry_code[density_county_percentile_from_rank >= 99], ")"
+        )),
+        collapse = "; "
+      ); ifelse(out == "", NA_character_, out)
+    },
+    
     `Top 5% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 95, na.rm = TRUE),
     `Top 5% Feasibility Industries` = {
       out <- str_c(
@@ -224,11 +265,34 @@ cgt_county_summary <- cgt_filtered_geothermal %>%
       ); ifelse(out == "", NA_character_, out)
     },
     
+    # Calculate complexity-weighted metrics
+    `Complexity-Weighted Feasibility` = {
+      # Weighted average of density using normalized complexity scores
+      weights <- industry_complexity_normalized[!is.na(density) & !is.na(industry_complexity_normalized)]
+      values <- density[!is.na(density) & !is.na(industry_complexity_normalized)]
+      if (length(weights) > 0 && sum(weights) > 0) {
+        sum(values * weights) / sum(weights)
+      } else {
+        NA_real_
+      }
+    },
+    
+    `Complexity-Weighted Comparative Advantage` = {
+      # Weighted average of RCA using normalized complexity scores
+      weights <- industry_complexity_normalized[!is.na(rca) & !is.na(industry_complexity_normalized)]
+      values <- rca[!is.na(rca) & !is.na(industry_complexity_normalized)]
+      if (length(weights) > 0 && sum(weights) > 0) {
+        sum(values * weights) / sum(weights)
+      } else {
+        NA_real_
+      }
+    },
+    
     .groups = "drop"
   )
 
 # ------------------------------------------------------------------------------
-# 7) Pivot the detailed industry metrics wide
+# 9) Pivot the detailed industry metrics wide
 # ------------------------------------------------------------------------------
 cgt_geothermal_wide <- cgt_filtered_geothermal %>%
   select(
@@ -264,7 +328,7 @@ cgt_geothermal_wide <- cgt_filtered_geothermal %>%
   }
 
 # ------------------------------------------------------------------------------
-# 8) Combine the summary and wide datasets
+# 10) Combine the summary and wide datasets
 # ------------------------------------------------------------------------------
 final_cgt_geothermal <- cgt_county_summary %>%
   left_join(
@@ -278,14 +342,14 @@ final_cgt_geothermal <- cgt_county_summary %>%
   )
 
 # ------------------------------------------------------------------------------
-# 9) Inspect the final dataset (optional)
+# 11) Inspect the final dataset (optional)
 # ------------------------------------------------------------------------------
 glimpse(final_cgt_geothermal)
 
 # ------------------------------------------------------------------------------
-# 10) Write the final dataset to disk
+# 12) Write the final dataset to disk
 # ------------------------------------------------------------------------------
-#write_csv(final_cgt_geothermal, "cgt_geothermal_wide_plus_summary_with_bins.csv")
+write_csv(final_cgt_geothermal, "cgt_geothermal_wide_plus_summary_with_bins.csv")
 
 # ------------------------------------------------------------------------------
 # End of Script
