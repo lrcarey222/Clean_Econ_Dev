@@ -1,8 +1,7 @@
 # ==============================================================================
 # Geothermal‑Adjacent Supply‑Chain Analysis
-# Updated to include the full set of six‑digit NAICS codes requested
-# Industry titles are always taken from the `industry_desc` field in the CGT
-# dataset, so no hard‑coded names appear in this script.
+# Updated to include suggested industries from CATF 
+# Map here: https://www.datawrapper.de/_/U23j9/
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
