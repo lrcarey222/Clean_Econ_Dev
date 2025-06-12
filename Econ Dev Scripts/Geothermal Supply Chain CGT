@@ -1,5 +1,5 @@
 # ==============================================================================
-# Geothermal-Adjacent Supply-Chain Analysis
+# Geothermal-Adjacent Supply-Chain Analysis - Optimized for File Size (<2MB)
 # Updated to include the full set of six-digit NAICS codes requested
 # Industry titles are always taken from the `industry_desc` field in the CGT
 # dataset, so no hard-coded names appear in this script.
@@ -12,7 +12,6 @@ library(readr)
 library(dplyr)
 library(tidyr)
 library(stringr)
-library(classInt)    # for Jenks (natural breaks)
 
 # ------------------------------------------------------------------------------
 # 2) Read in the data (specify the correct encoding if UTF-8 is wrong for you)
@@ -120,44 +119,28 @@ cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
   )
 
 # ------------------------------------------------------------------------------
-# 6a) Create RCA quartile and Jenks bins (per industry_code)
+# 6a) Normalize density scores (per industry_code)
 # ------------------------------------------------------------------------------
 cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
   mutate(
-    rca_quartile_bin = NA_integer_,
-    rca_jenks_bin    = NA_integer_
+    density_score_normalized_0_100 = NA_real_
   )
 
 for (code in relevant_codes) {
-  idx <- cgt_filtered_geothermal$industry_code == code & !is.na(cgt_filtered_geothermal$rca)
-  industry_data <- cgt_filtered_geothermal[idx, , drop = FALSE]
-  if (nrow(industry_data) == 0) next
-  
-  # Quartile bins --------------------------------------------------------------
-  q_breaks <- quantile(industry_data$rca, probs = seq(0, 1, 0.25), na.rm = TRUE)
-  q_breaks <- unique(q_breaks)
-  if (length(q_breaks) >= 2) {
-    cgt_filtered_geothermal$rca_quartile_bin[idx] <- cut(
-      industry_data$rca,
-      breaks = q_breaks,
-      include.lowest = TRUE,
-      labels = FALSE
-    )
-  }
-  
-  # Jenks bins -----------------------------------------------------------------
-  if (length(unique(industry_data$rca)) > 1) {
-    tryCatch({
-      jenks <- classIntervals(industry_data$rca, n = 4, style = "jenks")
-      cgt_filtered_geothermal$rca_jenks_bin[idx] <- cut(
-        industry_data$rca,
-        breaks = jenks$brks,
-        include.lowest = TRUE,
-        labels = FALSE
-      )
-    }, error = function(e) {
-      message("Jenks binning failed for NAICS ", code)
-    })
+  # Normalize density scores to 0-100 ------------------------------------------
+  idx_density <- cgt_filtered_geothermal$industry_code == code & !is.na(cgt_filtered_geothermal$density)
+  if (sum(idx_density) > 0) {
+    density_values <- cgt_filtered_geothermal$density[idx_density]
+    min_density <- min(density_values, na.rm = TRUE)
+    max_density <- max(density_values, na.rm = TRUE)
+    
+    if (max_density > min_density) {
+      cgt_filtered_geothermal$density_score_normalized_0_100[idx_density] <- 
+        round(((density_values - min_density) / (max_density - min_density)) * 100, 2)
+    } else {
+      # If all values are the same, set to 50
+      cgt_filtered_geothermal$density_score_normalized_0_100[idx_density] <- 50
+    }
   }
 }
 
@@ -176,23 +159,15 @@ cgt_filtered_geothermal <- cgt_filtered_geothermal %>%
 cgt_county_summary <- cgt_filtered_geothermal %>%
   group_by(
     State_Name, County_Name, county_geoid,
-    eci, diversity, coi,
-    `119th Congressional District(s)`,
-    `119th Congressional District(s) - Detailed`
+    `119th Congressional District(s)`
   ) %>%
   summarise(
-    `Presence of Geothermal-Adjacent Supply Chain Manufacturing` =
-      any(presence, na.rm = TRUE),
-    
     `Industries Present` = {
       out <- str_c(
         unique(str_c(industry_desc[presence], " (NAICS ", industry_code[presence], ")")),
         collapse = "; "
       ); ifelse(out == "", NA_character_, out)
     },
-    
-    `Existing Comparative Advantage: Geothermal-Adjacent Supply Chain Manufacturing` =
-      any(advantage, na.rm = TRUE),
     
     `Comparative-Advantage Industries` = {
       out <- str_c(
@@ -220,51 +195,6 @@ cgt_county_summary <- cgt_filtered_geothermal %>%
     `Industry Presence Count`           = sum(presence,   na.rm = TRUE),
     `Industry Comparative Advantage Count` = sum(advantage, na.rm = TRUE),
     
-    # Add top 1% feasibility metrics
-    `Top 1% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 99, na.rm = TRUE),
-    `Top 1% Feasibility Industries` = {
-      out <- str_c(
-        unique(str_c(
-          industry_desc[density_county_percentile_from_rank >= 99],
-          " (NAICS ", industry_code[density_county_percentile_from_rank >= 99], ")"
-        )),
-        collapse = "; "
-      ); ifelse(out == "", NA_character_, out)
-    },
-    
-    `Top 5% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 95, na.rm = TRUE),
-    `Top 5% Feasibility Industries` = {
-      out <- str_c(
-        unique(str_c(
-          industry_desc[density_county_percentile_from_rank >= 95],
-          " (NAICS ", industry_code[density_county_percentile_from_rank >= 95], ")"
-        )),
-        collapse = "; "
-      ); ifelse(out == "", NA_character_, out)
-    },
-    
-    `Top 10% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 90, na.rm = TRUE),
-    `Top 10% Feasibility Industries` = {
-      out <- str_c(
-        unique(str_c(
-          industry_desc[density_county_percentile_from_rank >= 90],
-          " (NAICS ", industry_code[density_county_percentile_from_rank >= 90], ")"
-        )),
-        collapse = "; "
-      ); ifelse(out == "", NA_character_, out)
-    },
-    
-    `Top 25% Feasibility Industry Count` = sum(density_county_percentile_from_rank >= 75, na.rm = TRUE),
-    `Top 25% Feasibility Industries` = {
-      out <- str_c(
-        unique(str_c(
-          industry_desc[density_county_percentile_from_rank >= 75],
-          " (NAICS ", industry_code[density_county_percentile_from_rank >= 75], ")"
-        )),
-        collapse = "; "
-      ); ifelse(out == "", NA_character_, out)
-    },
-    
     # Calculate complexity-weighted metrics
     `Complexity-Weighted Feasibility` = {
       # Weighted average of density using normalized complexity scores
@@ -278,9 +208,9 @@ cgt_county_summary <- cgt_filtered_geothermal %>%
     },
     
     `Complexity-Weighted Comparative Advantage` = {
-      # Weighted average of RCA using normalized complexity scores
-      weights <- industry_complexity_normalized[!is.na(rca) & !is.na(industry_complexity_normalized)]
-      values <- rca[!is.na(rca) & !is.na(industry_complexity_normalized)]
+      # Weighted average of M (employment/count) using normalized complexity scores
+      weights <- industry_complexity_normalized[!is.na(M) & !is.na(industry_complexity_normalized)]
+      values <- M[!is.na(M) & !is.na(industry_complexity_normalized)]
       if (length(weights) > 0 && sum(weights) > 0) {
         sum(values * weights) / sum(weights)
       } else {
@@ -297,28 +227,22 @@ cgt_county_summary <- cgt_filtered_geothermal %>%
 cgt_geothermal_wide <- cgt_filtered_geothermal %>%
   select(
     State_Name, County_Name, county_geoid,
-    eci, diversity, coi,
     `119th Congressional District(s)`,
-    `119th Congressional District(s) - Detailed`,
     industry_desc, industry_code,
-    rca, density, density_county_percentile_from_rank,
-    presence, advantage,
-    rca_quartile_bin, rca_jenks_bin
+    rca, density_score_normalized_0_100, density_county_percentile_from_rank,
+    presence, advantage
   ) %>%
   distinct() %>%
   pivot_wider(
     id_cols = c(
       State_Name, County_Name, county_geoid,
-      eci, diversity, coi,
-      `119th Congressional District(s)`,
-      `119th Congressional District(s) - Detailed`
+      `119th Congressional District(s)`
     ),
     names_from  = c(industry_desc, industry_code),
     names_glue  = "{industry_desc} (NAICS {industry_code}): {.value}",
     values_from = c(
-      rca, density, density_county_percentile_from_rank,
-      presence, advantage,
-      rca_quartile_bin, rca_jenks_bin
+      rca, density_score_normalized_0_100, density_county_percentile_from_rank,
+      presence, advantage
     )
   ) %>%
   {  # rename presence/advantage columns for readability ------------------------
@@ -335,9 +259,7 @@ final_cgt_geothermal <- cgt_county_summary %>%
     cgt_geothermal_wide,
     by = c(
       "State_Name", "County_Name", "county_geoid",
-      "eci", "diversity", "coi",
-      "119th Congressional District(s)",
-      "119th Congressional District(s) - Detailed"
+      "119th Congressional District(s)"
     )
   )
 
@@ -349,7 +271,7 @@ glimpse(final_cgt_geothermal)
 # ------------------------------------------------------------------------------
 # 12) Write the final dataset to disk
 # ------------------------------------------------------------------------------
-write_csv(final_cgt_geothermal, "cgt_geothermal_wide_plus_summary_with_bins.csv")
+write_csv(final_cgt_geothermal, "cgt_geothermal_wide_plus_summary_optimized.csv")
 
 # ------------------------------------------------------------------------------
 # End of Script
