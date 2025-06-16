@@ -1,0 +1,370 @@
+################################################################################
+# COMPREHENSIVE SCRAPER FOR THE COLUMBIA CRITICAL MINERALS DASHBOARD
+#
+# DESCRIPTION:
+# This script combines a dynamic discovery crawler with a systematic API scraper
+# to comprehensively download all data from the specified domain.
+#
+# PHASES:
+# 1. DISCOVERY:
+#    - Perform a Breadth-First Search (BFS) crawl to find all internal HTML pages.
+#    - From these pages, extract links to JavaScript (.js) files.
+#    - Scrape all `<a>` tag hrefs to discover potential API parameters (e.g., m=, c=).
+# 2. ENDPOINT CONSTRUCTION:
+#    - Parse the discovered JavaScript files for base API paths (e.g., /api/explore/).
+#    - Systematically combine the base paths with the discovered parameters to
+#      construct an exhaustive list of potential API endpoints.
+# 3. FETCH & PARSE:
+#    - Combine all discovered URLs (HTML, JS, constructed API endpoints).
+#    - Politely fetch the response for each unique URL.
+#    - Save the raw response to a local file.
+#    - Intelligently parse the response based on its content type (JSON, HTML).
+# 4. STORE & SUMMARIZE:
+#    - Store all results in a final tibble with a flexible list-column for parsed data.
+#    - Save the final results to both .rds (for R) and .csv (for sharing) formats.
+################################################################################
+
+
+# ------------------------------------------------------------------------------
+# 1. SETUP: LOAD LIBRARIES & DEFINE CONFIGURATION
+# ------------------------------------------------------------------------------
+
+# --- Load required packages, installing if necessary ---
+needed_packages <- c("rvest", "httr", "jsonlite", "dplyr", "purrr", "urltools", "stringr", "tibble", "readr")
+for (pkg in needed_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
+library(rvest)
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(purrr)
+library(urltools)
+library(stringr)
+library(tibble)
+library(readr)
+
+
+# --- Configuration ---
+BASE_URL      <- "https://criticalmaterials.energypolicy.columbia.edu"
+DOMAIN_NAME   <- domain(BASE_URL)
+CRAWL_DEPTH   <- 2       # Maximum depth for the BFS crawl. 2 is usually sufficient.
+POLITE_DELAY  <- 0.5     # Seconds to wait between requests to avoid overwhelming the server.
+REQUEST_TIMEOUT <- 20    # Seconds to wait for a server response.
+OUTPUT_DIR    <- "Columbia_Critical_Minerals_Scrape"
+
+# --- Years for API endpoint construction (can be adjusted) ---
+TARGET_YEARS <- 2017:2023
+
+# --- Create output directory ---
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+cat("✔ Setup complete. Data will be saved in:", file.path(getwd(), OUTPUT_DIR), "\n\n")
+
+
+# ------------------------------------------------------------------------------
+# 2. HELPER FUNCTIONS
+# ------------------------------------------------------------------------------
+
+# --- Polite and robustly fetch a URL ---
+fetch_url <- function(url) {
+  message(paste("Fetching:", url))
+  Sys.sleep(POLITE_DELAY)
+  tryCatch(
+    GET(url, timeout(REQUEST_TIMEOUT)),
+    error = function(e) {
+      message(paste("  -> ERROR:", e$message))
+      return(NULL)
+    }
+  )
+}
+
+# --- Save raw response content to a file ---
+save_raw_response <- function(response, url, subfolder = "raw") {
+  if (is.null(response) || response$status_code != 200) return(NA_character_)
+
+  # Create a file-safe name from the URL
+  safe_name <- gsub("^https?://", "", url)
+  safe_name <- gsub("[/?=&:.]", "_", safe_name)
+  safe_name <- str_trunc(safe_name, 100, "center") # Keep filename length reasonable
+  
+  # Determine extension based on content type
+  content_type <- http_type(response)
+  ext <- case_when(
+    grepl("json", content_type) ~ ".json",
+    grepl("html", content_type) ~ ".html",
+    grepl("javascript", content_type) ~ ".js",
+    TRUE ~ ".raw"
+  )
+
+  # Create subfolder and save file
+  dir_path <- file.path(OUTPUT_DIR, subfolder)
+  dir.create(dir_path, showWarnings = FALSE, recursive = TRUE)
+  file_path <- file.path(dir_path, paste0(safe_name, ext))
+  
+  writeBin(content(response, "raw"), file_path)
+  return(file_path)
+}
+
+# --- Parse response based on content type ---
+parse_response <- function(response) {
+  if (is.null(response) || response$status_code != 200) {
+    return(list(status = "Fetch failed or non-200 status", data = NULL))
+  }
+
+  content_type <- http_type(response)
+  text_content <- content(response, as = "text", encoding = "UTF-8")
+
+  # Parse JSON
+  if (grepl("application/json", content_type, ignore.case = TRUE)) {
+    tryCatch({
+      list(status = "OK", data = fromJSON(text_content, flatten = TRUE))
+    }, error = function(e) {
+      list(status = paste("JSON parse error:", e$message), data = NULL)
+    })
+  # Parse HTML
+  } else if (grepl("text/html", content_type, ignore.case = TRUE)) {
+    tryCatch({
+      doc <- read_html(text_content)
+      tables <- html_table(doc, fill = TRUE)
+      # If tables found, return them. Otherwise, return page text.
+      if (length(tables) > 0) {
+        list(status = "OK", data = tables)
+      } else {
+        list(status = "OK (No tables found)", data = text_content)
+      }
+    }, error = function(e) {
+      list(status = paste("HTML parse error:", e$message), data = NULL)
+    })
+  } else {
+    list(status = "Content type not parseable", data = NULL)
+  }
+}
+
+
+# ------------------------------------------------------------------------------
+# 3. PHASE 1: DISCOVERY (CRAWL & SCRAPE FOR URLS AND PARAMETERS)
+# ------------------------------------------------------------------------------
+cat("--- PHASE 1: DISCOVERY ---\n")
+
+queue <- list(list(url = BASE_URL, depth = 0))
+visited_html <- c(BASE_URL)
+discovered_js <- c()
+discovered_params <- list()
+
+while (length(queue) > 0) {
+  # Dequeue the first item
+  current <- queue[[1]]
+  queue <- queue[-1]
+
+  if (current$depth > CRAWL_DEPTH) next
+
+  message(sprintf("Crawling (depth %d): %s", current$depth, current$url))
+  Sys.sleep(POLITE_DELAY)
+  
+  doc <- tryCatch(read_html(current$url), error = function(e) NULL)
+  if (is.null(doc)) next
+
+  # --- Discover all links (hrefs) on the page ---
+  all_links <- html_elements(doc, "a") %>% html_attr("href") %>% na.omit() %>% unique()
+  abs_links <- map_chr(all_links, ~url_absolute(.x, current$url))
+  
+  # --- Discover internal HTML pages to crawl next ---
+  internal_html <- abs_links[domain(abs_links) == DOMAIN_NAME & grepl("(\\.html$|/$|^[^.]+$)", abs_links)]
+  new_html <- setdiff(internal_html, visited_html)
+  if (length(new_html) > 0) {
+    for (link in new_html) {
+      queue <- append(queue, list(list(url = link, depth = current$depth + 1)))
+    }
+    visited_html <- c(visited_html, new_html)
+  }
+
+  # --- Discover JavaScript files ---
+  js_links <- html_elements(doc, "script[src]") %>% html_attr("src") %>% na.omit() %>% unique()
+  abs_js <- map_chr(js_links, ~url_absolute(.x, current$url))
+  internal_js <- abs_js[domain(abs_js) == DOMAIN_NAME]
+  discovered_js <- c(discovered_js, internal_js) %>% unique()
+
+  # --- Discover query parameters (m, c, t, etc.) from links ---
+  query_params <- url_parse(abs_links) %>% pull(parameter) %>% na.omit()
+  if (length(query_params) > 0) {
+      for (param in query_params) {
+          key <- str_extract(param, "^[^=]+")
+          val <- str_extract(param, "(?<=_).+$")
+          if (!is.na(key) && !is.na(val)) {
+              discovered_params[[key]] <- c(discovered_params[[key]], val) %>% unique()
+          }
+      }
+  }
+}
+
+# --- Download JS files to find API base paths ---
+discovered_api_paths <- c()
+if (length(discovered_js) > 0) {
+    message("\nAnalyzing JavaScript files for API paths...")
+    for (js_url in discovered_js) {
+        resp <- fetch_url(js_url)
+        if (!is.null(resp) && resp$status_code == 200) {
+            js_content <- content(resp, "text", encoding = "UTF-8")
+            # Regex to find paths like /api/..., /explore/... etc.
+            matches <- str_extract_all(js_content, "\"/api/[a-zA-Z0-9/_-]+\"|\"/explore/[a-zA-Z0-9/_-]+\"") %>%
+                unlist() %>%
+                str_remove_all("\"") %>%
+                unique()
+            if (length(matches) > 0) {
+                discovered_api_paths <- c(discovered_api_paths, matches) %>% unique()
+            }
+        }
+    }
+}
+
+cat("✔ Discovery complete.\n")
+cat("  - Pages visited:", length(visited_html), "\n")
+cat("  - JS files found:", length(discovered_js), "\n")
+cat("  - API base paths found:", length(discovered_api_paths), "\n")
+cat("  - Discovered parameters:", paste(names(discovered_params), collapse = ", "), "\n\n")
+
+
+# ------------------------------------------------------------------------------
+# 4. PHASE 2: ENDPOINT CONSTRUCTION
+# ------------------------------------------------------------------------------
+cat("--- PHASE 2: ENDPOINT CONSTRUCTION ---\n")
+
+constructed_api_urls <- c()
+
+# Ensure we have required parameters, using defaults if not found
+if (is.null(discovered_params$m)) {
+    warning("No commodity parameters 'm' discovered. API construction may be limited.")
+    discovered_params$m <- c() # Ensure it exists but is empty
+}
+if (is.null(discovered_params$c)) {
+    warning("No country parameters 'c' discovered. Using '156' (China) as default.")
+    discovered_params$c <- "156" 
+}
+# Default parameters
+default_params <- list(
+  f = c("import", "export"),
+  ct = "minerals",
+  y = TARGET_YEARS
+)
+
+# Combine discovered and default params for grid creation
+params_for_grid <- list(
+    c = discovered_params$c,
+    m = discovered_params$m,
+    f = default_params$f,
+    y = default_params$y,
+    ct = default_params$ct
+)
+
+if (length(discovered_api_paths) > 0 && length(params_for_grid$m) > 0) {
+    # Create a grid of all parameter combinations
+    param_grid <- expand.grid(params_for_grid, stringsAsFactors = FALSE)
+
+    # Build URLs for each API path using the parameter grid
+    for (api_path in discovered_api_paths) {
+        # Construct query strings for each row in the grid
+        query_strings <- pmap_chr(param_grid, function(...) {
+            current_params <- list(...)
+            # Filter out empty/NA params and build query
+            current_params <- current_params[!is.na(current_params) & current_params != ""]
+            paste(names(current_params), current_params, sep = "=", collapse = "&")
+        })
+        new_urls <- paste0(BASE_URL, api_path, "?", query_strings)
+        constructed_api_urls <- c(constructed_api_urls, new_urls)
+    }
+}
+
+# --- Combine all URLs to fetch ---
+all_urls_to_fetch <- unique(c(visited_html, discovered_js, constructed_api_urls))
+
+cat("✔ Endpoint construction complete.\n")
+cat("  - Constructed", length(constructed_api_urls), "potential API URLs.\n")
+cat("  - Total unique URLs to process:", length(all_urls_to_fetch), "\n\n")
+
+
+# ------------------------------------------------------------------------------
+# 5. PHASE 3: FETCH & PARSE DATA
+# ------------------------------------------------------------------------------
+cat("--- PHASE 3: FETCHING AND PARSING ---\n")
+
+# Use map to iterate and collect results into a list of lists
+results_list <- map(all_urls_to_fetch, function(u) {
+  # Step 1: Fetch
+  response <- fetch_url(u)
+  
+  # Step 2: Get metadata and save raw response
+  status_code <- if (is.null(response)) NA_integer_ else status_code(response)
+  content_type <- if (is.null(response)) NA_character_ else http_type(response)
+  raw_file_path <- save_raw_response(response, u)
+  
+  # Step 3: Parse the response
+  parsed_result <- parse_response(response)
+  
+  # Return a structured list for this URL
+  list(
+    url = u,
+    timestamp = Sys.time(),
+    status_code = status_code,
+    content_type = content_type,
+    parse_status = parsed_result$status,
+    raw_file_path = raw_file_path,
+    parsed_data = parsed_result$data # This will be a list-column element
+  )
+})
+
+# Convert the list of lists into a final, robust tibble
+# bind_rows is safe for this structure
+final_results_df <- bind_rows(results_list)
+
+cat("\n✔ Fetch and parse complete.\n\n")
+
+
+# ------------------------------------------------------------------------------
+# 6. PHASE 4: STORE & SUMMARIZE
+# ------------------------------------------------------------------------------
+cat("--- PHASE 4: STORING RESULTS & SUMMARY ---\n")
+
+# --- Save the rich R object ---
+rds_path <- file.path(OUTPUT_DIR, "comprehensive_scrape_results.rds")
+saveRDS(final_results_df, file = rds_path)
+cat("✔ Full results with nested data saved to:", rds_path, "\n")
+
+# --- Create a flattened version for CSV export ---
+# Convert the list-column 'parsed_data' to a JSON string for portability
+csv_friendly_df <- final_results_df %>%
+  mutate(
+    parsed_data_json = map_chr(parsed_data, ~ if(is.null(.x)) NA_character_ else toJSON(.x, auto_unbox = TRUE))
+  ) %>%
+  select(-parsed_data) # Drop the complex list-column
+
+csv_path <- file.path(OUTPUT_DIR, "comprehensive_scrape_results_flat.csv")
+write_csv(csv_friendly_df, csv_path, na = "")
+cat("✔ Flattened results saved to:", csv_path, "\n\n")
+
+# --- Final Summary ---
+cat("--- SCRAPE SUMMARY ---\n")
+cat("Total URLs processed:", nrow(final_results_df), "\n\n")
+
+cat("HTTP Status Codes:\n")
+print(table(final_results_df$status_code, useNA = "ifany"))
+cat("\n")
+
+cat("Content Types Encountered:\n")
+print(table(final_results_df$content_type, useNA = "ifany"))
+cat("\n")
+
+cat("Parsing Status:\n")
+print(table(final_results_df$parse_status, useNA = "ifany"))
+cat("\n")
+
+cat("--- SCRIPT COMPLETE ---\n")
+cat("You can now load '", rds_path, "' back into R using readRDS() for analysis.\n", sep="")
+cat("Or, use the CSV file '", csv_path, "' in other tools.\n\n", sep="")
+
+# Example of how to access the nested data from the .rds file:
+# my_data <- readRDS("Columbia_Critical_Minerals_Scrape/comprehensive_scrape_results.rds")
+# json_data <- my_data %>% filter(grepl("application/json", content_type))
+# View(json_data$parsed_data[[1]]) # View the data frame from the first JSON result
