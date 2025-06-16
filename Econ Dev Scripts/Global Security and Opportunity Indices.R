@@ -1,0 +1,2948 @@
+#Energy Security, Economic Opportunity, and Partnership Strength Indices
+library(glue)
+library(WDI)
+library(scales)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(jsonlite)
+
+median_scurve <- function(x, gamma = 0.5) {
+  # 1) turn raw x into a [0,1] percentile
+  r <- dplyr::percent_rank(x)
+  # 2) compress around 0.5 by using
+  #    f(r) = r^gamma / (r^gamma + (1-r)^gamma)
+  #
+  # When gamma < 1, slope at r=0.5 is <1 (flat middle)
+  #       and slope ??? ??? as r???0 or 1 (steep tails).
+  idx <- (r^gamma) / (r^gamma + (1 - r)^gamma)
+  idx
+}
+
+
+
+iso3c <- c("USA",
+           "CAN",
+           "JPN",
+           "AUS",
+           "IND",
+           "MEX",
+           "KOR",
+           "GBR",
+           "DEU",
+           "FRA",
+           "ITA",
+           "BRA",
+           "SAU",
+           "ZAF",
+           "IDN",
+           "NOR",
+           "ARE",
+           "VNM",
+           "KEN",
+           "DNK",
+           "ARG",
+           "MAR",
+           "CHL")  # Example definition
+#Partner Mapping - The US needs to consider not only which sectors to prioritize, but which sectors among which allies
+country_info <- WDI_data$country %>%
+  filter(region!="Aggregates") %>%
+  mutate(country=ifelse(country=="Russian Federation","Russia",country),
+         country=ifelse(iso3c=="KOR","South Korea",country),
+         country=ifelse(iso3c=="COD","Democratic Republic of Congo",country))
+
+allies<- country_info %>%
+  filter(iso3c %in% c("USA","CAN", "JPN","AUS", "IND","MEX","KOR","GBR","DEU","FRA","ITA","BRA","SAU", "ZAF", "IDN", "NOR", "UAE","VNM","KEN","DNK","ARG","MAR","CHL"))
+
+#Energy Technologies of interest - not just clean. Need to be tech-neutral - what sectors bring the US the great energy security and economic opportunity benefits:
+techs <- c("Electric Vehicles",
+           "Nuclear","Coal","Batteries","Green Hydrogen","Wind","Oil",                       
+           "Solar", "Gas", "Geothermal")
+
+ei<-read.csv(paste0(raw_data,"ei_stat_review_world_energy"))  %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+all_countries <- ei %>%
+  filter(Year == "2023",
+         !grepl("World|Other|Total|OECD|OPEC", Country)) %>%
+  distinct(Country) %>%
+  pull()
+
+##----------Energy Security------------------------
+##Energy security - the assurance that energy is available where and when it's needed - can be measured or benchmarked by looking at energy availability, energy prices, affordability, natural resource availability, import reliance, and global market share
+
+#Energy Consumption----------
+
+#energy consumption per capita as a proxy for the availability of abundant energy supplies
+
+
+make_ec_long <- function(ei, year) {
+  ei %>%
+    filter(
+      Year == year,
+      Var %in% c("pop", "coalcons_ej", "oilcons_ej", "gascons_ej", 
+                 "solar_ej", "wind_ej", "nuclear_ej"),
+      !grepl("World|Other|Total|OECD|OPEC", Country)
+    ) %>%
+    select(Country, Var, Value) %>%
+    pivot_wider(names_from = Var, values_from = Value) %>%
+    transmute(
+      Country,
+      coal_raw    = coalcons_ej  / pop,
+      oil_raw     = oilcons_ej   / pop,
+      gas_raw     = gascons_ej   / pop,
+      solar_raw   = solar_ej     / pop,
+      wind_raw    = wind_ej      / pop,
+      nuclear_raw = nuclear_ej   / pop
+    ) %>%
+    mutate(across(ends_with("_raw"), ~replace_na(.x, 0))) %>%
+    mutate(across(
+      ends_with("_raw"),
+      median_scurve,
+      .names = "{str_remove(.col,'_raw')}_index"      # <-- no repeated "access"
+    )) %>%
+    pivot_longer(
+      cols = -Country,
+      names_to      = c("tech","data_type"),
+      names_pattern = "(.*)_(raw|index)",
+      values_to     = "value"
+    ) %>%
+    transmute(
+      Country,
+      tech         = str_to_sentence(tech),
+      supply_chain = "Downstream",
+      category     = "Energy Access",
+      variable     = "Energy consumption per capita",
+      data_type,                                       # raw / index
+      value,
+      Year        = year,
+      source      = "EI Statistical Review of World Energy (2024)",
+      explanation = case_when(
+        data_type == "raw"   ~ str_glue("Per-capita {tech} consumption = {tech}cons_ej ÷ pop"),
+        data_type == "index" ~ str_glue("Normalized index of per-capita {tech} consumption")
+      )
+    ) 
+}
+
+# 1. make the 2018 and 2023 series
+ec_2018 <- make_ec_long(ei, "2018")
+ec_2023 <- make_ec_long(ei, "2023")
+
+# 2. join and compute growth
+ec_growth <- ec_2018 %>%
+  inner_join(ec_2023,
+             by = c("Country","tech","supply_chain","category","variable","data_type"),
+             suffix = c("_2018","_2023")) %>%
+  filter(data_type == "raw") %>%
+  mutate(
+    growth_raw = (value_2023 - value_2018) / value_2018
+  ) %>%
+  group_by(Country) %>%
+  mutate(
+    growth_index = median_scurve(growth_raw)
+  ) %>%
+  ungroup() %>%
+  select(-data_type) %>%
+  # - pivot just the two growth columns -
+  pivot_longer(
+    cols        = c(growth_raw, growth_index),
+    names_to    = c("metric", "data_type"),
+    names_pattern = "(.*)_(raw|index)",
+    values_to   = "value"
+  ) %>%
+  
+  # now build your final shape
+  transmute(
+    Country,
+    tech         = str_to_sentence(tech),
+    supply_chain = "Downstream",
+    category     = "Energy Access",
+    variable     = paste(variable, metric),
+    data_type,                      # "raw" or "index"
+    value,
+    Year         = "2018-2023",
+    source       = "EI Statistical Review of World Energy (2024)",
+    explanation  = case_when(
+      data_type == "raw"   ~ "2018-2023 growth of per-capita consumption",
+      data_type == "index" ~ "Normalized index of per-capita consumption growth"
+    )
+  )
+
+# inspect
+energy_consumption_clean <- ec_2023 %>% select(-Year)
+energy_consumption_growth <-ec_growth %>% select(-Year)
+
+#BNEF Installed Capacity----------------------
+bnef_neo <- read.csv(paste0(raw_data,"2024-10-29 - New Energy Outlook 2024.csv"),skip=2)
+
+neo_cap <- bnef_neo %>%
+  filter(Indicator=="Installed electric capacity",
+         Region != "Global",
+         Scenario=="ETS") %>%
+  mutate(Fuel.type = recode(
+    Fuel.type,
+    "CCGT" = "Gas",
+    "Utility-scale PV" = "Solar",
+    "Hydrogen" = "Green Hydrogen",
+    "Battery storage" = "Batteries"
+  )) %>%
+  select(Country = Region,
+         tech=Fuel.type,
+         X2024,
+         X2035) %>%
+  mutate(X2024=as.numeric(X2024),
+         X2035=as.numeric(X2035)) %>%
+  group_by(Country) %>%
+  mutate(share_24=X2024/sum(X2024),
+         growth_2435=(X2035-X2024)/X2024) %>%
+  filter(tech %in% techs) %>%
+  mutate(Country=recode(
+    Country,
+    "US"="United States",
+    "UK"="United Kingdom"
+  )) %>%
+  group_by(tech) %>%
+  mutate(installed_cap_index=median_scurve(share_24)) %>%
+  group_by(Country) %>%
+  mutate(elec_growth_index=median_scurve(growth_2435)) %>%
+  pivot_longer(
+    cols      = c(X2024:elec_growth_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    supply_chain = "Downstream",
+    category = "Consumption",
+    data_type    = if_else(variable == "installed_cap_index", "index", 
+                           ifelse(variable=="elec_growth_index","index","raw")),
+    source       = "BNEF New Energy Outlook 2024",
+    explanation  = case_when(
+      variable == "X2024" ~ str_glue(
+        "2024 Installed Electricity Capacity (GW)"
+      ),
+      variable == "X2035" ~ str_glue(
+        "Forecast 2035 Installed Electricity Capacity (GW)"
+      ),
+      variable == "share_24" ~ str_glue(
+        "2024 share of Installed Electricity Capacity (%)"
+      ),
+      variable == "installed_cap_index" ~ str_glue(
+        "Index of share of 2024 Installed Electricity Capacity, by technology"
+      ),
+      variable == "growth_2435" ~ str_glue(
+        "Growth in Installed Electricity Capacity, 2024-2035"
+      ),
+      variable == "elec_growth_index" ~ str_glue(
+        "Index of 2024-2035 Installed Electricity Capacity growth"
+      ))
+    ) %>%
+  select(Country, tech, supply_chain, category,variable,data_type, value, source, explanation)
+
+#Critical Minerals------------------
+
+#IEA Critical Minerals Demand----------------------------
+critical<-read.csv(paste0(raw_data,"iea_criticalminerals_25.csv")) 
+
+mineral_demand<-critical %>%
+  filter(Pillar=="3.1 Cleantech demand by tech",
+         !grepl("Other|Total", `Sector.Country`)) %>%
+  mutate(growth = X2035/X2024-1) %>%
+  group_by(Pillar,Mineral) %>% 
+  mutate(share_24=X2024/sum(X2024),
+         share_35=X2035/sum(X2035)) %>%
+  select(1:3,X2024,X2035,growth,share_24,share_35) %>%
+  group_by(Pillar) %>%
+  mutate(
+    across(c(share_24,growth),
+           index,
+           .names = "{.col}_index")
+  ) %>%
+  rowwise() %>%    # allows c_across() to work row-wise
+  mutate(
+    demand_index    = mean(c_across(c(share_24_index,
+                                      growth_index)),  na.rm = TRUE))
+
+totals_2035 <- critical %>% 
+  filter(Pillar == "3.1 Cleantech demand by tech",
+         grepl("^Total", Sector.Country)) %>%      # be as specific as you like
+  transmute(Mineral,
+            total_2035 = X2035)                    # keep just the total
+
+# 2) Bring the totals into every other row of the same mineral
+mineral_demandindex <- critical %>% 
+  filter(Pillar == "3.1 Cleantech demand by tech") %>% 
+  select(Mineral, Sector.Country, value_2035 = X2035) %>% 
+  left_join(totals_2035, by = "Mineral") %>%       # adds NA where no total exists
+  mutate(demand_share = value_2035 / total_2035) %>%
+  # drop the helper column if you like
+  select(-total_demand_2035) %>%
+  filter(!grepl("Other",Sector.Country),
+         !grepl("Total",Sector.Country)) %>%
+  ungroup() %>%
+  
+  mutate(tech = case_when(
+    str_detect(Sector.Country, regex("^Solar", ignore_case=TRUE))            ~ "Solar",
+    str_detect(Sector.Country, regex("^Wind", ignore_case=TRUE))             ~ "Wind",
+    str_detect(Sector.Country, regex("Electric vehicles?", ignore_case=TRUE))~ "Electric Vehicles",
+    str_detect(Sector.Country, regex("Grid battery storage", ignore_case=TRUE)) ~ "Batteries",
+    str_detect(Sector.Country, regex("Electricity networks?", ignore_case=TRUE)) ~ "Electric Grid",
+    str_detect(Sector.Country, regex("Hydrogen", ignore_case=TRUE))          ~ "Green Hydrogen",
+    str_detect(Sector.Country, regex("Heat pumps?", ignore_case=TRUE))       ~ "Heat Pumps",
+    str_detect(Sector.Country, regex("^Coal$", ignore_case=TRUE))            ~ "Coal",
+    str_detect(Sector.Country, regex("^Nuclear$", ignore_case=TRUE))         ~ "Nuclear",
+    str_detect(Sector.Country, regex("^Oil$", ignore_case=TRUE))             ~ "Oil",
+    str_detect(Sector.Country, regex("^Gas$", ignore_case=TRUE))             ~ "Gas",
+    str_detect(Sector.Country, regex("Hydroelectric", ignore_case=TRUE))     ~ "Hydroelectric Power",
+    str_detect(Sector.Country, regex("Geothermal", ignore_case=TRUE))        ~ "Geothermal",
+    TRUE                                                                   ~ NA_character_
+  )) %>%
+  mutate(Mineral=ifelse(grepl("Graphite",Mineral),"Graphite",Mineral)) %>%
+  filter(!is.na(tech)) %>%
+  group_by(tech) %>%
+  mutate(demand_index=median_scurve(demand_share))
+
+mineral_demand_clean <- mineral_demand %>%
+  # 1a) map Sector.Country to your tech names
+  mutate(tech = case_when(
+    str_detect(Sector.Country, regex("^Solar", ignore_case=TRUE))            ~ "Solar",
+    str_detect(Sector.Country, regex("^Wind", ignore_case=TRUE))             ~ "Wind",
+    str_detect(Sector.Country, regex("Electric vehicles?", ignore_case=TRUE))~ "Electric Vehicles",
+    str_detect(Sector.Country, regex("Grid battery storage", ignore_case=TRUE)) ~ "Batteries",
+    str_detect(Sector.Country, regex("Electricity networks?", ignore_case=TRUE)) ~ "Electric Grid",
+    str_detect(Sector.Country, regex("Hydrogen", ignore_case=TRUE))          ~ "Green Hydrogen",
+    str_detect(Sector.Country, regex("Heat pumps?", ignore_case=TRUE))       ~ "Heat Pumps",
+    str_detect(Sector.Country, regex("^Coal$", ignore_case=TRUE))            ~ "Coal",
+    str_detect(Sector.Country, regex("^Nuclear$", ignore_case=TRUE))         ~ "Nuclear",
+    str_detect(Sector.Country, regex("^Oil$", ignore_case=TRUE))             ~ "Oil",
+    str_detect(Sector.Country, regex("^Gas$", ignore_case=TRUE))             ~ "Gas",
+    str_detect(Sector.Country, regex("Hydroelectric", ignore_case=TRUE))     ~ "Hydroelectric Power",
+    str_detect(Sector.Country, regex("Geothermal", ignore_case=TRUE))        ~ "Geothermal",
+    TRUE                                                                   ~ NA_character_
+  )) %>%
+  mutate(Mineral=ifelse(grepl("Graphite",Mineral),"Graphite",Mineral))
+
+upstream_demand<-mineral_demand %>%                     #SM: doesnt look like upstream_demand is used anywhere
+  mutate(supply_chain="Upstream") %>%
+  rename(tech=`Sector.Country`) %>%
+  group_by(tech,supply_chain) %>%
+  summarize(demand_index=mean(demand_index,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(demand_index=median_scurve(demand_index))
+
+
+
+#Resource Availability---------------------
+#Crtical Mineral Reserves
+crit_res <- ei %>%                                  #ei is the ei_stat_review_world_energy 
+  filter(
+    Year == "2023",
+    Var %in% c("cobaltres_kt","graphiteres_kt",
+               "lithiumres_kt","rareearthsres_kt"),
+    !grepl("World|Other|Total|OECD|OPEC", Country)
+  ) %>%
+  
+  pivot_wider(names_from = Var, values_from = Value) %>%
+  
+  tidyr::complete(
+    Country = country_info$country,
+    fill = list(
+      cobaltres_kt  = 0,
+      graphiteres_kt = 0,
+      lithiumres_kt = 0,
+      rareearthsres_kt = 0
+    )
+  ) %>%
+  
+  # 1) replace NA???0 on raw kt
+  mutate(across(ends_with("_kt"), ~replace_na(.x, 0))) %>%
+  
+  # 2) compute an individual index per mineral
+  mutate(
+    cobalt_idx       = median_scurve(cobaltres_kt),
+    graphite_idx     = median_scurve(graphiteres_kt),
+    lithium_idx      = median_scurve(lithiumres_kt),
+    rareearths_idx   = median_scurve(rareearthsres_kt)
+  ) %>%
+  
+  # 4) pivot raw vs index into the tidy long form
+  select(Country,
+         cobaltres_kt, graphiteres_kt, lithiumres_kt, rareearthsres_kt,
+         cobalt_idx, graphite_idx, lithium_idx, rareearths_idx) %>%
+  pivot_longer(
+    cols = -Country,
+    names_to = c("Variable","data_type"),
+    names_pattern = "(.*?)(_idx|$)",
+    values_to = "Value",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(data_type=ifelse(data_type=="_idx","index","raw"),
+         Variable=str_to_sentence(str_replace(Variable,"res_kt",""))) %>%
+  
+  left_join(mineral_demand_clean %>%
+              ungroup() %>%
+              select(Mineral,tech,share_24)%>%                                        #SM correction to share 24: share 23 does not exist
+              mutate(Mineral=ifelse(grepl("rare",Mineral),"Rareearths",Mineral)),
+            by=c("Variable"="Mineral")
+  ) %>%
+  filter(!is.na(tech)) %>%
+  
+  mutate(supply_chain="Upstream",
+         Variable=paste(Variable,"Reserves"),
+         source       = "EI Statistical Review of World Energy (2024)",
+         explanation  = case_when(
+           data_type=="raw"   ~ str_glue("{Variable} reserves (kt)"),
+           tech=="Critical Minerals" & data_type=="index" ~ 
+             "Mean of four mineral-reserve indexes",
+           data_type=="index" ~ str_glue("Percent-rank of {tech} reserves across countries")
+         )
+  ) 
+
+reserves_index<-crit_res %>%
+  filter(data_type=="index") %>%
+  group_by(Country,tech,supply_chain,data_type,source) %>%
+  summarize(Value=weighted.mean(Value,w=share_24,na.rm=T))%>%   #SM correction to share 24: share 23 does not exist
+  mutate(Variable=str_glue("{tech} Reserves"),
+         explanation="Percent-rank index, weighted by technology demandfor minerals") %>%
+  rbind(crit_res) %>%
+  select(-share_24) %>%                                         #SM correction to share 24: share 23 does not exist
+  mutate(category="Reserves") %>%
+  rename(value=Value,
+         variable=Variable)
+
+#-- 2. Fossil-fuel reserves from EI ExcelSheet --
+read_reserves <- function(path, sheet, skip, nm_col, val_col, tech_name, unit_desc){
+  read_excel(path, sheet = sheet, skip = skip) %>%
+    rename(Country = all_of(nm_col), raw_value = all_of(val_col)) %>%
+    mutate(Country=ifelse(Country=="US","United States",Country)) %>%
+    filter(
+      Country %in% all_countries,
+      !is.na(Country),
+      !grepl("World|Other|Total|OECD|OPEC|Orinoco", Country)
+    ) %>%
+    mutate(
+      raw_value = as.numeric(raw_value) %>% replace_na(0)
+    ) %>%
+    tidyr::complete(
+      Country = country_info$country,
+      fill = list(
+        raw_value = 0
+      )
+    ) %>%
+    mutate(
+      raw_value   = as.numeric(raw_value) %>% replace_na(0),
+      index_value = median_scurve(raw_value)
+    ) %>%
+    select(Country, raw_value, index_value) %>%
+    pivot_longer(
+      cols      = c(raw_value, index_value),
+      names_to  = "data_type",
+      values_to = "value"
+    ) %>%
+    mutate(
+      tech         = tech_name,
+      supply_chain = "Upstream",
+      category = "Resource availability",
+      variable = str_glue("{tech_name} Reserves"),
+      data_type    = if_else(data_type=="raw_value","raw","index"),
+      source       = "EI Statistical Review of World Energy (2024)",
+      explanation  = case_when(
+        data_type=="raw"   ~ str_glue("{tech_name} reserves ({unit_desc}) from sheet {sheet}"),
+        data_type=="index" ~ str_glue("Percent-rank of {tech_name} reserves across countries")
+      )
+    ) %>%
+    select(Country, tech, supply_chain, category, variable,data_type, value, source, explanation)
+}
+
+path_excel <- paste0(raw_data, "ei_stat_review_world_energy_wide.xlsx")
+
+oil_res <- read_reserves(
+  path        = path_excel,
+  sheet       = 13,
+  skip        = 4,
+  nm_col      = "Thousand million barrels",
+  val_col     = "2020...42",
+  tech_name   = "Oil",
+  unit_desc   = "Thousand million barrels"
+)
+
+gas_res <- read_reserves(
+  path        = path_excel,
+  sheet       = 32,
+  skip        = 4,
+  nm_col      = "Trillion cubic metres",
+  val_col     = "2020...42",
+  tech_name   = "Gas",
+  unit_desc   = "Trillion cubic metres"
+)
+
+coal_res <- read_reserves(
+  path        = path_excel,
+  sheet       = 46,
+  skip        = 5,
+  nm_col      = "Million tonnes",
+  val_col     = "Total",
+  tech_name   = "Coal",
+  unit_desc   = "Million tonnes"
+)
+
+#-- 3. Combine all reserves tidily --
+reserves_clean <- bind_rows(reserves_index, oil_res, gas_res, coal_res) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+#-- Inspect --
+View(reserves_clean)
+
+#Critical Mineral Production----------
+minerals <- critical %>%
+  filter(grepl("Total supply",Pillar),
+         !grepl("Top 3|Total", `Sector.Country`),
+         Sector.Country !="",
+         Mineral!="") %>%
+  separate(Mineral, into = c("mineral", "supply_chain_raw"), sep = " - ", extra = "merge") %>%
+  distinct(mineral)
+countries <- inner_join(critical %>%
+                          distinct(Sector.Country),country_info %>% select(country),by=c("Sector.Country"="country"))
+mineral_supply<-critical %>%
+  filter(grepl("Total supply",Pillar),
+         !grepl("Top 3|Total", `Sector.Country`),
+         Sector.Country !="",
+         Mineral!="")  %>%
+  # since Sector.Country here is actually country, rename it for clarity
+  rename(country = Sector.Country) %>%
+  # split Mineral in the same way
+  separate(Mineral, into = c("mineral", "supply_chain_raw"), sep = " - ", extra = "merge") %>%
+ #mutate(supply_chain ="Upstream") %>%
+  mutate(
+    supply_chain = if_else(
+      str_detect(supply_chain_raw, regex("Refining|Chemical", ignore_case=TRUE)),
+      "Midstream",
+      "Upstream"
+    )
+  ) %>%
+  ungroup() %>%
+  select(mineral,country,supply_chain,X2024,X2035) %>%
+  tidyr::complete(
+    mineral      = minerals$mineral,           # or a vector you build
+    supply_chain = c("Upstream","Midstream"),
+    country      = countries$Sector.Country,
+    fill = list(
+      X2024     = 0,
+      X2035     = 0
+    )
+  ) %>%
+  inner_join(mineral_demand_clean %>%
+              filter(!is.na(tech)) %>%
+              ungroup() %>%
+              select(Mineral,tech,share_24,share_35),by=c("mineral"="Mineral")) %>%
+  mutate(supply_24=share_24*X2024,
+         supply_35=share_35*X2035) %>%
+  group_by(mineral,tech,supply_chain) %>%
+  mutate(
+    # convert percent ??? fraction
+    share_frac_24 = supply_24/sum(supply_24,na.rm=T),
+    # HHI = sum of squared shares
+    HHI_24 = sum(share_frac_24^2, na.rm = TRUE),
+    share_frac_35 = supply_35/sum(supply_35,na.rm=T),
+    # HHI = sum of squared shares
+    HHI_35 = sum(share_frac_35^2, na.rm = TRUE)
+  ) %>%
+  filter(country != "Rest of world",
+         !is.na(share_frac_24),
+         !is.na(share_frac_35)
+         ) %>%
+  ungroup() %>%
+  mutate(market_share24_index=median_scurve(share_frac_24),
+         market_share35_index=median_scurve(share_frac_35),
+         hhi24_index=median_scurve(1-HHI_24),
+         hhi35_index=median_scurve(1-HHI_35)) %>%
+  rowwise() %>%    # allows c_across() to work row-wise
+  mutate(
+    security_index    = mean(c_across(c(market_share24_index:hhi35_index)),  na.rm = TRUE)) %>%
+  group_by(supply_chain) %>%
+  #mutate(security_index=median_scurve(security_index)) %>%
+  arrange(desc(security_index)) 
+
+criticalmineral_supply <- mineral_supply %>%
+  group_by(country,tech,supply_chain) %>%
+  summarize(security_index=weighted.mean(security_index,w=share_35,na.rm=T)) %>%
+  group_by(tech,supply_chain) %>%
+  #mutate(security_index=median_scurve(security_index)) %>%
+  pivot_longer(
+    cols      = c(security_index),
+    names_to  = "name",
+    values_to = "value"
+  ) %>%
+  mutate(
+    category = "Foreign Dependency",
+    variable = "Mineral Supply",
+    data_type    = "index",
+    source       = "IEA Critical Minerals Database",
+    explanation  = case_when(
+      data_type == "index" ~ str_glue(
+        "Percent-rank of {tech} market share across countries, and HHI across critical minerals"
+      )
+    )
+  ) %>%
+  select(country, tech, supply_chain, category,variable,data_type, value, source, explanation)
+
+
+#Energy Imports----------------------------------
+fossil_imports<-ei%>%
+  select(Country,Year,Var,Value) %>%
+  filter(!grepl("Other|Total|OECD|OPEC", Country),
+         Year %in% c("2023"),
+         Var %in% c("oilcons_ej",
+                    "oilcons_kbd",
+                    "oilprod_kbd",
+                    "primary_ej_pc",
+                    "gasprod_ej",
+                    "gascons_ej",
+                    "coalcons_ej",
+                    "coalprod_ej",
+                    "ren_power_ej",
+                    "ren_power_twh",
+                    "primary_ej",
+                    "electbyfuel_ren_power",
+                    "electbyfuel_total")) %>%
+  distinct() %>%
+  pivot_wider(names_from=Var,values_from=Value) %>%
+  filter(oilcons_ej != 0) %>%
+  mutate(across(c(coalcons_ej:ren_power_twh), ~replace_na(., 0))) %>%                               # or whatever your dataframe is called
+  mutate(
+    ## ?????? 1. derive all import flows & shares ?????????????????????????????????????????????????????????????????????????????????
+    oil_calc        = oilcons_ej / oilcons_kbd,
+    oilprod_ej      = oil_calc * oilprod_kbd,
+    oil_imports_ej  = oilprod_ej  - oilcons_ej,
+    oil_imports_kbd = oilprod_kbd - oilcons_kbd,
+    
+    gas_imports_ej      = gasprod_ej  - gascons_ej,
+    coal_imports_ej     = coalprod_ej - coalcons_ej,
+    fossil_imports_ej   = oil_imports_ej + gas_imports_ej + coal_imports_ej,
+    
+    oil_imports_share   = 100 * oil_imports_ej   / oilcons_ej,
+    gas_imports_share   = 100 * gas_imports_ej   / gascons_ej,
+    coal_imports_share  = 100 * coal_imports_ej  / coalcons_ej,
+    fossil_import_share = 100 * fossil_imports_ej/ (oilcons_ej+gascons_ej+coalcons_ej)  ) %>% 
+  mutate(
+    oil_import_index    = median_scurve(oil_imports_share),
+    gas_import_index    = median_scurve(gas_imports_share),
+    coal_import_index    = median_scurve(coal_imports_share),
+    fossil_import_index    = median_scurve(fossil_import_share)
+  ) %>% 
+  ungroup()
+
+imports_clean <- fossil_imports %>%
+  # rename the ren_gen_Index column so it fits our pivot pattern
+  #rename(ren_gen_index = ren_gen_Index) %>%
+  
+  # pick out the raw vs. composite-index columns we care about
+  select(
+    Country,
+    oil_imports_ej,    oil_import_index,
+    gas_imports_ej,    gas_import_index,
+    coal_imports_ej,   coal_import_index,
+    fossil_imports_ej, fossil_import_index
+  ) %>%
+  
+  # give friendly names that follow "<Tech>_<raw|index>"
+  rename_with(~ str_replace(.x, "oil_imports_ej",    "Oil_raw"),    everything()) %>%
+  rename_with(~ str_replace(.x, "oil_import_index",  "Oil_index"),  everything()) %>%
+  rename_with(~ str_replace(.x, "gas_imports_ej",    "Gas_raw"),    everything()) %>%
+  rename_with(~ str_replace(.x, "gas_import_index",  "Gas_index"),  everything()) %>%
+  rename_with(~ str_replace(.x, "coal_imports_ej",   "Coal_raw"),   everything()) %>%
+  rename_with(~ str_replace(.x, "coal_import_index", "Coal_index"), everything()) %>%
+  rename_with(~ str_replace(.x, "fossil_imports_ej", "Fossil_raw"), everything()) %>%
+  rename_with(~ str_replace(.x, "fossil_import_index","Fossil_index"), everything()) %>%
+  
+  # pivot into long form
+  pivot_longer(
+    cols       = -Country,
+    names_to   = c("tech","data_type"),
+    names_pattern = "^(.*)_(raw|index)$",
+    values_to  = "value"
+  ) %>%
+  
+  # add the remaining cols
+  mutate(
+    supply_chain = "Upstream",
+    category="Energy Imports",
+    variable = "Production surplus/deficit",
+    source       = "EI Statistical Review of World Energy (2024)",
+    explanation  = case_when(
+      data_type=="raw" & tech=="Oil"        ~ "Oil import share (%) = oil production minus consumption as a share of consumption",
+      data_type=="raw" & tech=="Gas"        ~ "Gas import share (%) = gas production minus consumption as a share of consumption",
+      data_type=="raw" & tech=="Coal"       ~ "Coal import share (%) = coal production minus consumption as a share of consumption",
+      data_type=="raw" & tech=="Fossil"     ~ "Fossil import share (%) = sum of oil, gas, and coal imports as a share of consumption",
+      data_type=="raw" & tech=="Renewables" ~ "Renewable generation share (%) = electbyfuel_ren_power ï¿½ electbyfuel_total ï¿½ 100",
+      
+      data_type=="index" & tech %in% c("Oil","Gas","Coal","Fossil") ~
+        str_glue("Mean of percent-ranked import share & absolute imports for {tech}"),
+      data_type=="index" & tech=="Renewables" ~
+        "Percent-rank of renewable-generation share across countries"
+    )
+  ) %>%
+  select(Country, tech, supply_chain, category,variable,data_type, value, source, explanation) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+##Chart:
+# choose fuels and peer set (modify as you like)
+tech_order <- c("Oil", "Gas", "Coal")
+peers <- c("United States", "China", "Germany", "Japan", "United Kingdom",
+           "France", "Italy", "Canada", "India","Australia","South Korea","Russian Federation")
+
+plot_df <- imports_clean %>% 
+  filter(variable == "Production surplus/deficit",
+         data_type == "raw",
+         tech %in% tech_order,
+         Country %in% peers) %>% 
+  # keep order within each facet by magnitude (largest deficit at top)
+  mutate(Country = reorder_within(Country, value, tech),
+         is_US   = Country == "United States",
+         surplus = ifelse(value>0,"TRUE","FALSE"))
+
+ggplot(plot_df,
+       aes(x = value, y = Country, fill = surplus)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = c("TRUE" = "#003A61", "FALSE" = "#F8931D"),
+                    guide = "none") +
+  #scale_x_continuous(labels = label_number(accuracy = 0.1),
+  #breaks = pretty_breaks(),
+  # expand = expansion(mult = 0.05)) +
+  tidytext::scale_y_reordered() +
+  facet_wrap(~ tech, scales = "free_y") +
+  labs(title = "Energy Import Dependence vs. Surplus (latest year)",
+       subtitle = "Positive = net exporter; negative = net importer.  U.S. bar highlighted.",
+       x = "Production - Consumption (EJ)",
+       y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid.major.y = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+#Cleantech Manufacturing---------------------------------------
+cleantech_man <- read.csv(paste0(raw_data, "iea_cleantech_manufacturing.csv")) %>%
+  rename(Country = X) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+cleantech_long <- cleantech_man %>%
+  pivot_longer(
+    cols        = -Country,
+    names_to    = c("Technology","Status"),
+    names_pattern = "(.*)\\.\\.\\.(Current|Pipeline)",
+    values_to   = "Value"
+  ) %>%
+  mutate(
+    Year = if_else(Status == "Current", "2023", "2035")
+  )
+
+# 2) Build country grouping (collapse EU members ??? "EU")
+country_map <- ei %>%
+  distinct(Country, EU) %>%
+  mutate(
+    Country_clean = if_else(Country == "Vietnam", "Viet Nam", Country),
+    country2      = if_else(EU == 1,             "EU", Country_clean)
+  ) %>%
+  select(country2) %>%
+  distinct()
+
+# 3) Join & keep only 2035, compute each tech's global market share
+ct_ms <- country_map %>%
+  left_join(
+    cleantech_long,
+    by = c("country2" = "Country")
+  ) %>%
+  filter(Year == "2035") %>%
+  group_by(Technology) %>%
+  mutate(
+    market_share = Value / sum(Value, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  select(Country = country2, Technology, market_share) 
+
+# 4) Percent-rank each tech's share
+ct_idx <- ct_ms %>%
+  group_by(Technology) %>%
+  mutate(
+    market_share_index = median_scurve(market_share)
+  ) %>%
+  ungroup()
+
+# 5) Pivot raw vs. index into the tidy long format
+cleantech_clean <- ct_idx %>%
+  pivot_longer(
+    cols      = c(market_share, market_share_index),
+    names_to  = "name",
+    values_to = "value"
+  ) %>%
+  mutate(
+    tech         = Technology,
+    supply_chain = "Midstream",
+    category = "Foreign Dependency",
+    variable = "Market Share",
+    data_type    = if_else(name == "market_share", "raw", "index"),
+    source       = "IEA Energy Technology Perspectives 2024",
+    explanation  = case_when(
+      data_type == "raw" ~ str_glue(
+        "2035 market share for {tech} = Value ï¿½ global total for {tech}"
+      ),
+      data_type == "index" ~ str_glue(
+        "Percent-rank of {tech} market share across countries"
+      )
+    )
+  ) %>%
+  select(Country, tech, supply_chain, category,variable,data_type, value, source, explanation)
+
+# 6) Composite clean-tech manufacturing index
+comp_ct <- ct_idx %>%
+  group_by(Country) %>%
+  summarize(
+    mean_idx = mean(market_share_index, na.rm = TRUE)
+  ) %>%
+  mutate(
+    composite_index = median_scurve(mean_idx),
+    tech            = "Clean Tech Manufacturing",
+    supply_chain    = "Midstream",
+    category = "Foreign Dependency",
+    variable = "Market Share",
+    data_type       = "index",
+    source          = "IEA Energy Technology Perspectives 2024",
+    explanation     = "Percent-rank of mean of individual clean-tech manufacturing indexes(NB: All EU countries are given same market share)"
+  ) %>%
+  select(Country, tech, supply_chain, category, variable,data_type,
+         value = composite_index, source, explanation)
+
+# 7) Bind them together
+cleantech_final <- bind_rows(cleantech_clean, comp_ct) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+cleantech_clean <- ei %>%
+  distinct(Country,EU) %>%
+  mutate(Country=ifelse(Country=="Vietnam","Viet Nam",Country),
+         country2=ifelse(EU==1,"EU",Country),
+         country2=ifelse(country2=="US","United States",country2)) %>%
+  left_join(cleantech_final,by=c("country2"="Country")) %>%
+  filter(!is.na(tech)) %>%
+  select(-country2,-EU) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+##Chart:
+tech_order <- c("Solar", "Wind", "Batteries", "Electrolyzers", "Heat.Pumps")
+top_n      <- 8                       # show top-8 manufacturers per tech
+
+plot_df <- cleantech_clean %>% 
+  filter(variable == "Market Share",
+         data_type == "raw",
+         tech %in% tech_order) %>% 
+  group_by(tech) %>% 
+  #filter(rank(desc(value)) <= top_n | Country == "United States") %>% 
+  ungroup() %>% 
+  mutate(is_US   = Country == "United States",
+         Country = reorder_within(Country, value, tech))
+
+ggplot(plot_df,
+       aes(x = value, y = Country, fill = is_US)) +
+  geom_col(width = 0.8) +
+  scale_fill_manual(values = c("TRUE" = "#e34a33",   # U.S. in red
+                               "FALSE" = "#6baed6"), guide = "none") +
+  scale_x_continuous(labels = percent_format(accuracy = 1),
+                     expand = expansion(mult = 0.03)) +
+  tidytext::scale_y_reordered() +
+  facet_wrap(~ tech, scales = "free_y") +
+  labs(title = "Global Manufacturing Market Share by Clean-Tech (2035 projection)",
+       subtitle = "Top producers (share of world output).  U.S. bar highlighted.",
+       x = "Share of global manufacturing output",
+       y = NULL,
+       caption = "Source: IEA *Energy Technology Perspectivesï¿½2024*; author calculations.") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid.major.y = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+
+#EV Manufacturing - IEA EV Outlook----------------------
+ev_man<-read.csv(paste0(raw_data,"ev_manufacturing_capacity.csv")) %>%
+  filter(Year=="2024") %>%
+  mutate(EU=ifelse(Region=="European Union",1,2)) %>%
+  left_join(ei %>% distinct(Country,EU),by=c("EU")) %>%
+  mutate(SubRegion=ifelse(Region=="North America","North America",
+                          ifelse(Region=="Other Asia Pacific","Asia Pacific",
+                                 ifelse(Region=="European Union","EU",
+                                        ifelse(Region=="China","CHN","Rest of World"))))) %>%
+  left_join(ei %>% 
+              filter(Country != "China") %>%
+              distinct(Country,SubRegion),by=c("SubRegion")) %>%
+  left_join(ei %>% distinct(Country,SubRegion)
+            %>% mutate(SubRegion=ifelse(SubRegion %in% c("Asia Pacific","North America","Europe"),"boop","Rest of World")),by=c("SubRegion")) %>%
+  mutate(country=ifelse(Region=="China","China",
+                        ifelse(SubRegion=="North America",Country.y,
+                               ifelse(SubRegion=="Asia Pacific",Country.y,
+                               ifelse(EU==1,Country.x,Country))))) %>%
+  mutate(production_index=median_scurve(Domestic.Production),
+         sales_index=median_scurve(Domestic.sales),
+         import_index=median_scurve(import_share),
+         market_share_index=median_scurve(market_share)) %>%
+  rowwise() %>%
+  mutate(ev_manufacturing_index=mean(production_index:market_share_index)) %>%
+  select(country,Domestic.sales:market_share,production_index:ev_manufacturing_index) %>%
+  pivot_longer(
+    cols      = -c(country),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  # 2. add the new constant columns
+  mutate(
+    tech= "Electric Vehicles", 
+    supply_chain = "Midstream",
+    category     = "Foreign Dependency",
+    # 3. classify raw vs index based on the _index suffix
+    data_type = if_else(str_detect(variable, "_index$"),
+                        "index", "raw"),
+    # 4. strip off the "_index" so variable matches the pre-index name
+    variable  = str_remove(variable, "_index$"),
+    # 5. fill in source/explanation
+    source      = "IEA EV Outlook",
+    explanation = "Combined index of domestic sales, production, imports and market share"
+  ) %>%
+  # 6. match the column names/order of trade_tidy
+  rename(Country = country) %>%
+  select(
+    Country, tech, supply_chain, category,
+    variable, data_type, value, source, explanation
+  ) %>%
+  distinct()
+  
+
+
+#Trade-------------------------------
+greenplexity <- read.csv(paste0(raw_data,"/greenplexity_scrape_full.csv")) %>%
+  mutate(gross_export=as.numeric(str_remove_all(gross_export, "[$, ]")),
+         Gross.Import=as.numeric(str_remove_all(Gross.Import, "[$, ]")),
+         sector=ifelse(sector=="Stone","Minerals",sector)) 
+
+green_codes<-greenplexity %>%
+  mutate(phase=ifelse(sector %in% c("Agriculture",
+                                    "Minerals",
+                                    "Metals"),
+                      "Upstream",
+                      ifelse(sector %in% c("Chemicals",
+                                           "Machinery",
+                                           "Electronics"),
+                             "Midstream",
+                             ifelse(sector=="Vehicles","Midstream",NA))),
+         supplyChain=ifelse(grepl("Solar",supplyChain),"Solar",
+                            ifelse(grepl("Wind",supplyChain),"Wind",supplyChain)),
+         industry=paste(supplyChain,phase)) %>%
+  select(supplyChain,nameShortEn,sector,industry,code) %>% distinct()
+
+#all sectors
+hs_codes<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/hts_codes_categories.csv')
+hs_codes<-hs_codes %>%
+  mutate(code_10=substr(HTS.Code,1,10),
+         code_6=substr(HTS.Code,1,6),
+         code_4=substr(HTS.Code,1,4)) %>%
+  select(-Start.Year.Valid,-End.Year.Valid)
+
+sectors <- hs_codes %>%
+  rowwise() %>%
+  mutate(
+    industry = list(
+      # 1) Wind ??? "Wind Midstream"
+      if (Sub.Sector == "Wind") {
+        "Wind Midstream"
+        
+        # 2) contains "Solar" ??? "Solar Midstream"
+      } else if (str_detect(Sub.Sector, "Solar")) {
+        "Solar Midstream"
+        
+        # 3) contains "Battery Inputs" ??? "Batteries Upstream"
+      } else if (str_detect(Sub.Sector, "Battery Inputs")) {
+        "Batteries Upstream"
+        
+        # 4) contains "Batteries and Parts" ??? "Batteries Midstream"
+      } else if (str_detect(Sub.Sector, "Batteries and Parts")) {
+        "Batteries Midstream"
+        
+        # 5) specific oil-product Sub.Sectors ??? "Oil Midstream"
+      } else if (Sub.Sector %in% c(
+        "Lubricating Oils", "Quenching Oils", "Greases", "Mineral Oils",
+        "Petroleum Oils: Other", "Waste Oils", "Fuel Oils: No. 2 & 3",
+        "Fuel Oils: Light Oils", "Fuel Oils: No. 4", "Fuel Oils: Heavy Oils",
+        "Kerosene", "Petroleum Solids", "Gasoline", "Naphtha",
+        "Motor Fuel", "Fuel Oils: Other"
+      )) {
+        "Oil Midstream"
+        
+        # 6) "Crude Oils" ??? "Oil Upstream"
+      } else if (Sub.Sector == "Crude Oils") {
+        "Oil Upstream"
+        
+        # 7) specific ethylene/propylene/butadiene Sub.Sectors ??? "Gas Midstream"
+      } else if (Sub.Sector %in% c("Ethylene", "Propylene", "Butylene", "Butadiene")) {
+        "Gas Midstream"
+        
+        # 8) specific gas-product Sub.Sectors ??? "Gas Upstream"
+      } else if (Sub.Sector %in% c("Gas", "Propane", "Butane", "Ethane", "Petroleum Gases")) {
+        "Gas Upstream"
+        
+        # 9) any Sector containing "Coal" ??? "Coal Upstream"
+      } else if (str_detect(Sector, "Coal")) {
+        "Coal Upstream"
+        
+        # 10) "Nuclear Fuel" ??? "Nuclear Upstream"
+      } else if (Sub.Sector == "Nuclear Fuel") {
+        "Nuclear Upstream"
+        
+        # 11) "Electricity\nInfrastructure" ??? "Electricity Infrastructure Midstream"
+      } else if (Sector == "Electricity\nInfrastructure") {
+        "Electricity Infrastructure Midstream"
+        
+        # 12) "Thermal Power" ??? "Coal Midstream"
+      } else if (Sector == "Thermal Power") {
+        "Coal Midstream"
+        
+        # 13) Sub.Sector == "Equipment" ??? "Nuclear Midstream"
+      } else if (Sub.Sector == "Equipment") {
+        "Nuclear Midstream"
+        
+        # 14) SPECIAL: Fossil Energy:\nEquipment ??? 3 separate labels
+      } else if (Sector == "Fossil Energy:\nEquipment") {
+        c("Gas Midstream", "Geothermal Midstream", "Oil Midstream")
+        
+        # 15) DEFAULT: everything else just carries forward its Sector
+      } else {
+        Sector
+      }
+    )
+  ) %>%
+  unnest(industry) %>%
+  ungroup()
+
+# Inspect the result
+glimpse(sectors)
+
+
+energy_codes<-rbind(sectors %>%
+                      rename(code=code_4,
+                             product=HTS.Code) %>%
+                      select(industry,code,product),
+                    green_codes %>%
+                      rename(product=nameShortEn) %>%
+                      select(industry,code,product)) %>%
+  distinct() %>%
+  mutate(industry=str_replace_all(industry," NA"," Upstream"),
+         industry=str_replace_all(industry,"Battery","Batteries"),
+         industry=str_replace_all(industry,"Nuclear Power","Nuclear"),
+         industry=str_replace_all(industry,"Critical Minerals","Batteries"))
+
+#4 Digit
+aec_4_data<-read.csv(paste0(raw_data,"hs92_country_product_year_4.csv")) %>%
+  filter(year=="2022") %>%
+  inner_join(energy_codes,by=c("product_hs92_code"="code"))
+
+aec_4_all <- aec_4_data  %>%
+  distinct(country_iso3_code,industry,product_hs92_code,export_value,import_value,export_rca,distance) %>%
+  group_by(country_iso3_code,industry) %>%
+  summarize(exports=sum(export_value,na.rm=T),
+            imports=sum(import_value,na.rm=T),
+            export_rca=weighted.mean(export_rca,w=export_value,na.rm=T),
+            feasibility=1-mean(distance,na.rm=T)) %>%
+  group_by(industry) %>%
+  mutate(market_share=exports/sum(exports)*100)
+
+
+trade_indices <- aec_4_all %>%
+  ungroup() %>%
+  right_join(country_info %>% 
+               select(country,iso3c),by=c("country_iso3_code"="iso3c")) %>%
+  select(country,industry,exports,export_rca,feasibility) %>%
+  group_by(industry) %>%
+  mutate(export_size_index=median_scurve(exports),
+         rca_index=median_scurve(export_rca),
+         feas_index=median_scurve(feasibility)) %>%
+  rowwise() %>%
+  mutate(trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by(industry) %>%
+  mutate(trade_index = median_scurve(trade_index))
+
+
+#6 Digit
+aec_6_data<-read.csv(paste0(raw_data,"hs92_country_product_year_6.csv"))
+
+aec_6_data2<-aec_6_data %>%
+  filter(year=="2022") %>%
+  left_join(sectors,by=c("product_hs92_code"="code_6"))%>%
+  distinct(country_iso3_code,industry,product_hs92_code,export_value,import_value,global_market_share) %>%
+  mutate(industry=str_replace_all(industry," NA"," Downstream"),
+         industry=str_replace_all(industry,"Battery","Batteries"))
+
+aec_6_world<-aec_6_data2 %>%
+  group_by(industry) %>%
+  summarize(exports=sum(export_value,na.rm=T),
+            imports=sum(import_value,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(world_share=exports/sum(exports)*100)
+
+aec_6_all <- aec_6_data2 %>%
+  group_by(country_iso3_code,industry) %>%
+  summarize(exports=sum(export_value,na.rm=T),
+            imports=sum(import_value,na.rm=T)) %>%
+  group_by(country_iso3_code) %>%
+  mutate(country_share=exports/sum(exports)*100) %>%
+  group_by(industry) %>%
+  mutate(market_share=exports/sum(exports)*100) %>%
+  left_join(aec_6_world %>%
+              select(industry,world_share),by=c("industry")) %>%
+  mutate(rca=country_share/world_share)
+
+country_rca <-  aec_6_all %>%
+  select(-country_share, -world_share) %>%
+  rename(export_rca = rca)%>%
+  # bind_rows handles name-mismatches for us
+  bind_rows(
+    aec_4_all %>%
+      filter(!industry %in% aec_6_all$industry)  %>%
+      # drop feasibility so it will be added back later
+      select(-feasibility)
+  ) %>%
+  
+  # finally add feasibility back (rename country_iso3_code???iso3c for the join)
+  left_join(
+    aec_4_all %>%
+      select(country_iso3_code, industry, feasibility),
+    by = c("country_iso3_code", "industry")
+  ) %>%
+  mutate(deficit=exports-imports) %>%
+  filter(!is.na(industry)) %>%
+  left_join(gdp_data %>%
+              filter(year=="2023") %>%
+              rename(gdp=NY.GDP.MKTP.CD) %>%
+              select(iso3c,gdp),by=c("country_iso3_code"="iso3c")) %>%
+  mutate(deficit_gdp=deficit/gdp) %>%
+  group_by(industry) %>%
+  mutate(market_share_index=median_scurve(market_share),
+    #deficit_index=median_scurve(deficit_gdp),
+    rca_index=median_scurve(export_rca)) %>%
+  group_by(country_iso3_code) %>%
+  mutate(export_size_index=median_scurve(exports),
+         feas_index=median_scurve(feasibility)) %>%
+  rowwise() %>%
+  mutate(overall_trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by(industry) %>%
+  mutate(overall_trade_index = median_scurve(overall_trade_index))
+
+trade_indices<-country_info %>%
+  select(country,iso3c) %>%
+  left_join(country_rca,by=c("iso3c"="country_iso3_code")) %>%
+  arrange(desc(overall_trade_index))  %>%
+  separate(
+    col    = industry,
+    into   = c("tech", "supply_chain"),
+    sep    = " (?=Downstream|Midstream|Upstream$)"
+  ) %>%
+  distinct()
+
+trade_indices_hhi <- trade_indices %>%
+  group_by(tech, supply_chain) %>%
+  mutate(
+    # convert percent ??? fraction
+    share_frac = market_share / 100,
+    # HHI = sum of squared shares
+    HHI = sum(share_frac^2, na.rm = TRUE)
+  ) %>%
+  select(-share_frac) %>%
+  ungroup() %>%
+  mutate(HHI_index=median_scurve(-HHI)) %>%
+  distinct(tech,supply_chain,HHI,HHI_index)
+
+
+# 1) start from your per-country trade_index table
+#    (rename country???Country for consistency)
+trade_tidy <- trade_indices %>%
+  rename(Country = country) %>%
+  mutate(tech=ifelse(tech=="Natural Gas","Gas",tech)) %>%
+  
+  # 2) bring in the HHI per tech / supply_chain
+  left_join(
+    trade_indices_hhi, 
+    by = c("tech","supply_chain")
+  ) %>%
+  
+  # 3) pivot the two metrics into long form
+  
+  pivot_longer(
+    cols      = exports:HHI_index,      # everything from exports up through HHI
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    data_type = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable    = str_remove(variable, "_index$")   # drop the suffix
+  ) %>%
+  rename(
+    #Country      = country,        # if your column was still `country`
+    tech         = tech,
+    supply_chain = supply_chain
+  ) %>%
+  mutate(
+    category    = "Trade",
+    source      = "Harvard Atlas of Economic Complexity",
+    variable=ifelse(variable=="overall_trade","Overall Trade Index",variable),
+    explanation = case_when(
+      data_type=="raw"   ~ str_glue("{variable}: raw value from Atlas"),
+      data_type=="index" ~ str_glue("{variable}: percent-rank or HHI index")
+    )
+  ) %>%
+  select(Country, tech, supply_chain, category,variable,
+         data_type, value, source, explanation)
+
+
+#UN Comtrade--------------
+library(comtradr)
+set_primary_comtrade_key('2940653b9bbe4671b3f7fde2846d14be')
+
+crit_hs <- read.csv(paste0(raw_data,"Columbia University Critical Minerals Dashboard/unique_comtrade.csv"))
+
+minerals_pattern <- paste0(paste0(mineral_demand$Mineral, collapse = "|"),"|","Graphite")
+
+crit_hs_filtered <- crit_hs %>%
+  filter(
+    str_detect(comtradeDescription, regex(minerals_pattern, ignore_case = TRUE))
+  )
+
+ 
+critmin_import <- ct_get_data(
+  reporter = country_info$iso3c,
+  partner = "World",
+  commodity_code = crit_hs_filtered$hscode,
+  start_date = 2023,
+  end_date = 2023,
+  flow_direction = 'import'
+)
+
+critmin_export <- ct_get_data(
+  reporter = country_info$iso3c,
+  partner = "World",
+  commodity_code = crit_hs_filtered$hscode,
+  start_date = 2023,
+  end_date = 2023,
+  flow_direction = 'export'
+)
+
+total_import <- ct_get_data(
+  reporter = country_info$iso3c,
+  partner = "World",
+  commodity_code = 'TOTAL',
+  start_date = 2023,
+  end_date = 2023,
+  flow_direction = 'import'
+)
+
+total_export <- ct_get_data(
+  reporter = country_info$iso3c,
+  partner = "World",
+  commodity_code = 'TOTAL',
+  start_date = 2023,
+  end_date = 2023,
+  flow_direction = 'export'
+)
+
+critmin_trade <-critmin_import %>%
+  select(reporter_iso,reporter_desc,cmd_code,cmd_desc,primary_value) %>%
+  rename(imports=primary_value) %>%
+  left_join(critmin_export %>%
+              select(reporter_iso,reporter_desc,cmd_code,cmd_desc,primary_value) %>%
+              rename(exports=primary_value),by=c("reporter_iso","reporter_desc","cmd_code","cmd_desc")) %>%
+  left_join(country_info %>% select(iso3c,country),by=c("reporter_iso"="iso3c")) %>%
+  select(-reporter_desc) %>%
+  mutate(imports=ifelse(is.na(imports),0,imports),
+         exports=ifelse(is.na(exports),0,exports),
+         trade_balance=(exports-imports)/(exports+imports)) %>%
+  mutate(
+    mineral = str_to_sentence(str_extract(
+      cmd_desc,
+      regex(minerals_pattern, ignore_case = TRUE)
+    )
+  )) %>%
+  mutate(supply_chain=ifelse(str_starts(cmd_code, "2"),"Upstream","Midstream"))
+  
+
+critmin_hhi <- critmin_trade %>%
+  group_by(reporter_iso,country,mineral,supply_chain) %>%
+  summarize(exports=sum(exports,na.rm=T)) %>%
+  left_join(total_export %>%
+              select(reporter_iso,
+                     total_exports=primary_value),by=c("reporter_iso")) %>%
+  mutate(exp_share=exports/total_exports) %>%
+  group_by(mineral,supply_chain) %>%
+  mutate(market_share=exports/sum(exports,na.rm=T)) %>%
+  mutate(
+    # convert percent ??? fraction
+    share_frac_24 = exports/sum(exports,na.rm=T),
+    # HHI = sum of squared shares
+    HHI_24 = sum(share_frac_24^2, na.rm = TRUE)) %>%
+  ungroup() %>%
+    mutate(hhi_index=median_scurve(-HHI_24)
+  )
+
+
+critmin_trade_tech <- critmin_hhi %>%
+  group_by(mineral,supply_chain) %>%
+  mutate(criticalmineral_marketshare_index=median_scurve(market_share),
+         criticalmineral_exportshare_index=median_scurve(exp_share),
+         criticalmineral_hhi_index=median_scurve(-HHI_24)) %>%
+  left_join(mineral_demand_clean %>%
+              mutate(Mineral=ifelse(grepl("graphite",Mineral),"Graphite",Mineral)) %>%
+              ungroup() %>%
+              select(Mineral,tech,share_24_index),
+            by=c("mineral"="Mineral")) %>%
+  filter(!is.na(tech)) %>%
+  group_by(country,tech,supply_chain) %>%
+  summarize(criticalmineral_marketshare_index=weighted.mean(criticalmineral_marketshare_index,
+                                                    share_24_index,
+                                                na.rm=T),
+            criticalmineral_exportshare_index=weighted.mean(criticalmineral_exportshare_index,
+                                                      share_24_index,
+                                                      na.rm=T),
+            criticalmineral_hhi_index=weighted.mean(hhi_index,
+                                              share_24_index,
+                                                      na.rm=T)) %>%
+    rowwise() %>% 
+  mutate(
+    ## average the three index columns, ignoring any NAs
+    critmin_trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)
+  )
+
+critmin_trade_tidy <- critmin_trade_tech %>%
+  # 1. pivot all your metric-columns into a long format
+  pivot_longer(
+    cols      = -c(country, tech),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  # 2. add the new constant columns
+  mutate(
+    supply_chain = "Upstream",
+    category     = "Trade",
+    # 3. classify raw vs index based on the _index suffix
+    data_type = if_else(str_detect(variable, "_index$"),
+                        "index", "raw"),
+    # 4. strip off the "_index" so variable matches the pre-index name
+    variable  = str_remove(variable, "_index$"),
+    # 5. fill in source/explanation
+    source      = "UN Comtrade",
+    explanation = "UN Comtrade export data"
+  ) %>%
+  # 6. match the column names/order of trade_tidy
+  rename(Country = country) %>%
+  select(
+    Country, tech, supply_chain, category,
+    variable, data_type, value, source, explanation
+  )
+
+# 
+# critmin_hhi_im <- critmin_trade %>%
+#   group_by(reporter_iso,country,mineral) %>%
+#   summarize(imports=sum(imports,na.rm=T)) %>%
+#   left_join(total_import %>%
+#               select(reporter_iso,
+#                      total_imports=primary_value),by=c("reporter_iso")) %>%
+#   mutate(imp_share=imports/total_imports) %>%
+#   group_by(mineral) %>%
+#   mutate(market_share=imports/sum(imports,na.rm=T)) %>%
+#   group_by(mineral) %>%
+#   mutate(
+#     # convert percent ??? fraction
+#     share_frac_24 = imports/sum(imports,na.rm=T),
+#     # HHI = sum of squared shares
+#     HHI_24 = sum(share_frac_24^2, na.rm = TRUE)) %>%
+#   ungroup() %>%
+#   mutate(hhi_index=median_scurve(-HHI_24)
+#   )
+# 
+# 
+# critmin_trade_tech_im <- critmin_hhi_im %>%
+#   left_join(mineral_demand_clean %>%
+#               mutate(Mineral=ifelse(grepl("graphite",Mineral),"Graphite",Mineral)) %>%
+#               ungroup() %>%
+#               select(Mineral,tech,share_24_index),
+#             by=c("mineral"="Mineral")) %>%
+#   filter(!is.na(tech)) %>%
+#   group_by(country,tech) %>%
+#   summarize(criticalmineral_marketshare=weighted.mean(market_share,
+#                                                       share_24_index,
+#                                                       na.rm=T),
+#             criticalmineral_hhi=weighted.mean(HHI_24,
+#                                               share_24_index,
+#                                               na.rm=T)) %>%
+#   ungroup() %>%
+#   mutate(criticalmineral_marketshare_index=median_scurve(criticalmineral_marketshare)) %>%
+#   mutate(criticalmineral_hhi_index=median_scurve(-criticalmineral_hhi)) %>%
+#   rowwise() %>%
+#   mutate(critmin_trade_index=mean(criticalmineral_marketshare_index,criticalmineral_hhi_index)) %>%
+#   ungroup() %>%
+#   mutate(critmin_trade_index=median_scurve(critmin_trade_index))
+# 
+# critmin_trade_tidy_im <- critmin_trade_tech_im %>%
+#   # 1. pivot all your metric-columns into a long format
+#   pivot_longer(
+#     cols      = -c(country, tech),
+#     names_to  = "variable",
+#     values_to = "value"
+#   ) %>%
+#   # 2. add the new constant columns
+#   mutate(
+#     supply_chain = "Midstream",
+#     category     = "Trade",
+#     # 3. classify raw vs index based on the _index suffix
+#     data_type = if_else(str_detect(variable, "_index$"),
+#                         "index", "raw"),
+#     # 4. strip off the "_index" so variable matches the pre-index name
+#     variable  = str_remove(variable, "_index$"),
+#     # 5. fill in source/explanation
+#     source      = "UN Comtrade",
+#     explanation = "UN Comtrade import data"
+#   ) %>%
+#   # 6. match the column names/order of trade_tidy
+#   rename(Country = country) %>%
+#   select(
+#     Country, tech, supply_chain, category,
+#     variable, data_type, value, source, explanation
+#   )
+# 
+# critmin_trade_tidy<-rbind(critmin_trade_tidy,critmin_trade_tidy_im)
+# 
+
+
+#Energy Security index-------------------------------
+
+all_security_data <- cleantech_clean %>%
+  rbind(imports_clean) %>%
+  rbind(reserves_clean) %>%
+  rbind(energy_consumption_clean) %>%
+  rbind(criticalmineral_supply %>%
+          rename(Country=country)) %>%
+  rbind(trade_tidy %>%
+          filter(!is.na(Country),
+                 variable %in% c("market_share","HHI")))  %>%
+  rbind(critmin_trade_tidy %>%
+          filter(variable=="critmin_trade")) %>%
+  rbind(ev_man) %>%
+  rbind(neo_cap) %>%
+  filter(variable != "elec_growth_index")
+
+security_weights <- c(
+  "Foreign Dependency"   = 5,
+  "Energy Imports"    = 4,
+  "Reserves"        = 5,
+  "Trade"    = 2,
+  "Resource Availability" = 3,
+  "critmin_trade" = 3,
+  "Energy Access" = 3,
+  "Consumption" = 3
+)
+
+energy_security_index<-all_security_data %>%
+  #inner_join(variable_count %>%                filter(var_count>1) %>%                select(-var_count),by=c("Country","tech","supply_chain")) %>%
+  filter(data_type=="index",
+         !grepl("Copper|Graphite|Lithium|Rare",variable)) %>%
+  group_by(Country,tech,supply_chain) %>%
+  summarize(energy_security_index=
+              weighted.mean(value,
+                            w = ifelse(is.na(security_weights[category]),
+                                       0, security_weights[category]),
+                            na.rm=T)) %>%
+  filter(tech %in% techs) %>%
+  transmute(
+    Country,
+    tech,
+    supply_chain,
+    Pillar = "Energy Security",
+    category = "Energy Security",
+    variable = "Overall Energy Security Index",
+    data_type = "index",                                       # raw / index
+    value = energy_security_index,
+    source      = "Author calculation",
+    explanation = case_when(
+      data_type == "index" ~ str_glue("Mean across energy security category indices")
+    )
+  ) %>%
+  rbind(all_security_data %>%
+          mutate(Pillar = "Energy Security"))
+
+
+energy_security_subcategories <-all_security_data %>%
+  inner_join(country_info %>%
+               filter(region != "Aggregates") %>%
+               select(country),by=c("Country"="country")) %>%
+  filter(data_type=="index") %>%
+  mutate(category=ifelse(category=="Energy Imports","Foreign Dependency",
+                         ifelse(category=="Trade","Foreign Dependency",
+                                ifelse(category=="Energy Access","Consumption",
+                                       ifelse(category=="Reserves","Resource availability",category))))) %>%
+  group_by(Country,category,supply_chain) %>%
+  summarize(energy_security_index=mean(value,na.rm=T))
+
+
+#-------------Economic Opportunity-------------------
+#Energy Prices---------------------------------
+
+
+#EI Data
+gas_price_indexed <- read_excel(
+  paste0(raw_data, "ei_stat_review_world_energy_wide.xlsx"),
+  sheet = 40, skip = 3
+) %>% 
+  rename(Year = `...1`) %>% 
+  
+  ## ?????? 1. keep only real data rows ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  filter(str_detect(Year, "^\\d{4}$")) %>%          # drops the extra header row
+  
+  ## ?????? 2. drop the benchmark columns you don't need ??????????????????????????????????????????????????????????????????
+  select(-matches("US Gulf Coast6|Northwest Europe6|Middle East7|Far East Asia6")) %>% 
+  
+  ## ?????? 3. standardise missing + convert to numeric ?????????????????????????????????????????????????????????????????????
+  mutate(across(-Year, ~ na_if(as.character(.), "-"))) %>%  # "-" ??? NA  (everything is character)
+  mutate(across(-Year, parse_number)) %>%                   # "1.865." ??? 1.865 (numeric)
+  
+  ## ?????? 4. filter to the year you want and pivot long ???????????????????????????????????????????????????????????????
+  filter(Year %in% c(2019:2023)) %>% 
+  pivot_longer(
+    cols = -Year,
+    names_to  = "Country",
+    values_to = "Value",
+    values_drop_na = TRUE
+  ) %>%
+  ## ?????? 1. normalise Country names ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  mutate(
+    Country = Country %>% 
+      str_remove_all("\\d+") %>%                 # drop trailing digits (Japan1 ??? Japan)
+      str_remove_all("\\s*\\(Mainland\\)") %>%   # remove "(Mainland)"
+      str_trim() %>%                             # tidy whitespace
+      recode(                                    # recode a few special cases
+        
+        "UK" = "United Kingdom"
+      )
+  ) %>% 
+  
+  ## ?????? 2. add EU flag & join key ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  mutate(
+    EU        = if_else(Country == "Zeebrugge", 1L, 0L),
+    country2  = if_else(EU == 1L, "EU", Country)  # same rule you use in `ei`
+  ) %>%
+  group_by(country2) %>%
+  summarize(Gas = mean(Value,na.rm=T))
+
+write.csv(gas_price_indexed, "gas_price_indexed_SM_QAQC.csv", row.names = FALSE)
+
+coal_price_indexed <- read_excel(
+  paste0(raw_data, "ei_stat_review_world_energy_wide.xlsx"),
+  sheet = 50, skip = 3
+) %>% 
+  rename(Year = `...1`) %>% 
+  
+  ## ?????? 1. keep only real data rows ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  filter(str_detect(Year, "^\\d{4}$")) %>%          # drops the extra header row
+  
+  ## ?????? 2. drop the benchmark columns you don't need ??????????????????????????????????????????????????????????????????
+  select(-matches("Canada9")) %>% 
+  
+  ## ?????? 3. standardise missing + convert to numeric ?????????????????????????????????????????????????????????????????????
+  mutate(across(-Year, ~ na_if(as.character(.), "-"))) %>%  # "-" ??? NA  (everything is character)
+  mutate(across(-Year, parse_number)) %>%                   # "1.865." ??? 1.865 (numeric)
+  
+  ## ?????? 4. filter to the year you want and pivot long ???????????????????????????????????????????????????????????????
+  filter(Year %in% c(2019:2023)) %>% 
+  pivot_longer(
+    cols = -Year,
+    names_to  = "Country",
+    values_to = "Value",
+    values_drop_na = TRUE
+  ) %>%
+  ## ?????? 1. normalise Country names ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  mutate(
+    Country = Country %>% 
+      str_remove_all("\\d+") %>%                 # drop trailing digits (Japan1 ??? Japan)
+      str_remove_all("\\s*\\(Mainland\\)") %>%   # remove "(Mainland)"
+      str_trim() %>%                             # tidy whitespace
+      recode(                                    # recode a few special cases
+        "South China" = "China",
+        "UK" = "United Kingdom"
+      )
+  ) %>% 
+  
+  ## ?????? 2. add EU flag & join key ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+  mutate(
+    EU        = if_else(Country == "Northwest Europe", 1L, 0L),
+    country2  = if_else(EU == 1L, "EU", Country)  # same rule you use in `ei`
+  ) %>%
+  group_by(country2) %>%
+  summarize(Coal = mean(Value,na.rm=T))
+
+
+ei_joined <- ei %>% 
+  mutate(country2 = if_else(EU == 1L, "EU", Country)) %>%  # assure matching key
+  distinct(Country,country2) %>%
+  left_join(
+    gas_price_indexed %>% select(country2, Gas),
+    by = "country2"
+  )  %>%
+  mutate(Country=ifelse(Country=="US","United States",Country),
+         country2=ifelse(country2=="US","United States",country2))%>%
+  left_join(
+    coal_price_indexed %>% select(country2, Coal),
+    by = "country2"
+  ) %>%
+  select(-country2) %>%
+  rename(gas_price = Gas,
+         coal_price = Coal) %>%
+  filter(!is.na(gas_price),
+         !is.na(coal_price)) %>%
+  mutate(gas_price_index=median_scurve(gas_price),
+         coal_price_index=median_scurve(coal_price)) %>%
+  pivot_longer(cols=c(gas_price:coal_price_index),names_to="tech",values_to="variable") %>%
+  mutate(supply_chain="Upstream")
+
+eo_price_clean <- ei_joined %>%
+  # 1. Create a new `data_type` based on whether `tech` ends in "_index"
+  mutate(
+    data_type = if_else(str_detect(tech, "_index$"), "index", "raw"),
+    # 2. Strip the "_index" suffix (if present) and convert to Title Case
+    tech = str_remove(tech, "_index$") %>%
+      str_replace_all("_", " ") %>%
+      str_to_sentence(),
+    # 3. Assign constant columns
+    supply_chain = "Downstream",
+    category     = "Energy Prices",
+    #variable     = "Fuel Prices",    # name of the "variable" column
+    value        = variable,         # copy the old numeric column into `value`
+    source       = "EI Statistical Review of World Energy (2024)",
+    explanation  = case_when(
+      data_type == "raw"   ~ "Price",
+      data_type == "index" ~ "Percent-rank of prices among countries"
+    )
+  ) %>%
+  # 4. Keep only the columns you actually want
+  transmute(
+    Country,
+    tech,
+    supply_chain,
+    category,
+    variable,
+    data_type,
+    value,
+    source,
+    explanation
+  )
+
+#BNEF LCOE Data-------------------
+lcoe_bnef <-read.csv(paste0(raw_data,"2025-03-24 - 2025 LCOE Data Viewer Tool.csv"),skip=8) 
+
+lcoe_bnef <- lcoe_bnef %>%
+  mutate(
+    Technology = recode(
+      Technology,
+      
+      # Gas-fired turbines (gen-set categories) ??? "Gas"
+      "CCGT"             = "Gas",
+      "Coal"    = "Coal",
+      "PV fixed-axis"           = "Solar",
+      "PV fixed-axis + storage" = "Solar",
+      "Wind onshore"        = "Wind",
+      # Utility-scale batteries ??? "Batteries"
+      "Utility-scale battery (1h)" = "Batteries",
+      "Utility-scale battery (4h)" = "Batteries",
+      
+      # If you eventually have an explicit "Green Hydrogen" row, map it here:
+      #"Green Hydrogen" = "Green Hydrogen",
+      
+      # Anything not listed above will become NA; you can change .default if you want a fallback
+      .default = NA_character_
+    )
+  ) %>%
+  filter(Scenario=="Mid",
+         Metric=="LCOE",
+         !is.na(Technology)) %>%
+  group_by(Technology,Region) %>% 
+  summarize(lcoe_24_raw=mean(as.numeric(X2024),na.rm=T),
+            lcoe_50_raw=mean(as.numeric(X2050),na.rm=T)) %>%
+  group_by(Technology) %>%
+  mutate(lcoe_24_index=median_scurve(lcoe_24_raw),
+         lcoe_50_index=median_scurve(lcoe_50_raw)) %>%
+  select(Region,Technology,lcoe_24_raw,lcoe_50_raw,lcoe_24_index,lcoe_50_index) %>%
+  pivot_longer(
+    cols=c(lcoe_24_raw:lcoe_50_index),
+    names_to  = c("variable","data_type"),
+    names_pattern = "(.*)_(raw|index)",
+    values_to = "value"
+  ) %>%
+  ungroup() %>%
+  transmute(
+    Country = Region,
+    tech         = Technology,
+    supply_chain = "Downstream",
+    category = "Energy Prices",
+    variable,
+    data_type,                                       # raw / index
+    value,
+    source      = "BNEF LCOE Estimates (2025)",
+    explanation = case_when(
+      data_type == "raw"   ~ str_glue("Levelized cost of energy"),
+      data_type == "index" ~ str_glue("Percent-rank of LCOE across countries")
+    )
+  )
+
+#Energy Production----------------------------
+production_growth<-ei%>%
+  select(Country,Year,Var,Value) %>%
+  filter(!grepl("Other|Total|OECD|OPEC|World", Country),
+         Year %in% c("2013","2018","2023"),
+         Var %in% c("oilprod_kbd",
+                    "gasprod_ej",
+                    "coalprod_ej",
+                    "solar_twh",
+                    "wind_twh",
+                    "nuclear_twh",
+                    "electbyfuel_coal",
+                    "electbyfuel_gas",
+                    "electbyfuel_oil")) %>%
+  distinct() %>%
+  mutate(
+    Var = case_when(
+      Var == "oilprod_kbd"             ~ "Oil Upstream",
+      Var == "gasprod_ej"      ~ "Gas Upstream",
+      Var == "coalprod_ej" ~ "Coal Upstream",
+      Var == "solar_twh"         ~ "Solar Downstream",
+      Var == "wind_twh"           ~ "Wind Downstream",
+      Var == "nuclear_twh" ~ "Nuclear Downstream",
+      Var == "electbyfuel_coal" ~ "Coal Downstream",
+      Var == "electbyfuel_gas" ~ "Gas Downstream",
+      Var == "electbyfuel_oil" ~ "Oil Downstream",
+      TRUE                                        ~ Var
+    )) %>%
+  group_by(Country,Year,Var) %>%
+  summarize_at(vars(Value),sum,na.rm=T) %>%
+  ungroup() %>%
+  complete(Country,
+           Year,
+           Var,
+           fill = list(Value = 0)) %>%                      # <- missing Value ??? 0
+  pivot_wider(names_from="Year",values_from="Value") %>%
+  mutate(change_5yr=(`2023`/`2018`-1)*100,
+         change_10yr=(`2023`/`2013`-1)*100,
+         change_5yr_abs=`2023`-`2018`) %>%
+  pivot_longer(
+    cols = `2013`:change_5yr_abs,
+    names_to = "year",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from=year,values_from=value) %>%
+  separate(
+    Var,
+    into      = c("tech","supply_chain"),
+    sep       = " (?=Upstream|Downstream)",
+    remove    = T
+  ) %>% 
+  group_by(tech,supply_chain) %>%
+  mutate(size_index=median_scurve(`2023`),
+         growth_index=median_scurve(change_5yr),
+         growth_abs_index=median_scurve(`change_5yr_abs`)
+  ) %>%
+  rowwise() %>%
+  mutate(overall_production_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by(tech,supply_chain) %>%
+  mutate(overall_production_index = median_scurve(overall_production_index)) %>%
+  mutate(Country=ifelse(Country=="US","United States",Country))
+
+mineral_production<-mineral_supply %>%
+  mutate(supply_growth=(X2035-X2024)/X2024) %>%
+  select(mineral,country,tech,supply_chain,X2024,X2035,supply_growth,HHI_24) %>%
+  group_by(tech,supply_chain) %>%
+  mutate(size_index=median_scurve(X2024),
+         growth_abs_index=median_scurve(supply_growth),
+         HHI_index=median_scurve(-HHI_24)) %>%
+  group_by(country,tech,supply_chain) %>%
+  summarize_at(vars(X2024:HHI_index),mean,na.rm=T) %>%
+  rowwise() %>%
+  mutate(overall_production_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by(tech,supply_chain) %>%
+  #mutate(overall_production_index = median_scurve(overall_production_index)) %>%
+  mutate(Country=ifelse(country=="US","United States",country)) %>%
+  select(-country)
+
+production_growth2 <- production_growth %>%
+  transmute(
+    Country,
+    tech,
+    supply_chain,
+    X2024=`2023`,
+    size_index,
+    growth_abs_index,
+    overall_production_index
+  ) %>%
+  rbind(mineral_production %>%
+          transmute(
+            Country,
+            tech,
+            supply_chain,
+            X2024,
+            size_index,
+            growth_abs_index,
+            overall_production_index
+          ))
+
+
+production_tidy <- production_growth2 %>%
+  filter(supply_chain != "Midstream") %>%
+  # 2) pivot ALL metrics (2013,2018,2023,change_5yr,change_10yr,change_5yr_abs,
+  #    size_index,growth_abs_index,growth_5yr_index,growth_10yr_index,production_index)
+  pivot_longer(
+    cols      = c(X2024:overall_production_index),
+    names_to  = "metric",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(metric, "_index"), "index", "raw"),
+    metric_clean= str_remove(metric, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  mutate(
+    category   = "Production",
+    source     = "EI Statistical Review World Energy",
+    explanation = case_when(
+      metric_clean %in% c("X2023") ~ 
+        glue("Raw production of {tech} ({supply_chain}) in {metric_clean}"),
+      
+      metric_clean == "size" ~ 
+        glue("Min-max scaled production in 2023 for {tech}"),
+      metric_clean == "growth_abs" ~ 
+        glue("Min-max scaled absolute growth index for {tech}"),
+      metric_clean == "overall_production" ~ 
+        glue("Composite index: mean of size & growth indices, then min-max scaled for {tech}"),
+      TRUE ~ metric_clean
+    )
+  ) %>%
+  
+  # 5) select & rename to your final schema
+  transmute(
+    Country,
+    tech,
+    supply_chain,
+    category,
+    variable=ifelse(metric_clean=="overall_production","Overall Production",metric_clean),
+    data_type,
+    value,
+    source,
+    explanation
+  )
+
+# Inspect
+production_tidy %>% filter(variable=="Overall Production")
+
+
+#Supply Chain Capacity-------------------
+overcapacity_bnef <- read_excel(paste0(raw_data,"BNEF_Energy Transition Supply Chains 2025.xlsx"),sheet=3,skip=9) %>%
+  fill(Sector) %>%
+  mutate(Sector=ifelse(Sector=="H???","Green Hydrogen",
+                       ifelse(Sector=="Battery","Batteries",Sector))) %>%
+  group_by(Sector) %>%
+  summarize(Overcapacity=mean(`Overcapacity Ratio`,na.rm=T))%>%
+  transmute(tech=Sector,
+            supply_chain="Midstream",
+         Overcapacity) %>%
+  mutate(`Overall Overcapacity_index` = 2^(-Overcapacity)) %>%
+  pivot_longer(cols=c(Overcapacity,`Overall Overcapacity_index`),names_to="variable",values_to="value") %>%
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  mutate(
+    category   = "Technology Demand",
+    source     = "BNEF Energy Transition Supply Chains 2025",
+    explanation = "Ratio of manufacturing capacity to forecast"
+  )
+  
+overcapacity_tidy <- trade_tidy %>%
+  distinct(Country,tech,supply_chain) %>%
+  inner_join(overcapacity_bnef,by=c("tech","supply_chain"))
+
+#Investment-----------------------------
+#BNEF
+path <- paste0(raw_data, "2025-06-03 - Energy Transition Investment Trends 2025 Countries Annex.xlsx")
+
+# 2) Get every sheet name in that workbook
+all_sheets <- excel_sheets(path)
+
+# 3) Define a named vector that maps each "Pg N" sheet to its country label.
+#    **?????? Make sure the names here exactly match the sheet names in your file.**
+country_map <- c(
+  "Pg 7"  = "United States",
+  "Pg 8"  = "Canada",
+  "Pg 9"  = "Brazil",
+  "Pg 10" = "Mexico",
+  "Pg 11" = "Chile",
+  "Pg 14" = "China",
+  "Pg 15" = "Japan",
+  "Pg 16" = "India",
+  "Pg 17" = "Australia",
+  "Pg 18" = "South Korea",
+  "Pg 19" = "Indonesia",
+  "Pg 21" = "Vietnam",
+  "Pg 24" = "United Kingdom",
+  "Pg 25" = "Germany",
+  "Pg 26" = "France",
+  "Pg 27" = "Spain",
+  "Pg 28" = "Italy",
+  "Pg 29" = "Poland",
+  "Pg 30" = "South Africa"
+)
+
+# 4) We only want to loop over the sheets that actually exist AND appear in country_map.
+#    Using `intersect()` ensures we don't accidentally try to read a sheet that doesn't exist.
+target_sheets <- intersect(all_sheets, names(country_map))
+
+#  Optional check: Warn if any key in country_map is missing from the file
+missing_sheets <- setdiff(names(country_map), all_sheets)
+if (length(missing_sheets) > 0) {
+  warning("The following sheet names were in country_map but not found in the workbook:\n",
+          paste(missing_sheets, collapse = ", "))
+}
+
+# 5) Read each sheet, skip the first 9 rows, and add Country = country_map[<sheet_name>]
+list_of_dfs <- lapply(target_sheets, function(sheet_nm) {
+  # Read the sheet (skip = 9 as you requested)
+  df <- read_excel(path = path, sheet = sheet_nm, skip = 9)
+  
+  # Look up the country label
+  country_label <- country_map[[sheet_nm]]
+  
+  # Append a Country column
+  df %>%
+    mutate(Country = country_label)
+})
+
+# 6) Bind them all into one data frame
+combined_by_country <- bind_rows(list_of_dfs)
+
+bnef_inv <- combined_by_country %>%
+  select(-`Grand Total`) %>%
+  rename(Year = 1) %>%
+  pivot_longer(cols=c(`Renewable energy`:`Power grids`),
+               names_to="tech",
+               values_to="value") %>%
+  pivot_wider(names_from= Year,values_from=value) %>%
+  mutate(growth_2422=`2024`/`2022`-1) %>%
+  mutate(tech = tech %>%
+           recode())
+
+
+# Clean investment Monitor Data - Check it's the latest quarter available
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/quarterly_actual_investment.csv'
+
+# Read Data
+investment <- read.csv(investment_data_path, skip=5)
+
+cim_sectors<-investment %>% distinct(Technology,Segment) %>%
+  mutate(
+    supply_chain = case_when(
+      Segment == "Energy and Industry"             ~ "Downstream",
+      Segment == "Manufacturing"      ~ "Midstream",
+      #Segment == "Retail" ~ "Downstream",
+      TRUE                                        ~ Segment
+    ),
+    tech = case_when(
+      Technology== "Storage" ~ "Batteries",
+      Technology == "Critical Minerals" ~ "Batteries",
+      Technology == "Hydrogen" ~ "Green Hydrogen",
+      Technology == "Zero Emission Vehicles" ~ "Electric Vehicles",
+      TRUE ~Technology
+    )) %>%
+  filter(tech %in% allies_rca$sector)
+
+investment_growth <- investment %>%
+  inner_join(cim_sectors,by=c("Technology","Segment")) %>%
+  mutate(year=substr(quarter,1,4)) %>%
+  group_by(year,tech,supply_chain) %>%
+  summarize(investment=sum(Estimated_Actual_Quarterly_Expenditure,na.rm=T)) %>%
+  mutate(investment=as.numeric(investment)) %>%
+  pivot_wider(names_from="year",values_from="investment") %>%
+  mutate(change_5yr=round((`2024`-`2020`)/`2020`*100),1,
+         change_5yr_abs=(`2024`-`2020`)) %>%
+  ungroup() %>%
+  mutate(size_index=median_scurve(`2024`),
+         growth_5yr_index=median_scurve(change_5yr),
+         growth_5yr_abs_index=median_scurve(change_5yr_abs)) %>%
+  rowwise() %>%
+  mutate(investment_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(investment_index = median_scurve(investment_index))
+
+investment_clean <- investment_growth %>% 
+  #rename(tech = tech) %>% 
+  transmute(country       = "United States",
+            tech,
+            supply_chain,
+            `2024`,`change_5yr`,size_index,growth_5yr_index,investment_index) %>%
+  pivot_longer(
+    cols      = c(`2024`:investment_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  mutate(
+    category   = "Investment",
+    source     = "Clean investment Monitor",
+    explanation = case_when(
+      variable %in% c("2024") ~ 
+        glue("2024 investment of {tech} ({supply_chain})"),
+      
+      variable == "change_5yr" ~ 
+        glue("5-year % change: (2023 / 2018 ??? 1) × 100 for {tech} investment"),
+      variable == "size" ~ 
+        glue("Min-max scaled investment in 2043 for {tech}"),
+      variable == "investment" ~
+        glue("Mean of investment-related indices"),
+      TRUE ~ variable
+    )
+  ) %>%
+  mutate(variable=ifelse(variable=="investment","Overall Investment",variable))
+
+
+#Cost Competitiveness-----------
+iea_cost<-read.csv(paste0(raw_data,"Relative_Costs_IEA.csv")) %>%
+  mutate( Product = Product %>%
+            recode(                                    
+              "Solar PV"="Solar",
+              "Wind turbines"="Wind" ,
+              "Electrolysers"="Green Hydrogen"
+            ),
+          Region=ifelse(Region=="Korea","South Korea",Region)) %>%
+  group_by(Product) %>%
+  mutate(supply_chain="Midstream",
+         country2=ifelse(Region=="European Union","EU",
+                         ifelse(Region=="Other Southeast Asia","Asia Pacific",Region)),
+         cost_index=1-median_scurve(Value)) %>%
+  rename(tech=Product) %>%
+  select(country2,tech,Region,supply_chain,cost_index) %>%
+  left_join( ei %>% 
+               mutate(Country=ifelse(Country=="US","United States",Country)) %>%
+               mutate(country2 = if_else(EU == 1L, "EU", Country)) %>%  # assure matching key
+               distinct(Country,country2),
+             by = "country2"
+  ) %>%
+  left_join(ei %>% 
+              filter(Country != "South Korea") %>%
+              distinct(Country,SubRegion),by=c("country2"="SubRegion")) %>%
+  mutate(Country=ifelse(is.na(Country.x),Country.y,Country.x),
+         supply_chain=ifelse(tech=="Ammonia","Downstream",supply_chain),
+         tech=ifelse(tech=="Ammonia","Green Hydrogen",tech)) %>%
+  select(Country,tech,supply_chain,cost_index)
+
+
+iea_cost_clean <- iea_cost %>% 
+  pivot_longer(
+    cols      = c(cost_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  mutate(
+    category   = "Cost Competitiveness",
+    source     = "IEA Energy Technology Perspectives 2024",
+    variable = "Overall input cost index",
+    explanation = case_when(
+      variable %in% c("cost") ~ 
+        glue("Cost competitiveness relative to China"),
+      TRUE ~ variable
+    )
+  )
+
+
+
+#Future Demand---------------
+iea_weo<-read.csv(paste0(raw_data,"WEO2024_AnnexA_Free_Dataset_World.csv")) %>%
+  filter(SCENARIO=="Stated Policies Scenario",
+         CATEGORY=="Energy",
+         PRODUCT %in% c("Solar",
+                        "Wind",
+                        "Nuclear",
+                        "Natural gas",
+                        "Oil",
+                        "Coal",
+                        "Solar PV",
+                        "Hydrogen: low-emissions",
+                        "Geothermal"),
+         FLOW=="Total energy supply"|grepl("Hydrogen",FLOW)) %>%
+  group_by(YEAR,PRODUCT) %>%
+  summarize(VALUE=sum(VALUE,na.rm=T)) %>%
+  ungroup() %>%
+  pivot_wider(names_from="YEAR",values_from="VALUE") %>%
+  mutate(growth=`2035`-`2022`) %>%
+  ungroup() %>%
+  mutate(PRODUCT=ifelse(PRODUCT=="Natural gas","Gas",PRODUCT),
+         PRODUCT=ifelse(grepl("Hydrogen",PRODUCT),"Green Hydrogen",PRODUCT),
+         demand_size_index=median_scurve(`2035`),
+         demand_growth_index=median_scurve(growth)) %>%
+  rename("tech"="PRODUCT") %>%
+  rowwise() %>%
+  mutate(
+    demand_index = (demand_size_index + 2 * demand_growth_index) / 3
+  ) %>%
+  ungroup() %>%
+  mutate(demand_index=median_scurve(demand_index)) %>%
+  mutate(Upstream="Upstream",
+         Midstream="Midstream",
+         Downstream="Downstream") %>%
+  pivot_longer(cols=c(Upstream:Downstream),names_to="supply_chain",values_to="supply_chain2") %>%
+  select(tech,supply_chain,`2035`,`growth`,demand_size_index,demand_growth_index,demand_index) %>% 
+  pivot_longer(
+    cols      = c(`2035`:demand_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  mutate(
+    category   = "Technology Demand",
+    source     = "IEA World Energy Outlook",
+    explanation = case_when(
+      variable =="2035" ~ 
+        glue("Global energy demand in 2035"),
+      variable =="growth" ~ 
+        glue("Modelled demand growth, 2022-2035, IEA States Policies Scenario"),
+      variable =="demand_size" ~ 
+        glue("Index of global energy demand in 2035"),
+      variable =="demand_growth_index" ~ 
+        glue("Index of modelled demand growth, 2022-2035, IEA States Policies Scenario"),
+      variable =="demand_index" ~ 
+        glue("Mean of growth and size indices"),
+      TRUE ~ variable
+    )
+  ) %>%
+  mutate(variable=ifelse(variable=="demand","Overall Global Demand",variable))
+
+
+neo<-bnef_neo %>%
+  filter(Scenario=="ETS",
+         Indicator=="Primary energy consumption",
+         !Region %in% c("Global",
+                        "MENAT"),
+         !grepl("Other|Rest|Africa",Region),
+         Sector=="All sectors",
+         Fuel.type %in% techs) %>%
+  mutate(Region=ifelse(Region=="US","United States",
+                       ifelse(Region=="UK","United Kingdom",Region))) %>%
+  mutate_at(vars(X2000:X2050),as.numeric) %>%
+  mutate(growth=`X2035`-`X2023`) %>%
+  group_by(Fuel.type) %>%
+  mutate(demand_size_index=median_scurve(`X2035`),
+         demand_growth_index=median_scurve(growth)) %>%
+  rename("tech"="Fuel.type") %>%
+  rowwise() %>%
+  mutate(
+    demand_index = (demand_size_index + 2 * demand_growth_index) / 3
+  ) %>%
+  ungroup() %>%
+  mutate(demand_index=median_scurve(demand_index)) %>%
+  mutate(Upstream="Upstream",
+         Midstream="Midstream",
+         Downstream="Downstream") %>%
+  pivot_longer(cols=c(Upstream:Downstream),names_to="supply_chain",values_to="supply_chain2") %>%
+  select(Region,tech,supply_chain,`X2023`,`X2035`,`growth`,demand_size_index,demand_growth_index,demand_index) %>% 
+  pivot_longer(
+    cols      = c(`X2023`:demand_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  transmute(
+    Country = Region,
+    tech,
+    supply_chain,
+    category   = "Technology Demand",
+    variable,
+    data_type,
+    value,
+    source     = "BNEF New Energy Outlook",
+    explanation = case_when(
+      variable =="X2035" ~ 
+        glue("Energy demand (PJ) in 2035"),
+      variable =="growth" ~ 
+        glue("Modelled demand growth, 2023-2035, BNEF ETS Scenario"),
+      variable =="demand_size" ~ 
+        glue("Index of energy demand in 2035"),
+      variable =="demand_growth_index" ~ 
+        glue("Index of modelled demand growth, 2023-2035, BNEF ETS Scenario"),
+      variable =="demand_index" ~ 
+        glue("Mean of growth and size indices"),
+      TRUE ~ variable
+    )
+  ) %>%
+  mutate(variable=ifelse(variable=="demand","Overall Demand",variable))
+  
+
+#BCG US Serviceable Market---------------------
+bcg<-read_excel(paste0(raw_data,"Market Size for Technology and Supply Chain.xlsx"),1) %>%
+  rename(tech="Energy source") %>%
+  pivot_longer(cols=c(Upstream,Midstream,Downstream),names_to="supply_chain",values_to="SAM") %>%
+  mutate(sam_index=median_scurve(SAM)) %>%
+  mutate(Country="United States") %>%
+  pivot_longer(
+    cols      = c(SAM,sam_index),
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  
+  # 3) classify raw vs index
+  mutate(
+    data_type   = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable= str_remove(variable, "_index$")
+  ) %>%
+  
+  # 4) attach category, source, explanation
+  mutate(
+    category   = "Technology Demand",
+    source     = "BCG",
+    explanation = case_when(
+      variable =="SAM" ~ 
+        glue("Serviceable Addressable Market, 2020-2050"),
+      variable =="sam" ~ 
+        glue("Serviceable Addressable Market, 2020-2050 (index)"),
+      TRUE ~ variable
+    )
+  ) %>%
+  mutate(variable=ifelse(variable=="sam","Overall Addressable Market",variable))
+
+#Economic Opportunity Index-----------------
+econ_opp_indices<- rbind(trade_tidy,production_tidy %>%
+                           mutate(Country=ifelse(Country=="US","United States",Country)))  %>%
+  mutate(variable=ifelse(variable=="feas" & data_type=="index","Overall Feasibility",variable)) %>%
+  rbind(neo) %>%
+  rbind(lcoe_bnef) %>%
+  rbind(investment_clean %>%
+         rename(Country=country)) %>%
+  rbind(trade_tidy %>%
+          select(Country,tech,supply_chain) %>%
+           left_join(iea_weo,by=c("tech","supply_chain"))) %>%
+  rbind(overcapacity_tidy) %>%
+  rbind(energy_consumption_growth) %>% mutate(variable=ifelse(variable=="Energy consumption per capita growth","Overall Energy consumption growth",variable)) %>%
+  rbind(cleantech_clean %>%
+          mutate(variable=ifelse(variable=="Market Share","Overall Market Share",variable))) %>%
+  rbind(criticalmineral_supply %>%
+          rename(Country=country) %>%
+          mutate(variable = "Overall Mineral Supply")) %>%
+  rbind(ev_man %>%
+          mutate(variable=ifelse(variable=="ev_manufacturing","Overall Production",variable))) %>%
+  rbind(iea_cost_clean) %>%
+  #rbind(bcg) %>%
+  #mutate(variable=ifelse(variable=="Overall Addressable Market","Overall Demand",variable)) %>%
+  rbind(neo_cap %>%
+          ungroup() %>%
+          mutate(variable=ifelse(variable=="elec_growth_index",
+                                 "Overall Production",variable))) %>%
+  mutate(Pillar="Economic Opportunity") %>%
+  filter(Country != "Korea, Dem. People's Rep.") %>%
+  mutate(Country=ifelse(grepl("Korea",Country),"South Korea",Country),
+         tech=ifelse(tech=="Oil & Gas","Geothermal",tech)) %>%
+  filter(supply_chain %in% c("Downstream",
+                             "Midstream",
+                             "Upstream")) 
+
+opportunity_weights <- c(
+  "Overall Trade Index"   = 3,
+  "Overall Feasibility" = 4,
+  "Overall Production"    = 4,
+  "Overall Demand"        = 5,
+  "Overall Overcapacity"  = 3,
+  "Overall Market Share" = 3,
+  "Overall Mineral Supply" = 3,
+  "Overall input cost index"=3,
+  "Overall Energy consumption growth" = 3,
+  "Overall Investment"    = 3,
+  "Overall Global Demand" = 3
+)
+
+# 2) compute weighted index
+econ_opp_index <- econ_opp_indices %>%
+  filter(
+    data_type == "index",
+    tech %in% techs,
+    grepl("Overall",variable)    # same names as your weights
+  )%>%
+  distinct(Country,tech,supply_chain,Pillar,value,variable) %>%
+  group_by(Country, tech, supply_chain, Pillar) %>%
+  summarize(
+    econ_opp_index = weighted.mean(
+      x = value,
+      w = opportunity_weights[variable],        # lookup weight by variable name
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  transmute(
+    Country,tech,
+    supply_chain,
+    Pillar,
+    category="Energy Opportunity",
+    variable="Overall Economic Opportunity Index",
+    data_type="index",
+    value=econ_opp_index,
+    source="Author calculation",
+    explanation="Mean across economic opportunity category indices"
+  ) %>%
+  rbind(econ_opp_indices) %>%
+  distinct()
+
+us_opportunity <- econ_opp_index %>%
+  filter(Country=="United States",
+         variable=="Overall Economic Opportunity Index",
+         data_type=="index") %>%
+  select(tech,supply_chain,value) %>%
+  mutate(value=median_scurve(value)) %>%
+  pivot_wider(names_from=supply_chain,values_from=value)
+
+
+#Energy Strategy Scatterplot-----------------------
+scatter_index<-rbind(energy_security_index %>%
+                       filter(variable=="Overall Energy Security Index"),
+                     econ_opp_index %>% 
+                       filter(variable=="Overall Economic Opportunity Index")) %>%
+  mutate(industry=paste0(tech,": ",supply_chain)) %>%
+  filter(industry != "Geothermal: Midstream")
+
+us_scatter_index <- scatter_index %>%
+  filter(Country=="United States")%>%
+  select(industry,tech,supply_chain,variable,value) %>%
+  group_by(variable) %>%
+  mutate(value=median_scurve(value)) %>%
+  pivot_wider(names_from=variable,values_from=value)
+
+write.csv(us_scatter_index %>%
+            mutate( `Overall Energy Security Index`=1- `Overall Energy Security Index`),"Downloads/us_scatter.csv")
+
+#------------------Bilateral Relationships-----------------
+#US export Size & Growth------------------------------
+country_codes <- read_delim(
+  "https://www.census.gov/foreign-trade/schedules/c/country.txt",
+  delim      = "|",
+  skip       = 4,                            # drop the title & separator lines
+  col_names  = c("Code","Name","ISO"),       # assign sensible names
+  trim_ws    = TRUE,                         # strip leading/trailing spaces
+  comment    = "-"                           # ignore the dashed-line row
+) %>%
+  # coerce types
+  mutate(
+    Code = as.integer(Code),
+    ISO  = as.character(ISO),
+    Name = str_squish(Name)
+  )
+
+
+energy_exports_hs<-unique(energy_codes$code)
+
+export_data_all <- data.frame()
+
+for (code in energy_exports_hs) {
+  result <- tryCatch({
+    getCensus(
+      name = "timeseries/intltrade/exports/hs",
+      vintage = NULL, 
+      vars = c("E_COMMODITY", "CTY_CODE", "CTY_NAME", "ALL_VAL_MO"), 
+      time = "from 2020 to 2025",
+      E_COMMODITY = code  # Single HS code
+    )
+  }, error = function(e) {
+    message("Error fetching data for code: ", code)
+    message("Error: ", e)
+    return(NULL)
+  })
+  
+  if (!is.null(result)) {
+    export_data_all <- bind_rows(export_data_all, result)  # Append results
+  }
+}
+
+
+export_growth <- export_data_all %>%
+  mutate(value=as.numeric(ALL_VAL_MO)) %>%
+  left_join(energy_codes,by=c("E_COMMODITY"="code")) %>%
+  left_join(country_codes %>%
+              mutate(Code=as.character(Code)) %>%
+              select(-Name),by=c("CTY_CODE"="Code")) %>%
+  mutate(country = str_to_sentence(CTY_NAME)) %>%
+  group_by(ISO,country,industry,time) %>%
+  summarize(across(c(value),sum,na.rm=T))
+
+export_growth2 <- export_growth %>%
+  arrange(time) %>%
+  group_by(country,industry) %>%
+  mutate(
+    export_12mma = rollmean(value, k = 12, align = "right", fill = NA),
+    base_2020 = ifelse(any(time == "2020-01"), 
+                       export_12mma[time == "2021-01"], 
+                       NA),
+    export_index_20 = ifelse(!is.na(base_2020) & base_2020 > 0, 
+                             100 * export_12mma / base_2020, 
+                             NA)
+  ) %>%
+  ungroup() 
+
+export_growth_allies <- export_growth2 %>%
+  filter(time=="2025-02") %>%
+  select(-base_2020)%>%
+  #group_by(industry) %>%
+  mutate(us_export_index=median_scurve(export_12mma),
+         us_export_growth_index = median_scurve(export_index_20)) %>%
+  rowwise() %>%
+  mutate(us_trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by() %>%
+  mutate(us_trade_index = median_scurve(us_trade_index)) %>%
+  #filter(ISO %in% allies$iso2c) %>%
+  mutate(industry=str_replace_all(industry,"Natural Gas","Gas"))
+
+export_growth_allies2 <- export_growth_allies %>%
+  left_join(econ_opp_index %>%
+              ungroup() %>%
+              filter(Country=="United States",
+                     variable=="Overall Economic Opportunity Index") %>%
+              mutate(industry=paste(tech,supply_chain),
+                     econ_opp_index=value) %>%
+              select(industry,econ_opp_index),by=c("industry")) %>%
+  mutate(us_opp_index=(us_trade_index+econ_opp_index)/2) 
+
+  #filter(ISO %in% allies$iso2c)
+
+#US Imports---------------------
+
+energy_imports_hs<-unique(energy_codes$code)
+
+import_data_all <- data.frame()
+
+for (code in energy_exports_hs) {
+  result <- tryCatch({
+    getCensus(
+      name = "timeseries/intltrade/imports/hs",
+      vintage = NULL, 
+      vars = c("I_COMMODITY", "CTY_CODE", "CTY_NAME", "GEN_VAL_MO"), 
+      time = "from 2020 to 2025",
+      I_COMMODITY = code  # Single HS code
+    )
+  }, error = function(e) {
+    message("Error fetching data for code: ", code)
+    message("Error: ", e)
+    return(NULL)
+  })
+  
+  if (!is.null(result)) {
+    import_data_all <- bind_rows(import_data_all, result)  # Append results
+  }
+}
+
+
+import_growth <- import_data_all %>%
+  mutate(value=as.numeric(GEN_VAL_MO)) %>%
+  left_join(energy_codes,by=c("I_COMMODITY"="code")) %>%
+  left_join(country_codes %>%
+              mutate(Code=as.character(Code)) %>%
+              select(-Name),by=c("CTY_CODE"="Code")) %>%
+  mutate(country = str_to_sentence(CTY_NAME)) %>%
+  group_by(ISO,country,industry,time) %>%
+  summarize(across(c(value),sum,na.rm=T))
+
+
+import_growth2 <- import_growth %>%
+  arrange(time) %>%
+  group_by(country,industry) %>%
+  mutate(
+    import_12mma = rollmean(value, k = 12, align = "right", fill = NA),
+    base_2020 = ifelse(any(time == "2020-01"), 
+                       import_12mma[time == "2021-01"], 
+                       NA),
+    import_index_20 = ifelse(!is.na(base_2020) & base_2020 > 0, 
+                             100 * import_12mma / base_2020, 
+                             NA)
+  ) %>%
+  ungroup() 
+
+import_growth_allies <- import_growth2 %>%
+  filter(time=="2025-02") %>%
+  select(-base_2020)%>%
+  #group_by(industry) %>%
+  mutate(us_import_index=median_scurve(import_12mma),
+         us_import_growth_index = median_scurve(import_index_20)) %>%
+  rowwise() %>%
+  mutate(us_trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
+  group_by() %>%
+  mutate(us_trade_index = median_scurve(us_trade_index)) %>%
+  #filter(ISO %in% allies$iso2c) %>%
+  mutate(industry=str_replace_all(industry,"Natural Gas","Gas"))
+
+#US Outbound Investment-----------------------
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+outbound <- read_excel(paste0(raw_data, "us_outbound_investment.xlsx"),
+                       sheet = 7, skip = 3) %>%
+  mutate(across(2:19, as.numeric)) %>%
+  mutate(
+    downstream_size     = `...13` + `...14` + `...19`,
+    midstream_size      = `Total`,     # adjust if your actual midstream col differs
+    upstream_size       = `...3`      # adjust if your actual upstream col differs
+  ) %>%
+  rename(Country = 1) %>%
+  select(Country, downstream_size, midstream_size, upstream_size) %>%
+  filter(!str_detect(Country, "All|Other|Asia|Middle|EU|nonzero|Caribbean")) %>%
+  mutate(across(2:4, ~replace_na(.x, 0))) %>%
+  mutate(
+    downstream_share  = 100 * downstream_size  / (downstream_size  + midstream_size  + upstream_size),
+    midstream_share   = 100 * midstream_size   / (downstream_size  + midstream_size  + upstream_size),
+    upstream_share    = 100 * upstream_size    / (downstream_size  + midstream_size  + upstream_size),
+    
+    downstream_size_index   = median_scurve(downstream_size),
+    midstream_size_index    = median_scurve(midstream_size),
+    upstream_size_index     = median_scurve(upstream_size),
+    
+    downstream_share_index  = median_scurve(downstream_share),
+    midstream_share_index   = median_scurve(midstream_share),
+    upstream_share_index    = median_scurve(upstream_share)
+  ) %>%
+  
+  # 1) Pivot all six metrics (size & share, raw & index) long
+  pivot_longer(
+    cols = matches("^(downstream|midstream|upstream)_(size|share)(_index)?$"),
+    names_to    = c("supply_chain","metric","type"),
+    names_pattern = "(downstream|midstream|upstream)_(size|share)(_index)?",
+    values_to   = "value"
+  ) %>%
+  # 2) Clean up `type` (NA ??? raw, else 'index')
+  mutate(
+    type = if_else(type=="", "raw", "index"),
+    supply_chain = str_to_sentence(supply_chain)
+  ) 
+
+outbound_indexed <-outbound %>%  
+  # 3) Compute composite segment-index = mean(size_index, share_index)
+  filter(type == "index") %>%
+  group_by(Country, supply_chain) %>%
+  summarise(
+    outbound_inv_index = mean(value, na.rm = TRUE)
+  )
+
+View(outbound_indexed)
+
+
+#Energy Agreements-----------------
+bilat_energy<-read_excel(paste0(raw_data,"clean_energy_foreign_policy_heatmap.xlsx")) %>%
+  pivot_longer(cols=c(2:13),names_to="tech",values_to="value") %>%
+  mutate(value=replace_na(value, 0)) %>%
+  group_by(tech) %>%
+  mutate(bilat_energy_agreement=ifelse(value==1,0.8,
+                                       ifelse(value==2,1,0))) 
+
+
+#Climate Prioritization----------------------------
+#IPCC Median GHG Intensity estimates
+
+min_max_index <- function(x) {
+  # 1) get only the finite values
+  finite_x <- x[is.finite(x)]
+  min_x    <- min(finite_x, na.rm = TRUE)
+  max_x    <- max(finite_x, na.rm = TRUE)
+  
+  # 2) clamp Inf to the finite extremes
+  x2 <- x
+  x2[x ==  Inf] <- max_x
+  x2[x == -Inf] <- min_x
+  
+  # 3) standard min-max scale
+  (x2 - min_x) / (max_x - min_x)
+}
+
+tech_ghg<-read.csv(paste0(raw_data,"ipcc_ghg_intensity.csv")) %>%
+  mutate(Tech=recode(
+    Tech,
+    "Coal (pulverised)" ="Coal" ,
+    "Natural-gas combined cycle" = "Gas" ,
+    "Oil-fired steam" = "Oil",
+    "Solar PV - utility scale" = "Solar",
+    "Nuclear (light-water)" = "Nuclear",
+    "Wind - onshore" = "Wind"
+  )) %>%
+  mutate(ghg_index=min_max_index(-ghg_intensity))
+
+
+#Climate Action Tracker Score
+cat<-read.csv(paste0(raw_data,"CAT_country ratings data.csv")) %>%
+  mutate(climate_policy_index = case_when(
+    Overall.rating == "Critically insufficient"   ~ 0.25,
+    Overall.rating == "Highly insufficient"   ~ 0.5,
+    Overall.rating == "Insufficient"   ~ 0.75,
+    Overall.rating == "Almost Sufficient"   ~ 1
+  )) 
+
+#Total US Friendshore Index------------------------
+
+us_friendshore_index<- import_growth_allies %>%
+  mutate(country=recode(
+    country,
+    "Korea, south" = "South Korea",
+    "Vietnam" = "Viet Nam"
+  )) %>%
+  left_join(energy_security_index %>%
+              ungroup() %>%
+              filter(Country=="United States",
+                     variable=="Overall Energy Security Index") %>%
+              mutate(industry=paste(tech,supply_chain),
+                     energy_security_index=1-value) %>%
+              select(tech,supply_chain,industry,energy_security_index),by=c("industry")) %>%
+  inner_join(econ_opp_index %>%
+              ungroup() %>%
+              filter(variable=="Overall Economic Opportunity Index") %>%
+              mutate(industry=paste(tech,supply_chain),
+                     econ_opp_index2=value) %>%
+              select(Country,industry,econ_opp_index2),by=c("country"="Country","industry")) %>%
+  left_join(outbound_indexed,by=c("country"="Country","supply_chain")) %>%
+  left_join(bilat_energy,by=c("country"="Country","tech")) %>%
+  filter(ISO %in% country_info$iso2c,
+         !country %in% c("China","Russia"),
+         tech %in% techs) %>%
+  #climate adjustment
+  left_join(tech_ghg,by=c("tech"="Tech")) %>%
+  left_join(cat,by=c("country"="Country")) %>%
+  mutate(
+    ghg_index            = replace_na(ghg_index,
+                                      median(tech_ghg$ghg_index, na.rm = TRUE)),
+    climate_policy_index = replace_na(climate_policy_index,
+                                      median(cat$climate_policy_index, na.rm = TRUE))
+  ) %>%
+  rowwise() %>% 
+  mutate(
+    us_friendshore_index_unadj = {                 # braces let you run many lines
+      vals <- c(us_trade_index,
+                energy_security_index,
+                econ_opp_index2,
+                outbound_inv_index)
+      wts  <- c(1, 1, 1, 1)
+      keep <- !is.na(vals) & !is.na(wts)
+      weighted.mean(vals[keep], wts[keep])   # returns a single number
+    }
+  ) %>% 
+  mutate(penalty    = (1 - ghg_index) * climate_policy_index,
+         us_friendshore_index=us_friendshore_index_unadj-0.2*penalty) %>%
+  ungroup() %>% 
+  mutate(us_friendshore_index=median_scurve(us_friendshore_index)) %>%
+  #filter(!grepl("Geothermal", tech)) %>% 
+  arrange(desc(us_friendshore_index))
+
+us_friendshore_1<-us_friendshore_index %>%
+  group_by(country) %>%
+  slice_max(order_by=us_friendshore_index,n=1)
+
+us_friendshore_index_total<-us_friendshore_index %>%
+  group_by(country) %>%
+  summarize(total_us_friendshore_index=mean(us_friendshore_index,na.rm=T)) %>%
+  mutate(total_us_friendshore_index=median_scurve(total_us_friendshore_index)) %>%
+  arrange(desc(total_us_friendshore_index))
+
+
+friendshore_scatter<-us_friendshore_index %>%
+  ungroup() %>%
+  mutate(country_industry=paste0(country,": ",industry))%>%
+  select(country_industry,energy_security_index,econ_opp_index2) %>%
+  mutate(energy_security_index=median_scurve(energy_security_index))
+
+#Total US Export Opportunity index---------------------
+us_opportunity_index <- export_growth_allies %>%
+  separate(
+    col    = industry,
+    into   = c("tech", "supply_chain"),
+    sep    = " (?=Downstream|Midstream|Upstream$)"
+  ) %>%
+  mutate(country=ifelse(country=="Turkey","Turkiye",
+                        ifelse(country=="United kingdom","United Kingdom",
+                               ifelse(country=="Curacao","Curaçao",
+                                      ifelse(country=="Korea, south","South Korea",country))))) %>%
+  left_join(econ_opp_index %>%
+              ungroup() %>%
+              filter(Country=="United States",
+                     variable=="Overall Economic Opportunity Index") %>%
+              mutate(industry=paste(tech,supply_chain),
+                     econ_opp_index=value) %>%
+              select(tech,supply_chain,econ_opp_index),by=c("tech","supply_chain")) %>%
+  inner_join(energy_security_index %>%
+              ungroup() %>%
+              filter(variable=="Overall Energy Security Index") %>%
+              mutate(industry=paste(tech,supply_chain),
+                     energy_security_index=1-value) %>%
+              select(Country,tech,supply_chain,industry,energy_security_index),by=c("country"="Country","tech","supply_chain")) %>%
+  left_join(bilat_energy,by=c("country"="Country","tech")) %>%
+  left_join(tech_ghg,by=c("tech"="Tech")) %>%
+  left_join(cat,by=c("country"="Country")) %>%
+  mutate(
+    ghg_index            = replace_na(ghg_index,
+                                      median(tech_ghg$ghg_index, na.rm = TRUE)),
+    climate_policy_index = replace_na(climate_policy_index,
+                                      median(cat$climate_policy_index, na.rm = TRUE))
+  ) %>%
+  rowwise() %>%
+  mutate(
+    us_opportunity_index = {                 # braces let you run many lines
+      vals <- c(us_trade_index,econ_opp_index,energy_security_index)
+      wts  <- c(2, 1,0.25)
+      keep <- !is.na(vals) & !is.na(wts)
+      weighted.mean(vals[keep], wts[keep])   # returns a single number
+    }
+  ) %>%
+  mutate(penalty    = (1 - ghg_index) * climate_policy_index,
+         us_opportunity_index=us_opportunity_index-0.33*penalty) %>%
+  filter(ISO %in% country_info$iso2c,
+         !country %in% c("China","Russia"),
+         tech %in% techs,
+         tech != "Geothermal") %>%
+  
+  ungroup() %>%
+  mutate(us_opportunity_index = median_scurve(us_opportunity_index)) %>%
+  arrange(desc(us_opportunity_index))
+
+write.csv(us_opportunity_index %>%
+            group_by(country) %>%
+            slice_max(order_by=us_opportunity_index,n=1) %>%
+            mutate(country_industry=paste0(country,": ",tech," ",supply_chain)) %>%
+            select(ISO,country,country_industry,tech),"Downloads/us_opportunities.csv")
+
+us_opp_index_total<-us_opportunity_index %>%
+  group_by(country) %>%
+  summarize(total_opportunity_index=mean(us_opportunity_index,na.rm=T)) %>%
+  mutate(total_opportunity_index=median_scurve(total_opportunity_index)) %>%
+  arrange(desc(total_opportunity_index))
+
+
+#Development Indicators------------------------
+#World Bank Doing Business
+wb_db<-read.csv(paste0(raw_data,"wb_doingbusiness.csv")) %>%
+  filter(Series.Code=="IC.BUS.EASE.DFRN.XQ.DB1719") %>%
+  rename(doingbusiness=5) %>%
+  mutate(doingbusiness=as.numeric(doingbusiness)) %>%
+  select(1,2,5) %>%
+  mutate(doingbusiness_index=median_scurve(doingbusiness)) %>%
+  pivot_longer(
+    cols      = c(doingbusiness,doingbusiness_index),      
+    names_to  = "variable",
+    values_to = "value"
+  ) %>%
+  mutate(
+    data_type = if_else(str_ends(variable, "_index"), "index", "raw"),
+    variable    = str_remove(variable, "_index$")   # drop the suffix
+  ) 
+
+
+#World Bank Development Indicators
+wb_wdi<-read.csv(paste0(raw_data,"wb_wdi.csv")) %>%
+  select(1:7) %>%
+  pivot_longer(cols=c(5:7),names_to="year",values_to="value") %>%
+  mutate(value=as.numeric(value)) %>%
+  group_by(Country.Name,Country.Code,Series.Name,Series.Code) %>%
+  summarize(value=mean(value,na.rm=T)) %>%
+  group_by(Series.Name,Series.Code) %>%
+  mutate(index=median_scurve(value)) %>%
+  mutate(index = ifelse(Series.Code %in% c("FD.RES.LIQU.AS.ZS",
+                                           "FB.BNK.CAPA.ZS",
+                                           "FR.INR.DPST",
+                                           "EG.IMP.CONS.ZS",
+                                           "DT.DOD.DECT.GN.ZS",
+                                           "IC.ELC.OUTG.ZS",
+                                           "DC.DAC.USAL.CD",
+                                           "DT.ODA.ODAT.PC.ZS",
+                                           "TM.TAX.MRCH.WM.AR.ZS",
+                                           "TM.TAX.MANF.WM.AR.ZS",
+                                           "DT.TDS.DECT.GN.ZS"),1-index,index))
+
+development_index <- wb_wdi %>%
+  group_by(Country.Name,Country.Code) %>%
+  summarize(development_index=mean(index,na.rm=T)) %>%
+  filter(!is.na(development_index)) %>%
+  ungroup() %>%
+  mutate(development_index=median_scurve(development_index)) %>%
+  left_join(wb_db %>%
+              filter(data_type=="index")%>%
+              select(,-variable,-data_type) %>%
+              rename(doingbusiness_index=value),by=c("Country.Name","Country.Code")) %>%
+  mutate(investment_enviro_index = (development_index+doingbusiness_index)/2) %>%
+  filter(!is.na(investment_enviro_index)) %>%
+  ungroup() %>%
+  mutate(investment_enviro_index=median_scurve(investment_enviro_index))
+
+dev_potential_index <- development_index %>%
+  inner_join(country_info %>%
+               select(iso3c,income) %>%
+               filter(!grepl("High",income),
+                      !grepl("Upper",income)),by=c("Country.Code"="iso3c")) %>%
+  rename("country"="Country.Name") %>%
+  mutate(development_index=1-development_index) %>%
+  left_join(energy_security_index%>%
+               ungroup() %>%
+               filter(variable=="Overall Energy Security Index") %>%
+               mutate(value=1-value) %>%
+               select(Country,tech,supply_chain,energy_security=value),
+             by=c("country"="Country")) %>%
+  left_join(energy_security_index%>%
+               ungroup() %>%
+               filter(variable=="Overall Energy Security Index",
+                      Country=="United States") %>%
+               #mutate(value=1-value) %>%
+               select(tech,supply_chain,energy_security_us=value),
+             by=c("tech","supply_chain")) %>%
+  left_join(us_opportunity_index %>%
+               ungroup() %>%
+               select(country,tech,supply_chain,us_opportunity_index),
+             by=c("country","tech","supply_chain")) %>%
+  left_join(econ_opp_index %>%
+               ungroup() %>%
+               filter(variable=="Overall Economic Opportunity Index") %>%
+               select(Country,tech,supply_chain,economic_opportunity=value),
+             by=c("country"="Country","tech","supply_chain")) %>%
+  filter(!is.na(tech),
+         !is.na(economic_opportunity)) %>%
+  rowwise() %>%
+  mutate(dev_potential_index = mean(c(development_index,doingbusiness_index,energy_security,energy_security_us,
+                                      economic_opportunity,us_opportunity_index), na.rm = TRUE)) %>%
+  arrange(desc(dev_potential_index))
+
+dev_potential_index_total<- dev_potential_index %>%
+  group_by(country) %>%
+  summarize(total_opportunity_index=mean(us_opportunity_index,na.rm=T)) %>%
+  mutate(total_opportunity_index=median_scurve(total_opportunity_index)) %>%
+  arrange(desc(total_opportunity_index))
+
+
+#Top 10 of Each library(dplyr)
+country_flags<-read.csv("Downloads/Country flag lookup table - Sheet1.csv")
+compacts <- bind_cols(
+  # 1) Safer (friend-shore) block
+  us_friendshore_index %>%
+    ungroup() %>%
+    mutate(ci = paste0(country,": ",industry)) %>%
+    left_join(country_flags,by=c("country"="Country")) %>%
+    select(
+      code_1=Code,
+      "Safer (Friendshoring)"       = ci,
+      Safer_index = us_friendshore_index
+    ) %>%
+    slice_max(Safer_index, n = 10),
+  
+  # 2) Prosperous (opportunity) block
+  us_opportunity_index %>%
+    ungroup() %>%
+    mutate(ci = paste0(country,": ",tech," ",supply_chain),
+           country=ifelse(country=="Turkey","Türkiye",
+                          ifelse(country=="United kingdom","United Kingdom",
+                                 ifelse(country=="Curacao","Curaçao",country)))) %>%
+    left_join(country_flags,by=c("country"="Country")) %>%
+    select(
+      code_2=Code,
+      "Prosperous (Exports)"       = ci,
+      Prosperous_index = us_opportunity_index
+    ) %>%
+    slice_max(Prosperous_index, n = 10),
+  
+  # 3) Stronger (development) block
+  dev_potential_index %>%
+    ungroup() %>%
+    mutate(ci = paste0(country,": ",tech," ",supply_chain)) %>%
+    left_join(country_flags,by=c("country"="Country")) %>%
+    select(
+      code_3=Code,
+      "Stronger (Development)"       = ci,
+      Stronger_index = dev_potential_index
+    ) %>%
+    slice_max(Stronger_index, n = 10)
+) %>%
+  # finally, put the columns in the order you want:
+  select(
+    code_1,`Safer (Friendshoring)`, Safer_index,
+    code_3,`Stronger (Development)` , Stronger_index,
+    code_2,`Prosperous (Exports)`, Prosperous_index
+  )
+
+write.csv(compacts,"Downloads/compacts.csv")
+
+# Partnership Strength Index-------------------
+strategy_tbl <- us_friendshore_index  %>%
+  group_by(country) %>%
+  slice_max(us_friendshore_index, n = 10) %>%
+  select(country,
+         us_friendshore_index) %>%
+  left_join(us_opportunity_index   %>%  
+              group_by(country) %>%
+              slice_max(us_opportunity_index, n = 10) %>%
+              select(country,
+                     us_opportunity_index), 
+            by = "country") |>
+  left_join(dev_potential_index     |>
+              select(country,
+                     dev_potential_index) %>%
+              group_by(country) ,
+            by = "country")
+weights <- c(0.4, 0.4, 0.2)
+
+strategy_tbl <- strategy_tbl %>% 
+  group_by(country) %>% 
+  summarise(
+    across(c(us_friendshore_index,
+             us_opportunity_index,
+             dev_potential_index),
+           mean, na.rm = TRUE)          # <- mean(. , na.rm = TRUE)
+  ) %>% 
+  rowwise() %>% 
+  mutate(
+    psi = weighted.mean(
+      c(us_friendshore_index,
+        us_opportunity_index,
+        dev_potential_index),
+      w = weights,
+      na.rm = TRUE
+    )
+  ) %>% 
+  ungroup()
+
+# helper thresholds - feel free to move them
+hi  <- .66      # top third
+mid <- .33      # middle third
+
+strategy_tbl <- strategy_tbl |>
+  mutate(
+    lane = case_when(
+      us_friendshore_index >= hi & dev_potential_index >= mid            ~ "Friend-shore",
+      us_opportunity_index  >= hi                                  ~ "On-shore substitute",
+      dev_potential_index      <  mid & us_friendshore_index < mid       ~ "Targeted Dev Assistance",
+      TRUE                                                     ~ "Monitor / Niche"
+    )
+  )
