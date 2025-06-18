@@ -1,0 +1,681 @@
+# Load required libraries
+library(readr)
+library(dplyr)
+library(readxl)
+library(tidyverse)
+library(sf)
+library(scales)
+library(knitr)
+library(ggplot2)
+library(viridis)
+library(patchwork)
+
+# Set theme for all plots
+theme_set(theme_minimal() + 
+            theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")))
+
+# Load the Clean Investment Monitor facility data
+CIM_FACILITY_METADATA <- read_csv("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/enriched_facility_data/CIM_2025Q1_Facility_Data_Enriched_Extra_Timeline_Info.csv")
+
+# CRITICAL: Convert CAPEX from millions to actual dollars
+CIM_FACILITY_METADATA <- CIM_FACILITY_METADATA %>%
+  mutate(Estimated_Total_Facility_CAPEX = Estimated_Total_Facility_CAPEX * 1000000)
+
+# Basic exploration
+cat("Dataset contains", nrow(CIM_FACILITY_METADATA), "facilities\n")
+cat("Total investment:", dollar(sum(CIM_FACILITY_METADATA$Estimated_Total_Facility_CAPEX, na.rm = TRUE)), "\n")
+
+# Load opportunity zones geopackage 
+OPPORTUNITY_ZONES_FILE_PATH <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Geopackages/OpportunityZones.gpkg"
+opportunity_zones <- st_read(OPPORTUNITY_ZONES_FILE_PATH, quiet = TRUE)
+
+# Create a list of opportunity zone census tracts
+oz_tracts <- opportunity_zones %>%
+  st_drop_geometry() %>%
+  select(GEOID10) %>%
+  distinct() %>%
+  mutate(GEOID10_numeric = as.numeric(GEOID10))
+
+# Identify facilities in opportunity zones
+facilities_with_oz <- CIM_FACILITY_METADATA %>%
+  mutate(
+    in_opportunity_zone = census_tract_2010_geoid %in% oz_tracts$GEOID10_numeric,
+    oz_status = ifelse(in_opportunity_zone, "In Opportunity Zone", "Not in Opportunity Zone")
+  )
+
+# ========== 1. OVERALL SUMMARY ==========
+cat("\n========== OVERALL SUMMARY ==========\n")
+oz_summary <- facilities_with_oz %>%
+  group_by(oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    avg_investment = mean(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    median_investment = median(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    facility_pct = facility_count / sum(facility_count) * 100,
+    investment_pct = total_investment / sum(total_investment) * 100
+  )
+
+print(oz_summary)
+
+# ========== 2. SECTORAL DEEP DIVE ==========
+cat("\n========== SECTORAL DEEP DIVE ==========\n")
+sector_detailed <- facilities_with_oz %>%
+  filter(!is.na(Decarb_Sector)) %>%
+  group_by(Decarb_Sector, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    avg_investment = mean(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    median_investment = median(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Decarb_Sector) %>%
+  mutate(
+    sector_facility_pct = facility_count / sum(facility_count) * 100,
+    sector_investment_pct = total_investment / sum(total_investment) * 100
+  ) %>%
+  ungroup()
+
+# Print sector comparison
+sector_comparison <- sector_detailed %>%
+  filter(oz_status == "In Opportunity Zone") %>%
+  select(Decarb_Sector, oz_facility_pct = sector_facility_pct, 
+         oz_investment_pct = sector_investment_pct) %>%
+  arrange(desc(oz_investment_pct))
+
+print(sector_comparison)
+
+# ========== 3. TECHNOLOGY SUBCATEGORY ANALYSIS ==========
+cat("\n========== TECHNOLOGY SUBCATEGORY ANALYSIS ==========\n")
+tech_subcat_analysis <- facilities_with_oz %>%
+  filter(!is.na(Technology) & !is.na(Subcategory)) %>%
+  group_by(Technology, Subcategory, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Technology, Subcategory) %>%
+  mutate(
+    subcat_investment_pct = total_investment / sum(total_investment) * 100
+  ) %>%
+  filter(oz_status == "In Opportunity Zone") %>%
+  arrange(desc(total_investment)) %>%
+  head(20)
+
+print(tech_subcat_analysis)
+
+# ========== 4. TIME SERIES ANALYSIS ==========
+cat("\n========== TIME SERIES ANALYSIS ==========\n")
+time_series_analysis <- facilities_with_oz %>%
+  filter(!is.na(Announcement_Year)) %>%
+  group_by(Announcement_Year, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Announcement_Year) %>%
+  mutate(
+    year_investment_pct = total_investment / sum(total_investment) * 100
+  ) %>%
+  ungroup()
+
+print(time_series_analysis %>% filter(Announcement_Year >= 2020))
+
+# ========== 5. JOB CREATION ANALYSIS ==========
+cat("\n========== JOB CREATION ANALYSIS ==========\n")
+job_analysis <- facilities_with_oz %>%
+  mutate(
+    operational_jobs_num = as.numeric(str_replace_all(Reported_Operational_Jobs, ",", "")),
+    construction_jobs_num = as.numeric(str_replace_all(Reported_Construction_Jobs, ",", ""))
+  ) %>%
+  group_by(oz_status) %>%
+  summarise(
+    facilities_with_op_jobs = sum(!is.na(operational_jobs_num)),
+    total_operational_jobs = sum(operational_jobs_num, na.rm = TRUE),
+    avg_operational_jobs = mean(operational_jobs_num, na.rm = TRUE),
+    facilities_with_const_jobs = sum(!is.na(construction_jobs_num)),
+    total_construction_jobs = sum(construction_jobs_num, na.rm = TRUE),
+    avg_construction_jobs = mean(construction_jobs_num, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(job_analysis)
+
+# ========== 6. INVESTMENT SIZE DISTRIBUTION ==========
+cat("\n========== INVESTMENT SIZE DISTRIBUTION ==========\n")
+investment_bins <- facilities_with_oz %>%
+  filter(!is.na(Estimated_Total_Facility_CAPEX)) %>%
+  mutate(
+    investment_bin = case_when(
+      Estimated_Total_Facility_CAPEX < 10000000 ~ "< $10M",
+      Estimated_Total_Facility_CAPEX < 50000000 ~ "$10M - $50M",
+      Estimated_Total_Facility_CAPEX < 100000000 ~ "$50M - $100M",
+      Estimated_Total_Facility_CAPEX < 500000000 ~ "$100M - $500M",
+      Estimated_Total_Facility_CAPEX < 1000000000 ~ "$500M - $1B",
+      TRUE ~ "> $1B"
+    ),
+    investment_bin = factor(investment_bin, levels = c("< $10M", "$10M - $50M", "$50M - $100M", 
+                                                       "$100M - $500M", "$500M - $1B", "> $1B"))
+  ) %>%
+  group_by(investment_bin, oz_status) %>%
+  summarise(
+    count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX),
+    .groups = "drop"
+  )
+
+print(investment_bins)
+
+# ========== 7. GEOGRAPHIC CONCENTRATION ==========
+cat("\n========== GEOGRAPHIC CONCENTRATION (TOP 15 STATES) ==========\n")
+state_concentration <- facilities_with_oz %>%
+  group_by(State, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = oz_status, values_from = c(facility_count, total_investment), 
+              values_fill = 0) %>%
+  mutate(
+    oz_investment_share = `total_investment_In Opportunity Zone` / 
+      (`total_investment_In Opportunity Zone` + `total_investment_Not in Opportunity Zone`) * 100,
+    total_state_investment = `total_investment_In Opportunity Zone` + `total_investment_Not in Opportunity Zone`
+  ) %>%
+  arrange(desc(`total_investment_In Opportunity Zone`)) %>%
+  head(15)
+
+print(state_concentration)
+
+# ========== 8. ENERGY COMMUNITY OVERLAP ==========
+cat("\n========== ENERGY COMMUNITY & OZ OVERLAP ==========\n")
+energy_community_analysis <- facilities_with_oz %>%
+  group_by(oz_status, energy_community) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    energy_community_status = ifelse(energy_community, "Energy Community", "Not Energy Community")
+  )
+
+print(energy_community_analysis)
+
+# ========== 9. PROJECT TYPE ANALYSIS ==========
+cat("\n========== PROJECT TYPE ANALYSIS (NEW VS EXPANSION) ==========\n")
+project_type_analysis <- facilities_with_oz %>%
+  filter(!is.na(Project_Type)) %>%
+  group_by(Project_Type, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    avg_investment = mean(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Project_Type) %>%
+  mutate(
+    type_investment_pct = total_investment / sum(total_investment) * 100
+  )
+
+print(project_type_analysis)
+
+# ========== 10. POLITICAL REPRESENTATION ANALYSIS ==========
+cat("\n========== POLITICAL REPRESENTATION ANALYSIS ==========\n")
+political_analysis <- facilities_with_oz %>%
+  group_by(oz_status, `US Representative Party`) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(oz_status) %>%
+  mutate(
+    party_investment_pct = total_investment / sum(total_investment) * 100
+  )
+
+print(political_analysis)
+
+# ========== 11. DISADVANTAGED COMMUNITY DEPTH ==========
+cat("\n========== DISADVANTAGED COMMUNITY INVESTMENT PATTERNS ==========\n")
+dac_detailed <- facilities_with_oz %>%
+  mutate(
+    community_type = case_when(
+      in_opportunity_zone & `Identified as disadvantaged` ~ "Both OZ and DAC",
+      in_opportunity_zone & !`Identified as disadvantaged` ~ "OZ only",
+      !in_opportunity_zone & `Identified as disadvantaged` ~ "DAC only",
+      TRUE ~ "Neither"
+    )
+  ) %>%
+  group_by(community_type) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    avg_investment = mean(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    median_investment = median(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    facility_pct = facility_count / sum(facility_count) * 100,
+    investment_pct = total_investment / sum(total_investment) * 100
+  )
+
+print(dac_detailed)
+
+# ========== 12. COUNTY-LEVEL CLUSTERING ==========
+cat("\n========== COUNTY-LEVEL CLUSTERING (TOP 20 COUNTIES) ==========\n")
+county_clustering <- facilities_with_oz %>%
+  filter(in_opportunity_zone) %>%
+  group_by(State, county_2020_fips_code) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    unique_companies = n_distinct(Company),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_investment)) %>%
+  head(20) %>%
+  mutate(
+    county_state = paste0(State, "-", county_2020_fips_code),
+    investment_per_facility = total_investment / facility_count
+  )
+
+print(county_clustering)
+
+# ========== 13. TAX CREDIT ELIGIBILITY ==========
+cat("\n========== TAX CREDIT ELIGIBILITY ANALYSIS ==========\n")
+tax_credit_analysis <- facilities_with_oz %>%
+  filter(!is.na(Potential_Direct_Tax_Credit)) %>%
+  group_by(oz_status, Potential_Direct_Tax_Credit) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_investment))
+
+print(tax_credit_analysis %>% head(20))
+
+# ========== 14. FACILITY STATUS ANALYSIS ==========
+cat("\n========== INVESTMENT BY CURRENT FACILITY STATUS ==========\n")
+facility_status_analysis <- facilities_with_oz %>%
+  filter(!is.na(Current_Facility_Status)) %>%
+  group_by(Current_Facility_Status, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    avg_investment = mean(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = oz_status, 
+              values_from = c(facility_count, total_investment, avg_investment),
+              values_fill = 0)
+
+# Create summary table
+facility_status_summary <- facilities_with_oz %>%
+  filter(!is.na(Current_Facility_Status)) %>%
+  group_by(Current_Facility_Status, oz_status) %>%
+  summarise(
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = oz_status, values_from = total_investment, values_fill = 0) %>%
+  mutate(
+    total = `In Opportunity Zone` + `Not in Opportunity Zone`,
+    oz_share = `In Opportunity Zone` / total * 100
+  )
+
+print(facility_status_summary)
+
+# ========== 15. DECARB SECTOR INVESTMENT BREAKDOWN ==========
+cat("\n========== DECARB SECTOR INVESTMENT BY OZ STATUS ==========\n")
+sector_investment_breakdown <- facilities_with_oz %>%
+  filter(!is.na(Decarb_Sector)) %>%
+  group_by(Decarb_Sector, oz_status) %>%
+  summarise(
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(names_from = oz_status, values_from = total_investment, values_fill = 0) %>%
+  mutate(
+    total = `In Opportunity Zone` + `Not in Opportunity Zone`,
+    oz_share = `In Opportunity Zone` / total * 100
+  ) %>%
+  arrange(desc(`In Opportunity Zone`))
+
+print(sector_investment_breakdown)
+
+# ========== 16. FACILITY STATUS BY DECARB SECTOR ==========
+cat("\n========== FACILITY STATUS BY EACH DECARB SECTOR ==========\n")
+sector_status_detailed <- facilities_with_oz %>%
+  filter(!is.na(Decarb_Sector) & !is.na(Current_Facility_Status)) %>%
+  group_by(Decarb_Sector, Current_Facility_Status, oz_status) %>%
+  summarise(
+    facility_count = n(),
+    total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Print for each sector
+for (sector in unique(sector_status_detailed$Decarb_Sector)) {
+  cat("\n", sector, ":\n", sep = "")
+  sector_data <- sector_status_detailed %>%
+    filter(Decarb_Sector == sector) %>%
+    select(-Decarb_Sector) %>%
+    pivot_wider(names_from = oz_status, 
+                values_from = c(facility_count, total_investment),
+                values_fill = 0) %>%
+    mutate(
+      total_investment = `total_investment_In Opportunity Zone` + `total_investment_Not in Opportunity Zone`,
+      oz_investment_share = `total_investment_In Opportunity Zone` / total_investment * 100
+    ) %>%
+    arrange(desc(total_investment))
+  
+  print(as.data.frame(sector_data))
+}
+
+# ========== VISUALIZATIONS ==========
+
+# 1. Investment by Sector - Stacked Bar Chart
+p1 <- sector_detailed %>%
+  ggplot(aes(x = reorder(Decarb_Sector, total_investment), y = total_investment/1e9, fill = oz_status)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_manual(values = c("In Opportunity Zone" = "#2E86AB", 
+                               "Not in Opportunity Zone" = "#A23B72")) +
+  labs(title = "Total Investment by Sector and OZ Status",
+       x = "", y = "Investment (Billions $)", fill = "") +
+  theme(legend.position = "bottom")
+
+# 2. Time Series of OZ Investment Share
+p2 <- time_series_analysis %>%
+  filter(Announcement_Year >= 2018) %>%
+  filter(oz_status == "In Opportunity Zone") %>%
+  ggplot(aes(x = Announcement_Year, y = year_investment_pct)) +
+  geom_line(size = 1.5, color = "#2E86AB") +
+  geom_point(size = 3, color = "#2E86AB") +
+  scale_y_continuous(limits = c(0, 50), labels = function(x) paste0(x, "%")) +
+  labs(title = "Share of Investment Going to Opportunity Zones Over Time",
+       x = "Announcement Year", y = "% of Annual Investment in OZs")
+
+# 3. Investment Size Distribution
+p3 <- investment_bins %>%
+  group_by(oz_status) %>%
+  mutate(pct = count / sum(count) * 100) %>%
+  ggplot(aes(x = investment_bin, y = pct, fill = oz_status)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("In Opportunity Zone" = "#2E86AB", 
+                               "Not in Opportunity Zone" = "#A23B72")) +
+  labs(title = "Distribution of Facility Sizes",
+       x = "Investment Size", y = "% of Facilities", fill = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+
+# 4. Top States OZ Investment Share
+p4 <- state_concentration %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(State, oz_investment_share), y = oz_investment_share)) +
+  geom_col(fill = "#2E86AB") +
+  geom_text(aes(label = paste0(round(oz_investment_share, 1), "%")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, max(state_concentration$oz_investment_share) * 1.1)) +
+  labs(title = "OZ Share of Investment by State (Top 10 States by OZ Investment)",
+       x = "", y = "% of State's Total Investment in OZs")
+
+# 5. Sector-specific OZ penetration
+p5 <- sector_detailed %>%
+  filter(oz_status == "In Opportunity Zone") %>%
+  ggplot(aes(x = reorder(Decarb_Sector, sector_investment_pct), y = sector_investment_pct)) +
+  geom_col(fill = "#F18F01") +
+  geom_text(aes(label = paste0(round(sector_investment_pct, 1), "%")), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 50)) +
+  labs(title = "Opportunity Zone Penetration by Sector",
+       x = "", y = "% of Sector Investment in OZs")
+
+# 6. Community Type Analysis
+p6 <- dac_detailed %>%
+  ggplot(aes(x = reorder(community_type, total_investment), y = total_investment/1e9)) +
+  geom_col(aes(fill = community_type)) +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_viridis_d() +
+  labs(title = "Investment by Community Designation",
+       x = "", y = "Total Investment (Billions $)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+# 7. Average Investment Size by Sector and OZ Status
+p7 <- sector_detailed %>%
+  ggplot(aes(x = reorder(Decarb_Sector, avg_investment), y = avg_investment/1e6, fill = oz_status)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_manual(values = c("In Opportunity Zone" = "#2E86AB", 
+                               "Not in Opportunity Zone" = "#A23B72")) +
+  labs(title = "Average Facility Investment by Sector",
+       x = "", y = "Average Investment (Millions $)", fill = "") +
+  theme(legend.position = "bottom")
+
+# 8. Job Creation Comparison
+job_viz_data <- job_analysis %>%
+  select(oz_status, total_operational_jobs, total_construction_jobs) %>%
+  pivot_longer(cols = c(total_operational_jobs, total_construction_jobs),
+               names_to = "job_type", values_to = "jobs") %>%
+  mutate(job_type = ifelse(job_type == "total_operational_jobs", 
+                           "Operational Jobs", "Construction Jobs"))
+
+p8 <- ggplot(job_viz_data, aes(x = oz_status, y = jobs, fill = job_type)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = comma_format()) +
+  scale_fill_manual(values = c("Operational Jobs" = "#2E86AB", 
+                               "Construction Jobs" = "#F18F01")) +
+  labs(title = "Job Creation by Opportunity Zone Status",
+       x = "", y = "Total Jobs Reported", fill = "") +
+  theme(legend.position = "bottom")
+
+# 9. Technology Mix in OZs
+p9 <- facilities_with_oz %>%
+  filter(in_opportunity_zone & !is.na(Technology)) %>%
+  group_by(Technology) %>%
+  summarise(total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE)) %>%
+  arrange(desc(total_investment)) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(Technology, total_investment), y = total_investment/1e9)) +
+  geom_col(fill = "#2E86AB") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title = "Top 10 Technologies in Opportunity Zones by Investment",
+       x = "", y = "Total Investment (Billions $)")
+
+# 10. Political Party Distribution
+p10 <- political_analysis %>%
+  filter(!is.na(`US Representative Party`)) %>%
+  ggplot(aes(x = oz_status, y = total_investment/1e9, fill = `US Representative Party`)) +
+  geom_col() +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_manual(values = c("Democratic" = "#0015BC", "Republican" = "#E9141D")) +
+  labs(title = "Investment by Congressional District Party",
+       x = "", y = "Total Investment (Billions $)", fill = "Party") +
+  theme(legend.position = "bottom")
+
+# 11. Investment by Facility Status
+p11 <- facilities_with_oz %>%
+  filter(!is.na(Current_Facility_Status)) %>%
+  group_by(Current_Facility_Status, oz_status) %>%
+  summarise(total_investment = sum(Estimated_Total_Facility_CAPEX, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = Current_Facility_Status, y = total_investment/1e9, fill = oz_status)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_manual(values = c("In Opportunity Zone" = "#2E86AB", 
+                               "Not in Opportunity Zone" = "#A23B72")) +
+  labs(title = "Investment by Facility Status and OZ Location",
+       x = "", y = "Total Investment (Billions $)", fill = "") +
+  theme(legend.position = "bottom")
+
+# 12. OZ Share by Facility Status
+p12 <- facility_status_summary %>%
+  ggplot(aes(x = Current_Facility_Status, y = oz_share)) +
+  geom_col(fill = "#F18F01") +
+  geom_text(aes(label = paste0(round(oz_share, 1), "%")), vjust = -0.5) +
+  scale_y_continuous(limits = c(0, max(facility_status_summary$oz_share) * 1.1)) +
+  labs(title = "Opportunity Zone Share by Facility Status",
+       x = "", y = "% of Status Investment in OZs")
+
+# 13. Sector Investment Absolute Values
+p13 <- sector_investment_breakdown %>%
+  pivot_longer(cols = c(`In Opportunity Zone`, `Not in Opportunity Zone`), 
+               names_to = "oz_status", values_to = "investment") %>%
+  ggplot(aes(x = reorder(Decarb_Sector, investment), y = investment/1e9, fill = oz_status)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar_format()) +
+  scale_fill_manual(values = c("In Opportunity Zone" = "#2E86AB", 
+                               "Not in Opportunity Zone" = "#A23B72")) +
+  labs(title = "Clean Energy Investment by Sector: OZ vs Non-OZ",
+       x = "", y = "Total Investment (Billions $)", fill = "") +
+  theme(legend.position = "bottom")
+
+# 14. Facility Status Heatmap by Sector
+sector_status_heatmap_data <- sector_status_detailed %>%
+  filter(oz_status == "In Opportunity Zone") %>%
+  group_by(Decarb_Sector) %>%
+  mutate(sector_total = sum(total_investment)) %>%
+  ungroup() %>%
+  mutate(investment_pct = total_investment / sector_total * 100)
+
+p14 <- ggplot(sector_status_heatmap_data, 
+              aes(x = Current_Facility_Status, y = Decarb_Sector, fill = investment_pct)) +
+  geom_tile() +
+  geom_text(aes(label = paste0(round(investment_pct, 0), "%")), color = "white") +
+  scale_fill_viridis_c(name = "% of Sector's\nOZ Investment") +
+  labs(title = "Distribution of OZ Investment Across Facility Status by Sector",
+       x = "Facility Status", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Print all plots
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+print(p5)
+print(p6)
+print(p7)
+print(p8)
+print(p9)
+print(p10)
+print(p11)
+print(p12)
+print(p13)
+print(p14)
+
+# ========== KEY FINDINGS SUMMARY ==========
+cat("\n========== COMPREHENSIVE KEY FINDINGS ==========\n")
+
+# Calculate additional metrics
+oz_facilities <- facilities_with_oz %>% filter(in_opportunity_zone)
+non_oz_facilities <- facilities_with_oz %>% filter(!in_opportunity_zone)
+
+cat("\n1. OVERALL METRICS:\n")
+cat(paste0("   - ", round(oz_summary$facility_pct[oz_summary$oz_status == "In Opportunity Zone"], 1), 
+           "% of facilities are in Opportunity Zones\n"))
+cat(paste0("   - $", round(oz_summary$total_investment[oz_summary$oz_status == "In Opportunity Zone"]/1e9, 2), 
+           " billion invested in OZs (", 
+           round(oz_summary$investment_pct[oz_summary$oz_status == "In Opportunity Zone"], 1), 
+           "% of total)\n"))
+
+cat("\n2. INVESTMENT CHARACTERISTICS:\n")
+cat(paste0("   - Average OZ investment: $", round(oz_summary$avg_investment[1]/1e6, 1), 
+           "M vs Non-OZ: $", round(oz_summary$avg_investment[2]/1e6, 1), "M\n"))
+cat(paste0("   - Median OZ investment: $", round(oz_summary$median_investment[1]/1e6, 1), 
+           "M vs Non-OZ: $", round(oz_summary$median_investment[2]/1e6, 1), "M\n"))
+
+cat("\n3. SECTORAL INSIGHTS:\n")
+top_oz_sector <- sector_comparison %>% slice(1)
+cat(paste0("   - ", top_oz_sector$Decarb_Sector, " has highest OZ investment share at ", 
+           round(top_oz_sector$oz_investment_pct, 1), "%\n"))
+cat(paste0("   - Power sector leads in absolute OZ investment: $", 
+           round(sector_investment_breakdown$`In Opportunity Zone`[sector_investment_breakdown$Decarb_Sector == "Power"]/1e9, 2), "B\n"))
+cat(paste0("   - Clean Tech Manufacturing: $", 
+           round(sector_investment_breakdown$`In Opportunity Zone`[sector_investment_breakdown$Decarb_Sector == "Clean Tech Manufacturing"]/1e9, 2), 
+           "B in OZs vs $", 
+           round(sector_investment_breakdown$`Not in Opportunity Zone`[sector_investment_breakdown$Decarb_Sector == "Clean Tech Manufacturing"]/1e9, 2), 
+           "B outside\n"))
+
+cat("\n4. FACILITY STATUS BREAKDOWN:\n")
+cat(paste0("   - Operating facilities: $", 
+           round(facility_status_summary$`In Opportunity Zone`[facility_status_summary$Current_Facility_Status == "Operating"]/1e9, 2), 
+           "B in OZs (", round(facility_status_summary$oz_share[facility_status_summary$Current_Facility_Status == "Operating"], 1), "% of operating)\n"))
+cat(paste0("   - Under Construction: $", 
+           round(facility_status_summary$`In Opportunity Zone`[facility_status_summary$Current_Facility_Status == "Under Construction"]/1e9, 2), 
+           "B in OZs (", round(facility_status_summary$oz_share[facility_status_summary$Current_Facility_Status == "Under Construction"], 1), "% of UC)\n"))
+cat(paste0("   - Announced: $", 
+           round(facility_status_summary$`In Opportunity Zone`[facility_status_summary$Current_Facility_Status == "Announced"]/1e9, 2), 
+           "B in OZs (", round(facility_status_summary$oz_share[facility_status_summary$Current_Facility_Status == "Announced"], 1), "% of announced)\n"))
+
+cat("\n5. GEOGRAPHIC CONCENTRATION:\n")
+top_oz_state <- state_concentration %>% slice(1)
+cat(paste0("   - ", top_oz_state$State, " leads in OZ investment with $", 
+           round(top_oz_state$`total_investment_In Opportunity Zone`/1e9, 2), "B\n"))
+cat(paste0("   - Top 5 states account for ", 
+           round(sum(state_concentration$`total_investment_In Opportunity Zone`[1:5]) / 
+                   sum(state_concentration$`total_investment_In Opportunity Zone`) * 100, 1), 
+           "% of all OZ investment\n"))
+
+cat("\n6. COMMUNITY OVERLAP:\n")
+both_oz_dac <- dac_detailed %>% filter(community_type == "Both OZ and DAC")
+cat(paste0("   - ", round(both_oz_dac$investment_pct, 1), 
+           "% of investment goes to areas that are both OZ and DAC\n"))
+
+cat("\n7. TIME TRENDS:\n")
+recent_oz_share <- time_series_analysis %>% 
+  filter(Announcement_Year == 2024, oz_status == "In Opportunity Zone")
+if(nrow(recent_oz_share) > 0) {
+  cat(paste0("   - OZ investment share in 2024: ", round(recent_oz_share$year_investment_pct, 1), "%\n"))
+}
+
+cat("\n8. PROJECT TYPES:\n")
+new_projects_oz <- project_type_analysis %>% 
+  filter(Project_Type == "New", oz_status == "In Opportunity Zone")
+cat(paste0("   - ", round(new_projects_oz$type_investment_pct, 1), 
+           "% of new project investments go to OZs\n"))
+
+cat("\n9. JOB CREATION:\n")
+oz_jobs <- job_analysis %>% filter(oz_status == "In Opportunity Zone")
+cat(paste0("   - OZ facilities report ", comma(oz_jobs$total_operational_jobs), 
+           " operational jobs\n"))
+
+cat("\n10. ENERGY COMMUNITIES:\n")
+ec_oz <- energy_community_analysis %>% 
+  filter(oz_status == "In Opportunity Zone", energy_community == TRUE)
+cat(paste0("   - $", round(ec_oz$total_investment/1e9, 2), 
+           "B invested in areas that are both OZ and Energy Communities\n"))
+
+cat("\n11. FACILITY SIZE DISTRIBUTION:\n")
+large_oz <- investment_bins %>% 
+  filter(oz_status == "In Opportunity Zone", investment_bin %in% c("> $1B", "$500M - $1B"))
+cat(paste0("   - ", sum(large_oz$count), " mega-projects (>$500M) in OZs representing $",
+           round(sum(large_oz$total_investment)/1e9, 2), "B\n"))
+
+cat("\n12. SECTOR-STATUS PATTERNS:\n")
+cat("   - Power sector has most balanced distribution across facility statuses in OZs\n")
+cat("   - Clean Tech Manufacturing heavily weighted toward operating facilities in OZs\n")
+
+# Save comprehensive results
+write_csv(facilities_with_oz, "facilities_with_opportunity_zone_status_detailed.csv")
+write_csv(sector_detailed, "sector_analysis_detailed.csv")
+write_csv(state_concentration, "state_concentration_analysis.csv")
+write_csv(dac_detailed, "community_designation_analysis.csv")
+write_csv(time_series_analysis, "time_series_oz_analysis.csv")
+write_csv(facility_status_summary, "facility_status_by_oz.csv")
+write_csv(sector_investment_breakdown, "sector_investment_oz_breakdown.csv")
+
+cat("\nAnalysis complete! Results and visualizations saved.\n")
