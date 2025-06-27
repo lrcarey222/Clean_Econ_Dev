@@ -1,0 +1,182 @@
+# Load required libraries
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+
+# Function to get employment projections data for a specific occupation
+get_occupation_projections <- function(occ_code, states = "all", base_url = "https://public.projectionscentral.org/Projections/LongTermRestJson") {
+  
+  # Remove .00 suffix if present (API uses format without decimals)
+  occ_code <- gsub("\\.00$", "", occ_code)
+  
+  # Construct the URL
+  url <- paste0(base_url, "/", states, "/", occ_code)
+  
+  # Initialize variables for pagination
+  all_data <- list()
+  page <- 0
+  total_pages <- 1
+  
+  # Loop through all pages
+  while (page < total_pages) {
+    # Add pagination parameters
+    page_url <- paste0(url, "?page=", page, "&items_per_page=1000")
+    
+    # Make the API request
+    response <- GET(page_url)
+    
+    # Check if request was successful
+    if (status_code(response) != 200) {
+      stop("API request failed with status code: ", status_code(response))
+    }
+    
+    # Parse JSON response
+    content <- content(response, "text", encoding = "UTF-8")
+    data <- fromJSON(content)
+    
+    # Extract rows and pager info
+    if (!is.null(data$rows) && length(data$rows) > 0) {
+      all_data[[page + 1]] <- data$rows
+    }
+    
+    # Update pagination info
+    if (!is.null(data$pager)) {
+      total_pages <- data$pager$total_pages
+    }
+    
+    page <- page + 1
+  }
+  
+  # Combine all pages into single dataframe
+  if (length(all_data) > 0) {
+    result <- bind_rows(all_data)
+    
+    # Convert numeric columns
+    numeric_cols <- c("Base", "Projected", "Change", "PercentChange", "AvgAnnualOpenings", "STFIPS")
+    for (col in numeric_cols) {
+      if (col %in% names(result)) {
+        result[[col]] <- as.numeric(gsub(",", "", result[[col]]))
+      }
+    }
+    
+    return(result)
+  } else {
+    return(data.frame())
+  }
+}
+
+# Function to get projections for multiple occupations
+get_multiple_occupations <- function(occ_codes, states = "all") {
+  
+  # Initialize list to store results
+  all_results <- list()
+  
+  for (occ in occ_codes) {
+    cat("Fetching data for occupation:", occ, "\n")
+    
+    tryCatch({
+      result <- get_occupation_projections(occ, states)
+      if (nrow(result) > 0) {
+        all_results[[occ]] <- result
+      }
+    }, error = function(e) {
+      cat("Error fetching data for", occ, ":", e$message, "\n")
+    })
+  }
+  
+  # Combine all results
+  if (length(all_results) > 0) {
+    combined <- bind_rows(all_results)
+    return(combined)
+  } else {
+    return(data.frame())
+  }
+}
+
+# Function to get all available states
+get_states_metadata <- function() {
+  url <- "https://public.projectionscentral.org/Projections/LongTermRestJson?includeMetaData=true&items_per_page=1"
+  response <- GET(url)
+  
+  if (status_code(response) == 200) {
+    content <- content(response, "text", encoding = "UTF-8")
+    data <- fromJSON(content)
+    
+    if (!is.null(data$states)) {
+      states_df <- data$states
+      states_df$fipsCode <- as.numeric(states_df$fipsCode)
+      states_df$name <- trimws(states_df$name)
+      return(states_df)
+    }
+  }
+  
+  return(data.frame())
+}
+
+# Example 1: Get data for Solar PV Installers across all states
+cat("Fetching Solar PV Installers data...\n")
+solar_pv_data <- get_occupation_projections("47-2231")
+
+# Display summary
+if (nrow(solar_pv_data) > 0) {
+  cat("\nSolar PV Installers - Summary Statistics:\n")
+  cat("Total states/territories:", length(unique(solar_pv_data$Area)), "\n")
+  cat("Total projected employment (all states):", sum(solar_pv_data$Projected, na.rm = TRUE), "\n")
+  cat("Average percent change:", round(mean(solar_pv_data$PercentChange, na.rm = TRUE), 1), "%\n")
+  
+  # Show top 10 states by projected employment
+  cat("\nTop 10 states by projected employment:\n")
+  top_states <- solar_pv_data %>%
+    arrange(desc(Projected)) %>%
+    select(Area, Base, Projected, Change, PercentChange) %>%
+    head(10)
+  print(top_states)
+  
+  # Show states with highest growth rates
+  cat("\nTop 10 states by percent change:\n")
+  growth_states <- solar_pv_data %>%
+    arrange(desc(PercentChange)) %>%
+    select(Area, Base, Projected, Change, PercentChange) %>%
+    head(10)
+  print(growth_states)
+}
+
+# Example 2: Get data for specific states only
+# Use FIPS codes: California (6), Texas (48), Florida (12)
+cat("\n\nFetching Solar PV data for CA, TX, and FL...\n")
+selected_states_data <- get_occupation_projections("47-2231", states = "6+48+12")
+print(selected_states_data)
+
+# Example 3: Get data for multiple occupations
+cat("\n\nFetching data for multiple green energy occupations...\n")
+green_occupations <- c(
+  "47-2231",  # Solar PV Installers
+  "47-2211",  # Sheet Metal Workers
+  "47-2111",  # Electricians
+  "17-2071"   # Electrical Engineers
+)
+
+green_jobs_data <- get_multiple_occupations(green_occupations)
+
+# Summary by occupation
+if (nrow(green_jobs_data) > 0) {
+  occupation_summary <- green_jobs_data %>%
+    group_by(Title, OccCode) %>%
+    summarise(
+      Total_Base = sum(Base, na.rm = TRUE),
+      Total_Projected = sum(Projected, na.rm = TRUE),
+      Total_Change = sum(Change, na.rm = TRUE),
+      Avg_Percent_Change = mean(PercentChange, na.rm = TRUE),
+      States_Count = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(Total_Projected))
+  
+  cat("\nGreen Energy Occupations Summary:\n")
+  print(occupation_summary)
+}
+
+# Save results to CSV
+write.csv(solar_pv_data, "solar_pv_installers_projections.csv", row.names = FALSE)
+cat("\n\nData saved to 'solar_pv_installers_projections.csv'\n")
