@@ -4,9 +4,11 @@ library(tidyverse)
 library(lubridate)
 library(writexl) # For writing to Excel
 
+setwd("~/Library/CloudStorage/OneDrive-RMI")
+
 # --- User specified file path ---
 # Please ensure this path is correct for your system.
-excel_file_path <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_06_03_2025.xlsx"
+excel_file_path <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_06_30_2025.xlsx"
 
 # 1. Read in your Excel data
 # Store the original data before modifications
@@ -28,8 +30,12 @@ clean_economy_tracker_data <- clean_economy_tracker_data %>%
     Post_Election_2024           = Date >= as.Date("2024-11-05"),
     Post_Inauguration_2025       = Date >= as.Date("2025-01-20"),
     Announcement_Year            = year(Date),
-    Announcement_Quarter         = paste0(year(Date), "-Q", quarter(Date)),
-    Announcement_Month_Year      = format(Date, "%Y-%m")
+    # Updated to match Datawrapper format: YYYY Q# (with single space)
+    Announcement_Quarter         = paste0(year(Date), " Q", quarter(Date)),
+    # Updated to match Datawrapper format: YYYY-M (no leading zeros)
+    Announcement_Month_Year      = paste0(year(Date), "-", month(Date)),
+    # Half-Year format: H# YYYY (no extra space after the number)
+    Announcement_Half_Year       = paste0("H", ifelse(month(Date) <= 6, "1", "2"), " ", year(Date))
   )
 
 # 3. Add a column "New_OR_Canceled"
@@ -121,6 +127,7 @@ Annual_New_Canceled_Investment <- clean_economy_tracker_data %>%
   arrange(Year)
 
 # Data Frame 2: Quarterly_New_Canceled_Investment
+# Note: This includes partial quarters (e.g., Q2 2025 even if not yet complete)
 Quarterly_New_Canceled_Investment <- clean_economy_tracker_data %>%
   filter(!is.na(Announcement_Quarter) & !is.na(New_OR_Canceled)) %>%
   group_by(Announcement_Quarter, New_OR_Canceled) %>%
@@ -134,6 +141,16 @@ Quarterly_New_Canceled_Investment <- clean_economy_tracker_data %>%
          `Canceled Investment` = Canceled) %>%
   select(Quarter, `New Investment`, `Canceled Investment`) %>%
   arrange(Quarter)
+
+# Ensure Q2 2025 is included if there's any data for it
+# Check if we need to add Q2 2025 explicitly
+current_quarters <- unique(clean_economy_tracker_data$Announcement_Quarter)
+if (any(grepl("2025 Q[12]", current_quarters)) && !"2025 Q2" %in% unique(Quarterly_New_Canceled_Investment$Quarter)) {
+  # Add Q2 2025 with zero values if it's missing but Q1 2025 exists
+  Quarterly_New_Canceled_Investment <- Quarterly_New_Canceled_Investment %>%
+    add_row(Quarter = "2025 Q2", `New Investment` = 0, `Canceled Investment` = 0) %>%
+    arrange(Quarter)
+}
 
 # Data Frame 3: Quarterly_Change_New_Canceled_Investment
 Quarterly_Change_New_Canceled_Investment <- Quarterly_New_Canceled_Investment %>%
@@ -212,6 +229,100 @@ Net_Announced_Investment_Monthly <- Monthly_Investment_Summary %>%
   ) %>%
   arrange(Month)
 
+# ---- NEW: Half-Year Data Frames ----
+
+# Data Frame 7: Half_Year_New_Canceled_Investment
+Half_Year_New_Canceled_Investment <- clean_economy_tracker_data %>%
+  filter(!is.na(Announcement_Half_Year) & !is.na(New_OR_Canceled)) %>%
+  group_by(Announcement_Half_Year, New_OR_Canceled) %>%
+  summarise(Total_Investment = sum(Investment, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = New_OR_Canceled,
+              values_from = Total_Investment,
+              values_fill = 0) %>%
+  ensure_new_canceled_cols() %>%
+  rename(Half_Year = Announcement_Half_Year,
+         `New Investment` = New,
+         `Canceled Investment` = Canceled) %>%
+  select(Half_Year, `New Investment`, `Canceled Investment`) %>%
+  # Custom sort for half-year format
+  mutate(
+    Year_Num = as.numeric(str_extract(Half_Year, "\\d{4}$")),  # Extract year from end
+    Half_Num = as.numeric(str_extract(Half_Year, "(?<=H)\\d"))  # Extract digit after H
+  ) %>%
+  arrange(Year_Num, Half_Num) %>%
+  select(-Year_Num, -Half_Num)
+
+# Data Frame 8: Half_Year_Change_New_Canceled_Investment
+Half_Year_Change_New_Canceled_Investment <- Half_Year_New_Canceled_Investment %>%
+  mutate(
+    Lag_New_Investment = lag(`New Investment`),
+    Lag_Canceled_Investment = lag(`Canceled Investment`)
+  ) %>%
+  mutate(
+    `Change in New Investment` = ifelse(is.na(Lag_New_Investment), 0, abs(`New Investment` - Lag_New_Investment)),
+    `Change in Canceled Investment` = ifelse(is.na(Lag_Canceled_Investment), 0, abs(`Canceled Investment` - Lag_Canceled_Investment))
+  ) %>%
+  select(Half_Year, `Change in New Investment`, `Change in Canceled Investment`)
+
+# Data Frame 9: Net_Announced_Investment_Half_Year
+Net_Announced_Investment_Half_Year <- Half_Year_New_Canceled_Investment %>%
+  mutate(
+    `Net Announced Investment` = `New Investment` - abs(`Canceled Investment`)
+  ) %>%
+  select(Half_Year, `Net Announced Investment`)
+
+# Data Frame 10: Half_Year YoY Comparison
+# Create a dataframe with year-over-year comparisons for half-years
+Half_Year_Investment_Summary <- clean_economy_tracker_data %>%
+  filter(!is.na(Announcement_Half_Year) & !is.na(Date) & !is.na(New_OR_Canceled)) %>%
+  mutate(
+    Year_Num = year(Date),
+    Half_Num = ifelse(month(Date) <= 6, 1, 2)
+  ) %>%
+  group_by(Announcement_Half_Year, Year_Num, Half_Num, New_OR_Canceled) %>%
+  summarise(Total_Investment = sum(Investment, na.rm = TRUE), .groups = 'drop') %>%
+  pivot_wider(names_from = New_OR_Canceled,
+              values_from = Total_Investment,
+              values_fill = 0) %>%
+  ensure_new_canceled_cols() %>%
+  rename(Half_Year = Announcement_Half_Year,
+         `New Investment` = New,
+         `Canceled Investment` = Canceled) %>%
+  select(Half_Year, Year_Num, Half_Num, `New Investment`, `Canceled Investment`)
+
+# Create prior year half-year data for joining
+prior_year_halfyear_data <- Half_Year_Investment_Summary %>%
+  select(
+    PY_Year_Num = Year_Num,
+    PY_Half_Num = Half_Num,
+    Prior_Year_New_Investment = `New Investment`,
+    Prior_Year_Canceled_Investment = `Canceled Investment`
+  )
+
+Half_Year_YoY_Investment <- Half_Year_Investment_Summary %>%
+  mutate(Target_Prior_Year = Year_Num - 1) %>%
+  left_join(
+    prior_year_halfyear_data,
+    by = c("Target_Prior_Year" = "PY_Year_Num", "Half_Num" = "PY_Half_Num")
+  ) %>%
+  mutate(
+    `New Investment Versus Same Half Prior Year` = `New Investment` - Prior_Year_New_Investment,
+    `Canceled Investment Versus Same Half Prior Year` = `Canceled Investment` - Prior_Year_Canceled_Investment
+  ) %>%
+  select(
+    Half_Year,
+    `New Investment`,
+    `Canceled Investment`,
+    `New Investment Versus Same Half Prior Year`,
+    `Canceled Investment Versus Same Half Prior Year`
+  ) %>%
+  # Custom sort for half-year format
+  mutate(
+    Year_Num = as.numeric(str_extract(Half_Year, "\\d{4}$")),  # Extract year from end
+    Half_Num = as.numeric(str_extract(Half_Year, "(?<=H)\\d"))  # Extract digit after H
+  ) %>%
+  arrange(Year_Num, Half_Num) %>%
+  select(-Year_Num, -Half_Num)
 
 # ---- Export all data frames to a single Excel file ----
 
@@ -220,31 +331,19 @@ list_of_datasets <- list(
   "Annual_New_Canceled_Inv" = Annual_New_Canceled_Investment,
   "Quarterly_New_Canceled_Inv" = Quarterly_New_Canceled_Investment,
   "Quarterly_Change_Inv" = Quarterly_Change_New_Canceled_Investment,
+  "Half_Year_New_Canceled_Inv" = Half_Year_New_Canceled_Investment,
+  "Half_Year_Change_Inv" = Half_Year_Change_New_Canceled_Investment,
+  "Half_Year_YoY_Inv" = Half_Year_YoY_Investment,
   "Net_Announced_Inv_Quarterly" = Net_Announced_Investment_Quarterly,
+  "Net_Announced_Inv_Half_Year" = Net_Announced_Investment_Half_Year,
   "Net_Announced_Inv_Year" = Net_Announced_Investment_Year,
   "Net_Announced_Inv_Monthly" = Net_Announced_Investment_Monthly,
   "clean_tracker_data_modified" = clean_economy_tracker_data,
   "unmodified_source_data" = unmodified_source_data
 )
 
-# --- User specified output file path ---
-# Please verify this path and change it if necessary.
-output_excel_path <- "~/Library/CloudStorage/OneDrive-RMI/Clean_Economy_Tracker_Investment_Analysis_05_June_2025.xlsx"
-
-# **FIX**: Create the directory if it doesn't exist
-output_dir <- dirname(output_excel_path)
-if (!dir.exists(output_dir)){
-  cat(paste0("Output directory '", output_dir, "' does not exist. Attempting to create it.\n"))
-  dir.create(output_dir, recursive = TRUE, showWarnings = TRUE)
-}
-
-# Write the data frames to Excel, each in a separate sheet
-if (dir.exists(output_dir)) {
-  write_xlsx(list_of_datasets, path = output_excel_path)
-  cat(paste0("\nAll data frames successfully exported to: ", output_excel_path, "\n"))
-} else {
-  cat(paste0("\nERROR: Output directory '", output_dir, "' could not be created or accessed. File not saved.\n"))
-  cat("Please check permissions or create the directory manually: ", output_dir, "\n")
-}
-
-# End of script
+#Export the data frames to a single time-stamped Excel file in the working directory 
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+#Generate the working directory dynamically using getwd()
+output_file_path <- file.path(getwd(), paste0("Clean_Economy_Tracker_Data_", timestamp, ".xlsx"))
+write_xlsx(list_of_datasets, output_file_path)
