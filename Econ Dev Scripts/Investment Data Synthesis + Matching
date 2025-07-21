@@ -1,0 +1,1867 @@
+#Part I: Synthesize Data----------------------
+
+# INVESTMENT DATA SYNTHESIS - REVISED WITH CATEGORY KEYWORDS
+# Ensure all necessary libraries are loaded. If not installed, run install.packages("package_name")
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(stringr)
+library(fuzzyjoin)      # stringdist_*_join
+library(geosphere)      # distHaversine
+library(purrr)
+
+# PART 0: CROSS-PLATFORM FILE PATH FUNCTIONS
+
+# Function to detect operating system
+detect_os <- function() {
+  sys_info <- Sys.info()
+  os_name <- sys_info["sysname"]
+  
+  if (os_name == "Darwin") {
+    return("Mac")
+  } else if (os_name == "Windows") {
+    return("Windows")
+  } else if (os_name == "Linux") {
+    return("Linux")
+  } else {
+    return("Unknown")
+  }
+}
+
+# Function to convert Mac-style OneDrive paths to Windows-style paths
+convert_onedrive_path <- function(mac_path, organization_name = "RMI") {
+  current_os <- detect_os()
+  
+  if (current_os == "Mac") {
+    # On Mac, return the path as-is
+    return(mac_path)
+  } else if (current_os == "Windows") {
+    # Convert Mac OneDrive path to Windows OneDrive path
+    # Mac format: ~/Library/CloudStorage/OneDrive-RMI/...
+    # Windows format: %USERPROFILE%\OneDrive - RMI\...
+    
+    # Extract the part after OneDrive-[org]/
+    if (grepl("~/Library/CloudStorage/OneDrive-", mac_path)) {
+      # Remove the Mac OneDrive prefix
+      relative_path <- sub("^~/Library/CloudStorage/OneDrive-[^/]+/", "", mac_path)
+      
+      # Get user home directory
+      home_dir <- Sys.getenv("USERPROFILE")
+      
+      # Try different OneDrive folder patterns
+      possible_onedrive_dirs <- c(
+        file.path(home_dir, paste0("OneDrive - ", organization_name)),
+        file.path(home_dir, paste0("OneDrive-", organization_name)),
+        file.path(home_dir, "OneDrive"),
+        file.path(home_dir, "OneDrive - Personal")
+      )
+      
+      # Find the OneDrive directory that exists
+      onedrive_dir <- NULL
+      for (dir in possible_onedrive_dirs) {
+        if (dir.exists(dir)) {
+          onedrive_dir <- dir
+          break
+        }
+      }
+      
+      if (is.null(onedrive_dir)) {
+        # If no OneDrive directory found, try the first pattern as default
+        onedrive_dir <- possible_onedrive_dirs[1]
+        warning(paste("OneDrive directory not found. Using default:", onedrive_dir))
+      }
+      
+      # Construct the Windows path
+      windows_path <- file.path(onedrive_dir, relative_path)
+      
+      # Convert forward slashes to backslashes for Windows
+      windows_path <- normalizePath(windows_path, winslash = "\\", mustWork = FALSE)
+      
+      return(windows_path)
+    } else {
+      # If it's not a OneDrive path, return as-is
+      return(mac_path)
+    }
+  } else {
+    # For Linux or other OS, return as-is
+    return(mac_path)
+  }
+}
+
+# Function to create cross-platform file paths
+create_cross_platform_path <- function(mac_path, organization_name = "RMI") {
+  converted_path <- convert_onedrive_path(mac_path, organization_name)
+  return(converted_path)
+}
+
+# Function to safely read CSV with cross-platform path support
+read_csv_cross_platform <- function(mac_path, organization_name = "RMI", ...) {
+  full_path <- create_cross_platform_path(mac_path, organization_name)
+  
+  if (!file.exists(full_path)) {
+    stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
+  }
+  
+  return(read_csv(full_path, ...))
+}
+
+# Function to safely read Excel with cross-platform path support
+read_excel_cross_platform <- function(mac_path, organization_name = "RMI", ...) {
+  full_path <- create_cross_platform_path(mac_path, organization_name)
+  
+  if (!file.exists(full_path)) {
+    stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
+  }
+  
+  return(read_excel(full_path, ...))
+}
+
+# PART 1: LOAD AND PROCESS RAW DATA
+
+# Load CIM Data
+CIM_2025_Q2_MFG <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/CleanInvestmentMonitor_Download_Manufacturing/manufacturing_facility_metadata.csv", skip = 4)
+CIM_2025_Q1_ALL <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/manufacturing_energy_and_industry_facility_metadata.csv", skip = 5)
+
+CIM_FACILITY_DATA_CONSOLIDATED <- CIM_2025_Q2_MFG %>%
+  full_join(CIM_2025_Q1_ALL,
+            by = "unique_id",
+            suffix = c("_mfg", "_all")) %>%
+  transmute(
+    unique_id,
+    Company = coalesce(Company_mfg, Company_all),
+    Technology = coalesce(Technology_mfg, Technology_all),
+    Subcategory = coalesce(Subcategory_mfg, Subcategory_all),
+    Decarb_Sector = coalesce(Decarb_Sector_mfg, Decarb_Sector_all),
+    Announcement_Date = coalesce(as.character(Announcement_Date_mfg), as.character(Announcement_Date_all)),
+    State = coalesce(State_mfg, State_all),
+    Current_Facility_Status = coalesce(Current_Facility_Status_mfg, Current_Facility_Status_all),
+    Latitude = coalesce(Latitude_mfg, Latitude_all),
+    Longitude = coalesce(Longitude_mfg, Longitude_all),
+    Address = coalesce(Address_mfg, Address_all),
+    LatLon_Valid = !is.na(Latitude) & !is.na(Longitude),
+    Estimated_Total_Facility_CAPEX = coalesce(Estimated_Total_Facility_CAPEX_mfg, Estimated_Total_Facility_CAPEX_all) * 1e6,
+    # Correctly reference job columns (no suffix is applied as they are only in one dataframe)
+    Reported_Operational_Jobs,
+    Reported_Construction_Jobs
+  ) %>%
+  mutate(
+    Announcement_Date = as.Date(Announcement_Date, format = "%Y-%m-%d"),
+    Announcement_Year = year(Announcement_Date),
+    Announcement_Quarter = paste0(Announcement_Year, " Q", quarter(Announcement_Date)),
+    Announcement_Month_Year = paste0(Announcement_Year, "-", month(Announcement_Date)),
+    Announcement_Half_Year = paste0("H", ifelse(month(Announcement_Date) <= 6, "1", "2"), " ", Announcement_Year)
+  )
+
+# Load ATLAS EV Data
+ATLAS_EV_DATA <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Atlas EV Jobs Hub/Atlas EV Jobs Hub - July 15 2025 - Investment Overview.xlsx",
+                                           col_types = c("date", "text", "text", "text", "text", "text", "text", "text", "text", "text", "numeric", "text", "numeric", "numeric", "text", "text", "numeric", "text", "text")) %>%
+  mutate(
+    Announcement_Date = as.Date(`Announcement Date`),
+    Announcement_Year = year(`Announcement Date`),
+    Announcement_Quarter = paste0(year(`Announcement Date`), " Q", quarter(`Announcement Date`)),
+    Announcement_Month_Year = paste0(year(`Announcement Date`), "-", month(`Announcement Date`)),
+    Announcement_Half_Year = paste0("H", ifelse(month(`Announcement Date`) <= 6, "1", "2"), " ", year(`Announcement Date`))
+  )
+
+# Load Clean Economy Tracker
+CLEAN_ECONOMY_TRACKER <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_07_14_2025.xlsx") %>%
+  mutate(
+    Date = as.POSIXct(Date),
+    Post_Inflation_Reduction_Act = Date >= as.Date("2022-08-16"),
+    Post_Election_2024 = Date >= as.Date("2024-11-05"),
+    Post_Inauguration_2025 = Date >= as.Date("2025-01-20"),
+    Announcement_Year = year(Date),
+    Announcement_Quarter = paste0(year(Date), " Q", quarter(Date)),
+    Announcement_Month_Year = paste0(year(Date), "-", month(Date)),
+    Announcement_Half_Year = paste0("H", ifelse(month(Date) <= 6, "1", "2"), " ", year(Date)),
+    New_OR_Canceled = ifelse(Phase == "Update" & `Operating Status` == "Canceled", "Canceled", "New"),
+    Investment = ifelse(New_OR_Canceled == "Canceled" & Investment > 0 & !is.na(Investment), -Investment, Investment)
+  )
+
+# Load and Process Wellesley Data
+WELLESLEY_JUNE_2025 <- read_excel_cross_platform(
+  "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/wellesley_big_green_machine/The-Big-Green-Machine Dataset-June-2025.xlsx",
+  sheet = "Dataset-6-21-25"
+) %>%
+  filter(Country == "USA") %>%
+  filter(`Operating Status` != "Rumored" | is.na(`Operating Status`)) %>%
+  mutate(
+    # Standard data cleaning
+    `Capital Investment \n($ million)` = ifelse(`Capital Investment \n($ million)` == "?" | is.na(`Capital Investment \n($ million)`), "", `Capital Investment \n($ million)`),
+    Capex_Info_Available = ifelse(`Capital Investment \n($ million)` == "", FALSE, TRUE),
+    `Capital Investment \n($ million)` = suppressWarnings(as.numeric(`Capital Investment \n($ million)`)) * 1e6,
+    Latitude = suppressWarnings(as.numeric(Latitude)),
+    Longitude = suppressWarnings(as.numeric(Longitude)),
+    State = `State / Province`,
+    Company = Name
+  ) %>%
+  rename(CAPEX_ESTIMATED = `Capital Investment \n($ million)`) %>%
+  # --- ROBUST DATE CONVERSION LOGIC (V12) ---
+  mutate(
+    # First, ensure the column is treated as character to handle all cases uniformly
+    date_char = as.character(`Project Announcement Date`),
+    
+    `Project Announcement Date` = case_when(
+      # Handle NA and explicit "N.D." text
+      is.na(date_char) | toupper(date_char) == "N.D." ~ NA_Date_,
+      
+      # Handle Excel numeric dates (the most common format in this file)
+      !is.na(suppressWarnings(as.numeric(date_char))) & 
+        suppressWarnings(as.numeric(date_char)) > 1000 & 
+        suppressWarnings(as.numeric(date_char)) < 100000 ~ 
+        as.Date(as.numeric(date_char), origin = "1899-12-30"),
+      
+      # Handle standard date formats stored as text
+      !is.na(suppressWarnings(as.Date(date_char, format = "%Y-%m-%d"))) ~ as.Date(date_char, format = "%Y-%m-%d"),
+      !is.na(suppressWarnings(as.Date(date_char, format = "%m/%d/%Y"))) ~ as.Date(date_char, format = "%m/%d/%Y"),
+      
+      # If we still can't parse it, it's an unknown format, return NA
+      TRUE ~ NA_Date_
+    ),
+    `Announcement Date Available` = !is.na(`Project Announcement Date`)
+  ) %>%
+  select(-date_char) # Clean up the temporary column
+
+# --- Detailed check after loading ---
+cat("\n--- Wellesley Data Date Conversion Results ---\n")
+valid_dates_count <- sum(!is.na(WELLESLEY_JUNE_2025$`Project Announcement Date`))
+na_dates_count <- sum(is.na(WELLESLEY_JUNE_2025$`Project Announcement Date`))
+cat("Total rows:", nrow(WELLESLEY_JUNE_2025), "\n")
+cat("Rows with valid dates:", valid_dates_count, "\n")
+cat("Rows with NA dates:", na_dates_count, "\n")
+
+
+cat("--------------------------------------------\n\n")
+
+# Optional: See what dates couldn't be converted
+unconverted <- WELLESLEY_JUNE_2025 %>%
+  filter(is.na(`Project Announcement Date`) & !is.na(Name)) %>%
+  select(Name, State)
+
+if(nrow(unconverted) > 0) {
+  cat("\nFacilities without announcement dates:\n")
+  print(head(unconverted, 10))
+}
+
+
+# PART 2: CREATE CATEGORY MATRICES FOR REFERENCE
+
+# Create matrices of possible categories by data source
+CIM_FACILITY_CATEGORIES <- CIM_FACILITY_DATA_CONSOLIDATED %>%
+  select(Decarb_Sector, Technology, Subcategory) %>%
+  distinct() %>%
+  arrange(Decarb_Sector, Technology, Subcategory)
+
+WELLESLEY_CATEGORIES <- WELLESLEY_JUNE_2025 %>%
+  select(Sector, `Mfg Activity`, `Mfg Product`) %>%
+  distinct() %>%
+  arrange(Sector, `Mfg Activity`, `Mfg Product`)
+
+ATLAS_EV_CATEGORIES <- ATLAS_EV_DATA %>%
+  select(`Manufacturing Focus`, `Component Category`) %>%
+  distinct() %>%
+  arrange(`Manufacturing Focus`, `Component Category`)
+
+CLEAN_ECONOMY_CATEGORIES <- CLEAN_ECONOMY_TRACKER %>%
+  select(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`) %>%
+  distinct() %>%
+  arrange(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`)
+
+# Create Supply Chain Stage Matrices
+# For CIM_FACILITY_CATEGORIES, if Decarb_Sector is NOT "Clean Tech Manufacturing", then Supply_Chain_Stage is "Infrastructure/Deployment"
+# If Decarb_Sector is "Clean Tech Manufacturing", then Supply_Chain_Stage is "Manufacturing"—unless "Technology" is "Critical Minerals"; in which case Supply_Chain_Stage is "Upstream Materials"
+CIM_FACILITY_CATEGORIES_STAGE <- CIM_FACILITY_CATEGORIES %>%
+  mutate(
+    Supply_Chain_Stage = case_when(
+      Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Critical Minerals" ~ "Upstream Materials",
+      Decarb_Sector == "Clean Tech Manufacturing" ~ "Manufacturing",
+      TRUE ~ "Infrastructure/Deployment"
+    )
+  )
+
+# For WELLESLEY_CATEGORIES, the Supply_Chain_Stage will be either "Manufacturing" or "Upstream Materials"
+# If "Mfg Activity" is "Extraction" or "Materials Processing" then Supply_Chain_Stage is "Upstream Materials"
+# If "Mfg Activity" is "Manufacturing" or "Recycling" and "Mfg_Product" is one of the following: "Rare Earths", "Lithium", "Silicon", "Graphite", then Supply_Chain_Stage is still "Upstream Materials"
+# For all other "Mfg Product" values where "Mfg Activity" is "Manufacturing" or "Recycling", Supply_Chain_Stage is "Manufacturing"
+WELLESLEY_CATEGORIES_STAGE <- WELLESLEY_CATEGORIES %>%
+  mutate(
+    Supply_Chain_Stage = case_when(
+      `Mfg Activity` %in% c("Extraction", "Materials Processing") ~ "Upstream Materials",
+      `Mfg Activity` %in% c("Manufacturing", "Recycling") & `Mfg Product` %in% c("Rare Earths", "Lithium", "Silicon", "Graphite") ~ "Upstream Materials",
+      `Mfg Activity` %in% c("Manufacturing", "Recycling") ~ "Manufacturing",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Now let's create CLEAN_ECONOMY_CATEGORIES_STAGE
+# Here, if "Manufacturing Sector" is "Minerals", then Supply_Chain_Stage is "Upstream Materials"
+# For all other "Manufacturing Sector" values, Supply_Chain_Stage is "Manufacturing"
+CLEAN_ECONOMY_CATEGORIES_STAGE <- CLEAN_ECONOMY_CATEGORIES %>%
+  mutate(
+    Supply_Chain_Stage = case_when(
+      `Manufacturing Sector` == "Minerals" ~ "Upstream Materials",
+      TRUE ~ "Manufacturing"
+    )
+  )
+
+# Now let's create ATLAS_EV_CATEGORIES_STAGE
+#If "Manufacturing Focus" is "Minerals", then Supply_Chain_Stage is "Upstream Materials"
+# For other ATLAS_EV_CATEGORIES, the following Component Category values are "Upstream Materials": 
+# "Recycling, Lithium Hydroxide"; "Remanufacturing, Lithium Carbonate"; "Cobalt"; "Graphite"; "Lithium Carbonate"; "Lithium Hydroxide"; "Manganese"; "Nickel"; "Nickel, Cobalt"
+# For everything else, Supply_Chain_Stage is "Manufacturing"
+ATLAS_EV_CATEGORIES_STAGE <- ATLAS_EV_CATEGORIES %>%
+  mutate(
+    Supply_Chain_Stage = case_when(
+      `Manufacturing Focus` == "Minerals" ~ "Upstream Materials",
+      `Component Category` %in% c("Recycling, Lithium Hydroxide", "Remanufacturing, Lithium Carbonate", "Cobalt", "Graphite", "Lithium Carbonate", "Lithium Hydroxide", "Manganese", "Nickel", "Nickel, Cobalt") ~ "Upstream Materials",
+      TRUE ~ "Manufacturing"
+    )
+  )
+
+# PART 3: HELPER FUNCTIONS
+
+# Function to normalize company names for matching - VECTORIZED VERSION
+normalize_company_name <- function(x) {
+  # Handle NA and empty values vectorized way
+  result <- rep("", length(x))
+  valid_indices <- !is.na(x) & x != ""
+  
+  if (any(valid_indices)) {
+    result[valid_indices] <- x[valid_indices] %>%
+      str_to_lower() %>%
+      # Remove common business suffixes
+      str_remove_all("\\b(inc|llc|corp|ltd|co|company|corporation|incorporated|limited)\\b") %>%
+      # Remove punctuation and special characters
+      str_remove_all("[,.'&\\-]") %>%
+      # Replace "and" variations
+      str_replace_all("\\band\\b", "") %>%
+      str_replace_all("\\+", "") %>%
+      # Remove extra whitespace
+      str_squish() %>%
+      str_trim()
+  }
+  
+  return(result)
+}
+
+# Alternative simple name normalization function (original version, vectorized)
+norm_name <- function(x) {
+  x %>% 
+    str_to_lower() %>% 
+    str_replace_all("&", "and") %>%
+    str_replace_all("[,.]", " ") %>%     # strip punctuation
+    str_remove_all("\\b(inc|llc|corp|ltd|co)\\b") %>%
+    str_squish()
+}
+
+# Function to check if two coordinates are within a specified distance
+within_km <- function(lat1, lon1, lat2, lon2, km = 5) {
+  if (any(is.na(c(lat1, lon1, lat2, lon2)))) return(FALSE)
+  tryCatch({
+    distHaversine(cbind(lon1, lat1), cbind(lon2, lat2)) / 1000 <= km
+  }, error = function(e) {
+    return(FALSE)
+  })
+}
+
+# Function to standardize coordinates (round to 1 decimal place for ~11km precision - easier for matching)
+standardize_latitude <- function(lat) {
+  ifelse(!is.na(lat), round(lat, 1), NA_real_)
+}
+
+standardize_longitude <- function(lon) {
+  ifelse(!is.na(lon), round(lon, 1), NA_real_)
+}
+
+# Function to standardize state names to abbreviations
+standardize_state <- function(state_input) {
+  # Handle vectors using ifelse and case_when
+  case_when(
+    is.na(state_input) ~ NA_character_,
+    # Check if already an abbreviation (2 characters, uppercase)
+    str_detect(str_to_upper(str_trim(state_input)), "^[A-Z]{2}$") ~ str_to_upper(str_trim(state_input)),
+    # Look up full state names
+    str_to_title(str_trim(state_input)) == "Alabama" ~ "AL",
+    str_to_title(str_trim(state_input)) == "Alaska" ~ "AK",
+    str_to_title(str_trim(state_input)) == "Arizona" ~ "AZ",
+    str_to_title(str_trim(state_input)) == "Arkansas" ~ "AR",
+    str_to_title(str_trim(state_input)) == "California" ~ "CA",
+    str_to_title(str_trim(state_input)) == "Colorado" ~ "CO",
+    str_to_title(str_trim(state_input)) == "Connecticut" ~ "CT",
+    str_to_title(str_trim(state_input)) == "Delaware" ~ "DE",
+    str_to_title(str_trim(state_input)) == "Florida" ~ "FL",
+    str_to_title(str_trim(state_input)) == "Georgia" ~ "GA",
+    str_to_title(str_trim(state_input)) == "Hawaii" ~ "HI",
+    str_to_title(str_trim(state_input)) == "Idaho" ~ "ID",
+    str_to_title(str_trim(state_input)) == "Illinois" ~ "IL",
+    str_to_title(str_trim(state_input)) == "Indiana" ~ "IN",
+    str_to_title(str_trim(state_input)) == "Iowa" ~ "IA",
+    str_to_title(str_trim(state_input)) == "Kansas" ~ "KS",
+    str_to_title(str_trim(state_input)) == "Kentucky" ~ "KY",
+    str_to_title(str_trim(state_input)) == "Louisiana" ~ "LA",
+    str_to_title(str_trim(state_input)) == "Maine" ~ "ME",
+    str_to_title(str_trim(state_input)) == "Maryland" ~ "MD",
+    str_to_title(str_trim(state_input)) == "Massachusetts" ~ "MA",
+    str_to_title(str_trim(state_input)) == "Michigan" ~ "MI",
+    str_to_title(str_trim(state_input)) == "Minnesota" ~ "MN",
+    str_to_title(str_trim(state_input)) == "Mississippi" ~ "MS",
+    str_to_title(str_trim(state_input)) == "Missouri" ~ "MO",
+    str_to_title(str_trim(state_input)) == "Montana" ~ "MT",
+    str_to_title(str_trim(state_input)) == "Nebraska" ~ "NE",
+    str_to_title(str_trim(state_input)) == "Nevada" ~ "NV",
+    str_to_title(str_trim(state_input)) == "New Hampshire" ~ "NH",
+    str_to_title(str_trim(state_input)) == "New Jersey" ~ "NJ",
+    str_to_title(str_trim(state_input)) == "New Mexico" ~ "NM",
+    str_to_title(str_trim(state_input)) == "New York" ~ "NY",
+    str_to_title(str_trim(state_input)) == "North Carolina" ~ "NC",
+    str_to_title(str_trim(state_input)) == "North Dakota" ~ "ND",
+    str_to_title(str_trim(state_input)) == "Ohio" ~ "OH",
+    str_to_title(str_trim(state_input)) == "Oklahoma" ~ "OK",
+    str_to_title(str_trim(state_input)) == "Oregon" ~ "OR",
+    str_to_title(str_trim(state_input)) == "Pennsylvania" ~ "PA",
+    str_to_title(str_trim(state_input)) == "Rhode Island" ~ "RI",
+    str_to_title(str_trim(state_input)) == "South Carolina" ~ "SC",
+    str_to_title(str_trim(state_input)) == "South Dakota" ~ "SD",
+    str_to_title(str_trim(state_input)) == "Tennessee" ~ "TN",
+    str_to_title(str_trim(state_input)) == "Texas" ~ "TX",
+    str_to_title(str_trim(state_input)) == "Utah" ~ "UT",
+    str_to_title(str_trim(state_input)) == "Vermont" ~ "VT",
+    str_to_title(str_trim(state_input)) == "Virginia" ~ "VA",
+    str_to_title(str_trim(state_input)) == "Washington" ~ "WA",
+    str_to_title(str_trim(state_input)) == "West Virginia" ~ "WV",
+    str_to_title(str_trim(state_input)) == "Wisconsin" ~ "WI",
+    str_to_title(str_trim(state_input)) == "Wyoming" ~ "WY",
+    str_to_title(str_trim(state_input)) == "District Of Columbia" ~ "DC",
+    # If no match, return as uppercase (assume it's an abbreviation)
+    TRUE ~ str_to_upper(str_trim(state_input))
+  )
+}
+
+# Function to create project category keywords
+create_project_category_keywords <- function(...) {
+  # Combine all arguments into a single string, removing NAs and empty strings
+  args <- list(...)
+  valid_args <- args[!is.na(args) & args != ""]
+  
+  if (length(valid_args) == 0) {
+    return(NA_character_)
+  }
+  
+  # Join with " | " separator and clean up
+  paste(valid_args, collapse = " | ") %>%
+    str_squish() %>%
+    str_trim()
+}
+
+# Vectorized version of create_project_category_keywords
+create_project_category_keywords_vectorized <- function(...) {
+  # Get all arguments as a list
+  args <- list(...)
+  
+  # Get the length of the first non-null argument to determine vector length
+  n <- length(args[[1]])
+  
+  # Create result vector
+  result <- rep(NA_character_, n)
+  
+  # Process each row
+  for (i in 1:n) {
+    # Extract values for this row
+    row_values <- map_chr(args, ~ifelse(is.na(.x[i]) | .x[i] == "", NA_character_, .x[i]))
+    
+    # Remove NAs and empty strings
+    valid_values <- row_values[!is.na(row_values) & row_values != ""]
+    
+    # Combine if we have valid values
+    if (length(valid_values) > 0) {
+      result[i] <- paste(valid_values, collapse = " | ")
+    }
+  }
+  
+  return(result)
+}
+
+# Function to create supply chain stage lookup - FIXED VERSION
+create_supply_chain_stage_lookup <- function(categories_stage, ...) {
+  # Create a lookup table from the categories_stage dataframe
+  lookup_cols <- c(...)
+  
+  # Create a key from the lookup columns AND include Supply_Chain_Stage
+  key_cols <- categories_stage %>% 
+    select(all_of(lookup_cols), Supply_Chain_Stage) %>%
+    unite("lookup_key", all_of(lookup_cols), sep = " | ", remove = FALSE)
+  
+  # Return the lookup table with the key and supply chain stage
+  key_cols %>%
+    select(lookup_key, Supply_Chain_Stage) %>%
+    distinct()
+}
+
+# Function to get supply chain stage for a facility
+get_supply_chain_stage <- function(lookup_table, facility_key) {
+  match_result <- lookup_table$Supply_Chain_Stage[lookup_table$lookup_key == facility_key]
+  if (length(match_result) > 0) {
+    return(match_result[1])
+  } else {
+    return(NA_character_)
+  }
+}
+
+# Function to combine Wellesley source links
+combine_wellesley_sources <- function(df) {
+  # Get all source columns
+  source_cols <- names(df)[str_detect(names(df), "^Source\\([a-z]\\)$")]
+  
+  # Combine all non-NA source links
+  df$combined_sources <- apply(df[source_cols], 1, function(row) {
+    valid_sources <- row[!is.na(row) & row != ""]
+    if (length(valid_sources) > 0) {
+      paste(valid_sources, collapse = " | ")
+    } else {
+      NA_character_
+    }
+  })
+  
+  return(df)
+}
+
+# Function to standardize facility status across datasets - VECTORIZED VERSION
+standardize_facility_status <- function(status_values, dataset_name) {
+  # Handle vectors by using vectorized operations
+  result <- rep("Status Unknown", length(status_values))
+  
+  # Create logical vectors for non-NA and non-empty values
+  valid_indices <- !is.na(status_values) & status_values != ""
+  
+  if (any(valid_indices)) {
+    # Convert to lowercase for easier matching
+    status_lower <- str_to_lower(str_trim(status_values[valid_indices]))
+    
+    # Standardize based on dataset and status value
+    if (dataset_name == "CIM") {
+      result[valid_indices] <- case_when(
+        status_lower == "announced" ~ "Planned/Announced",
+        status_lower == "under construction" ~ "Under Construction",
+        status_lower == "operating" ~ "Operational",
+        status_lower == "retired" ~ "Paused, Closed/Retired, or Cancelled",
+        status_lower == "canceled prior to operation" ~ "Paused, Closed/Retired, or Cancelled",
+        TRUE ~ "Status Unknown"
+      )
+    } else if (dataset_name == "Atlas EV") {
+      result[valid_indices] <- case_when(
+        status_lower == "planned" ~ "Planned/Announced",
+        status_lower == "under construction" ~ "Under Construction",
+        status_lower == "operational" ~ "Operational",
+        status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled",
+        TRUE ~ "Status Unknown"
+      )
+    } else if (dataset_name == "Clean Economy Tracker") {
+      result[valid_indices] <- case_when(
+        status_lower == "planned" ~ "Planned/Announced",
+        status_lower == "under construction" ~ "Under Construction",
+        status_lower == "operational" ~ "Operational",
+        status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled",
+        TRUE ~ "Status Unknown"
+      )
+    } else if (dataset_name == "Wellesley") {
+      result[valid_indices] <- case_when(
+        status_lower == "planned" ~ "Planned/Announced",
+        status_lower == "under construction" ~ "Under Construction",
+        status_lower == "pilot" ~ "Pilot",
+        status_lower == "operating partially; under construction" ~ "Operating Partially; Under Construction",
+        status_lower == "operating" ~ "Operational",
+        status_lower == "cancelled" ~ "Paused, Closed/Retired, or Cancelled",
+        status_lower == "paused" ~ "Paused, Closed/Retired, or Cancelled",
+        status_lower == "closed" ~ "Paused, Closed/Retired, or Cancelled",
+        status_lower == "sold" ~ "Status Unknown",  # Not clear what this means
+        TRUE ~ "Status Unknown"
+      )
+    }
+  }
+  
+  return(result)
+}
+
+# PART 4: CREATE SUPPLY CHAIN STAGE LOOKUP TABLES
+
+# Create lookup tables for each dataset
+cim_stage_lookup <- create_supply_chain_stage_lookup(CIM_FACILITY_CATEGORIES_STAGE, "Decarb_Sector", "Technology", "Subcategory")
+wellesley_stage_lookup <- create_supply_chain_stage_lookup(WELLESLEY_CATEGORIES_STAGE, "Sector", "Mfg Activity", "Mfg Product")
+atlas_stage_lookup <- create_supply_chain_stage_lookup(ATLAS_EV_CATEGORIES_STAGE, "Manufacturing Focus", "Component Category")
+cet_stage_lookup <- create_supply_chain_stage_lookup(CLEAN_ECONOMY_CATEGORIES_STAGE, "Manufacturing Sector", "Tech Category", "Tech Sub-category")
+
+# PART 5: PROCESS EACH DATASET WITH CATEGORY KEYWORDS AND SUPPLY CHAIN STAGE
+
+# Process CIM data
+cim_processed <- CIM_FACILITY_DATA_CONSOLIDATED %>%
+  mutate(
+    master_id = paste0("CIM_", row_number()),
+    data_source = "CIM",
+    investment_tracker_website = "https://www.cleaninvestmentmonitor.org/",
+    investment_tracker_last_updated = "Q2 2025 for manufacturing/minerals data; Q1 2025 for other sectors",
+    coordinates_available = !is.na(Latitude) & !is.na(Longitude),
+    standardized_latitude = standardize_latitude(Latitude),
+    standardized_longitude = standardize_longitude(Longitude),
+    latitude_if_available = ifelse(coordinates_available, Latitude, NA),
+    longitude_if_available = ifelse(coordinates_available, Longitude, NA),
+    address_available = !is.na(Address) & Address != "",
+    address_if_available = ifelse(address_available, Address, NA),
+    city_available = FALSE,  # CIM doesn't have city data
+    city_if_available = NA_character_,  # CIM doesn't have city data
+    # Create combined address_or_city column
+    address_or_city_if_available = case_when(
+      address_available ~ address_if_available,
+      city_available ~ city_if_available,
+      TRUE ~ NA_character_
+    ),
+    state_standardized = standardize_state(State),
+    # Source links - CIM doesn't have source links
+    source_links_available = FALSE,
+    source_links_if_available = NA_character_,
+    # Facility status - standardize CIM facility status
+    facility_status_standardized = standardize_facility_status(Current_Facility_Status, "CIM"),
+    # Process Jobs data into a single, streamlined column
+    jobs_info_if_available = case_when(
+      !is.na(Reported_Operational_Jobs) & !is.na(Reported_Construction_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs, ", Construction: ", Reported_Construction_Jobs),
+      !is.na(Reported_Operational_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs),
+      !is.na(Reported_Construction_Jobs) ~ paste0("Construction: ", Reported_Construction_Jobs),
+      TRUE ~ NA_character_
+    ),
+    # Announcement date information
+    announcement_date_available = !is.na(Announcement_Date),
+    announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
+    company_project_keywords = paste(
+      ifelse(is.na(Company), "", Company),
+      sep = ""
+    ) %>% str_squish(),
+    # Create project category keywords
+    project_category_keywords = create_project_category_keywords_vectorized(
+      Decarb_Sector, Technology, Subcategory
+    ),
+    # Create lookup key for supply chain stage
+    stage_lookup_key = create_project_category_keywords_vectorized(
+      Decarb_Sector, Technology, Subcategory
+    ),
+    # CAPEX information
+    capex_info_available = !is.na(Estimated_Total_Facility_CAPEX) & Estimated_Total_Facility_CAPEX > 0,
+    capex_amount_estimated = ifelse(capex_info_available, Estimated_Total_Facility_CAPEX, NA_real_)
+  ) %>%
+  # Add supply chain stage
+  rowwise() %>%
+  mutate(
+    supply_chain_stage = get_supply_chain_stage(cim_stage_lookup, stage_lookup_key)
+  ) %>%
+  ungroup() %>%
+  select(-stage_lookup_key)
+
+# Process Atlas EV data
+atlas_processed <- ATLAS_EV_DATA %>%
+  mutate(
+    master_id = paste0("ATLAS_", row_number()),
+    data_source = "Atlas EV",
+    investment_tracker_website = "https://evjobs.bgafoundation.org/",
+    investment_tracker_last_updated = "July 15, 2025",
+    coordinates_available = FALSE,  # Atlas doesn't have coordinates
+    standardized_latitude = NA_real_,
+    standardized_longitude = NA_real_,
+    latitude_if_available = NA_real_,
+    longitude_if_available = NA_real_,
+    address_available = FALSE,  # Atlas doesn't have address
+    address_if_available = NA_character_,
+    city_available = !is.na(City) & City != "",
+    city_if_available = ifelse(city_available, City, NA),
+    # Create combined address_or_city column
+    address_or_city_if_available = case_when(
+      address_available ~ address_if_available,
+      city_available ~ city_if_available,
+      TRUE ~ NA_character_
+    ),
+    state_standardized = standardize_state(State),
+    # Source links - Atlas EV has Source column
+    source_links_available = !is.na(Source) & Source != "",
+    source_links_if_available = ifelse(source_links_available, Source, NA),
+    # Facility status - standardize Atlas EV facility status
+    facility_status_standardized = standardize_facility_status(`EV/Battery Production`, "Atlas EV"),
+    # Process Jobs data
+    jobs_info_if_available = as.character(`Announced EV Jobs`),
+    # Announcement date information
+    announcement_date_available = !is.na(Announcement_Date),
+    announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
+    company_project_keywords = paste(
+      ifelse(is.na(Company), "", Company),
+      ifelse(is.na(`Parent Company`), "", `Parent Company`),
+      ifelse(is.na(`Facility Name`), "", `Facility Name`),
+      sep = " | "
+    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+    # Create project category keywords
+    project_category_keywords = create_project_category_keywords_vectorized(
+      `Manufacturing Focus`, `Component Category`
+    ),
+    # Create lookup key for supply chain stage
+    stage_lookup_key = create_project_category_keywords_vectorized(
+      `Manufacturing Focus`, `Component Category`
+    ),
+    # CAPEX information
+    capex_info_available = !is.na(`Announced EV Investment`) & `Announced EV Investment` > 0,
+    capex_amount_estimated = ifelse(capex_info_available, `Announced EV Investment`, NA_real_)
+  ) %>%
+  # Add supply chain stage
+  rowwise() %>%
+  mutate(
+    supply_chain_stage = get_supply_chain_stage(atlas_stage_lookup, stage_lookup_key)
+  ) %>%
+  ungroup() %>%
+  select(-stage_lookup_key)
+
+# Process Clean Economy Tracker data
+cet_processed <- CLEAN_ECONOMY_TRACKER %>%
+  mutate(
+    master_id = paste0("CET_", row_number()),
+    data_source = "Clean Economy Tracker",
+    investment_tracker_website = "https://cleaneconomytracker.org/",
+    investment_tracker_last_updated = "July 15, 2025",
+    coordinates_available = FALSE,  # CET doesn't have coordinates
+    standardized_latitude = NA_real_,
+    standardized_longitude = NA_real_,
+    latitude_if_available = NA_real_,
+    longitude_if_available = NA_real_,
+    address_available = FALSE,  # CET doesn't have address
+    address_if_available = NA_character_,
+    city_available = FALSE,  # CET doesn't have city
+    city_if_available = NA_character_,
+    # Create combined address_or_city column
+    address_or_city_if_available = case_when(
+      address_available ~ address_if_available,
+      city_available ~ city_if_available,
+      TRUE ~ NA_character_
+    ),
+    state_standardized = standardize_state(State),
+    # Source links - CET has Source column
+    source_links_available = !is.na(Source) & Source != "",
+    source_links_if_available = ifelse(source_links_available, Source, NA),
+    # Facility status - standardize CET facility status
+    facility_status_standardized = standardize_facility_status(`Operating Status`, "Clean Economy Tracker"),
+    # Process Jobs data
+    jobs_info_if_available = as.character(Jobs),
+    # Announcement date information
+    announcement_date_available = !is.na(Date),
+    announcement_date = ifelse(announcement_date_available, as.character(as.Date(Date)), NA_character_),
+    company_project_keywords = paste(
+      ifelse(is.na(Company), "", Company),
+      ifelse(is.na(`Parent Company`), "", `Parent Company`),
+      ifelse(is.na(`Facility Name`), "", `Facility Name`),
+      sep = " | "
+    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+    # Create project category keywords
+    project_category_keywords = create_project_category_keywords_vectorized(
+      `Manufacturing Sector`, `Tech Category`, `Tech Sub-category`
+    ),
+    # Create lookup key for supply chain stage
+    stage_lookup_key = create_project_category_keywords_vectorized(
+      `Manufacturing Sector`, `Tech Category`, `Tech Sub-category`
+    ),
+    # CAPEX information
+    capex_info_available = !is.na(Investment) & Investment > 0,
+    capex_amount_estimated = ifelse(capex_info_available, Investment, NA_real_)
+  ) %>%
+  # Add supply chain stage
+  rowwise() %>%
+  mutate(
+    supply_chain_stage = get_supply_chain_stage(cet_stage_lookup, stage_lookup_key)
+  ) %>%
+  ungroup() %>%
+  select(-stage_lookup_key)
+
+# Process Wellesley data
+# First combine the Wellesley source links
+wellesley_with_sources <- combine_wellesley_sources(WELLESLEY_JUNE_2025)
+
+wel_processed <- wellesley_with_sources %>%
+  mutate(
+    master_id = paste0("WELLESLEY_", row_number()),
+    data_source = "Wellesley",
+    investment_tracker_website = "https://www.the-big-green-machine.com/",
+    investment_tracker_last_updated = "June 21, 2025",
+    coordinates_available = !is.na(Latitude) & !is.na(Longitude),
+    standardized_latitude = standardize_latitude(Latitude),
+    standardized_longitude = standardize_longitude(Longitude),
+    latitude_if_available = ifelse(coordinates_available, Latitude, NA),
+    longitude_if_available = ifelse(coordinates_available, Longitude, NA),
+    address_available = FALSE,  # Wellesley doesn't have full address
+    address_if_available = NA_character_,
+    city_available = !is.na(City) & City != "",
+    city_if_available = ifelse(city_available, City, NA),
+    # Create combined address_or_city column
+    address_or_city_if_available = case_when(
+      address_available ~ address_if_available,
+      city_available ~ city_if_available,
+      TRUE ~ NA_character_
+    ),
+    state_standardized = standardize_state(State),
+    # Source links - Wellesley has multiple source columns
+    source_links_available = !is.na(combined_sources) & combined_sources != "",
+    source_links_if_available = ifelse(source_links_available, combined_sources, NA),
+    # Facility status - standardize Wellesley facility status
+    facility_status_standardized = standardize_facility_status(`Operating Status`, "Wellesley"),
+    # Process Jobs data
+    jobs_info_if_available = as.character(coalesce(
+      suppressWarnings(as.numeric(na_if(`Current jobs`, "?"))),
+      suppressWarnings(as.numeric(na_if(`Target jobs`, "?")))
+    )),
+    # Announcement date information
+    announcement_date_available = !is.na(`Project Announcement Date`),
+    announcement_date = ifelse(announcement_date_available, as.character(`Project Announcement Date`), NA_character_),
+    company_project_keywords = paste(
+      ifelse(is.na(Name), "", Name),
+      ifelse(is.na(Company), "", Company),
+      sep = " | "
+    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+    # Create project category keywords
+    project_category_keywords = create_project_category_keywords_vectorized(
+      Sector, `Mfg Activity`, `Mfg Product`
+    ),
+    # Create lookup key for supply chain stage
+    stage_lookup_key = create_project_category_keywords_vectorized(
+      Sector, `Mfg Activity`, `Mfg Product`
+    ),
+    # CAPEX information
+    capex_info_available = !is.na(CAPEX_ESTIMATED) & CAPEX_ESTIMATED > 0,
+    capex_amount_estimated = ifelse(capex_info_available, CAPEX_ESTIMATED, NA_real_)
+  ) %>%
+  # Add supply chain stage
+  rowwise() %>%
+  mutate(
+    supply_chain_stage = get_supply_chain_stage(wellesley_stage_lookup, stage_lookup_key)
+  ) %>%
+  ungroup() %>%
+  select(-stage_lookup_key, -combined_sources)
+
+# PART 6: CREATE MASTER ALL_FACILITIES MATRIX
+
+# Select common columns from all processed datasets
+all_facilities <- bind_rows(
+  cim_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
+                           coordinates_available, standardized_latitude, standardized_longitude,
+                           latitude_if_available, longitude_if_available, 
+                           address_or_city_if_available,
+                           state_standardized, source_links_available, source_links_if_available,
+                           facility_status_standardized, jobs_info_if_available,
+                           company_project_keywords, project_category_keywords, supply_chain_stage,
+                           announcement_date_available, announcement_date,
+                           capex_info_available, capex_amount_estimated),
+  atlas_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
+                             coordinates_available, standardized_latitude, standardized_longitude,
+                             latitude_if_available, longitude_if_available, 
+                             address_or_city_if_available,
+                             state_standardized, source_links_available, source_links_if_available,
+                             facility_status_standardized, jobs_info_if_available,
+                             company_project_keywords, project_category_keywords, supply_chain_stage,
+                             announcement_date_available, announcement_date,
+                             capex_info_available, capex_amount_estimated),
+  cet_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
+                           coordinates_available, standardized_latitude, standardized_longitude,
+                           latitude_if_available, longitude_if_available, 
+                           address_or_city_if_available,
+                           state_standardized, source_links_available, source_links_if_available,
+                           facility_status_standardized, jobs_info_if_available,
+                           company_project_keywords, project_category_keywords, supply_chain_stage,
+                           announcement_date_available, announcement_date,
+                           capex_info_available, capex_amount_estimated),
+  wel_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
+                           coordinates_available, standardized_latitude, standardized_longitude,
+                           latitude_if_available, longitude_if_available, 
+                           address_or_city_if_available,
+                           state_standardized, source_links_available, source_links_if_available,
+                           facility_status_standardized, jobs_info_if_available,
+                           company_project_keywords, project_category_keywords, supply_chain_stage,
+                           announcement_date_available, announcement_date,
+                           capex_info_available, capex_amount_estimated)
+) %>%
+  # Rename columns to match specifications
+  rename(
+    state = state_standardized
+  ) %>%
+  # Reorder columns
+  select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
+         coordinates_available, standardized_latitude, standardized_longitude,
+         latitude_if_available, longitude_if_available, 
+         address_or_city_if_available,
+         state, source_links_available, source_links_if_available,
+         facility_status_standardized, jobs_info_if_available,
+         company_project_keywords, project_category_keywords, supply_chain_stage,
+         announcement_date_available, announcement_date,
+         capex_info_available, capex_amount_estimated)
+
+# PART 7: PREPARE DATA FOR FACILITY MATCHING
+
+# Prepare the data with normalized fields
+facilities_for_matching <- all_facilities %>%
+  filter(!is.na(company_project_keywords) & company_project_keywords != "") %>%
+  mutate(
+    # Normalize company names for matching using the fixed function
+    company_normalized = normalize_company_name(company_project_keywords),
+    # Extract first company name (before | separator if exists)
+    company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(),
+    company_primary_normalized = normalize_company_name(company_primary),
+    # Create a row ID for tracking
+    row_id = row_number()
+  ) %>%
+  filter(company_normalized != "" | company_primary_normalized != "") %>%
+  # Only keep facilities that have some identifying information
+  filter(coordinates_available == TRUE | !is.na(address_or_city_if_available) | !is.na(state))
+
+#CREATE STRATA DATASET
+#First, let's create a matrix of unique combinations of "project_category_keywords" and "supply_chain_stage" and "data_source"
+strata_matrix <- facilities_for_matching %>%
+  select(project_category_keywords, supply_chain_stage, data_source) %>%
+  distinct() %>%
+  arrange(data_source, project_category_keywords, supply_chain_stage)
+
+# PART 9: CONSOLIDATE PROJECT CATEGORIES
+# This section adds the 'consolidated_category' column to the strata_matrix.
+# It uses a detailed case_when statement to map the raw project keywords from each data source 
+# to a standardized, consolidated category, balancing granularity and usability.
+
+strata_matrix_updated <- strata_matrix %>%
+  mutate(
+    consolidated_category = case_when(
+   # Atlas EV - Manufacturing
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes" ~ "Battery Anode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes, Cathodes" ~ "Battery Anode & Cathode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes, Cells" ~ "Battery Cells & Anode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Enclosures" ~ "Battery Housing & Enclosures",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Enclosures, Battery Pack Components" ~ "Battery Housing & Pack Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Pack Components" ~ "Battery Pack Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathode Materials" ~ "Battery Cathode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes" ~ "Battery Cathode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Anodes" ~ "Battery Cathode & Anode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Cells" ~ "Battery Cells & Cathode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Cells, Packs" ~ "Battery - Vertically Integrated (Cathode to Pack)",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells" ~ "Battery Cells",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Modules" ~ "Battery Cells & Modules",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Cell to Pack)",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Packs" ~ "Battery Cells & Packs",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Electrolytes and Electrolyte Inputs" ~ "Battery Electrolytes",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules" ~ "Battery Modules",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules, Packs" ~ "Battery Modules & Packs",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules; Packs" ~ "Battery Modules & Packs",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Packs" ~ "Battery Packs",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Packs, Modules" ~ "Battery Modules & Packs",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Recycling" ~ "Battery Recycling",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Separators" ~ "Battery Separators",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Separators, Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Component to Pack)",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Recycling" ~ "Battery Recycling",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Remanufacturing" ~ "Battery Remanufacturing",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Remanufacturing, Cathode Materials" ~ "Battery Remanufacturing",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Charging Units" ~ "EV Charging Stations",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Charging Units, Electrical Components" ~ "EV Charging Stations & Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Displays" ~ "EV Charging Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Electrical Components" ~ "EV Charging Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Heavy-Duty (Class 7-8) | Vehicle Assembly" ~ "Heavy-Duty EV Assembly",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Light-Duty (Class 1-2) | Vehicle Assembly" ~ "Light-Duty EV Assembly",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Medium-Duty (Class 3-6) | Vehicle Assembly" ~ "Medium-Duty EV Assembly",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Multiple Classes | Vehicle Assembly" ~ "Multi-Class EV Assembly",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Battery Disconnect Units, Other Electrification Components" ~ "EV Electrical Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Charging Control Units" ~ "EV Electrical Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Systems" ~ "EV Drivetrain",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Units" ~ "EV Drivetrain",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Units, Power Electronics" ~ "EV Drivetrain & Power Electronics",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors" ~ "EV Motors",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, EV Drive Systems" ~ "EV Motors & Drivetrain",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, Electric Axles" ~ "EV Motors & Axles",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, Other Electrification Components" ~ "EV Motors & Electrical Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Electric Axles" ~ "EV Drivetrain",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Electric Powertrains" ~ "EV Powertrain",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Magnet Recycling" ~ "Magnet Recycling",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Magnets" ~ "Magnets",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Other Electrification Components" ~ "EV Electrical Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Plastic Moldings" ~ "EV Body & Interior Components",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Power Electronics" ~ "EV Power Electronics",
+      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Power Electronics, Other Electrification Components" ~ "EV Power Electronics",
+      
+      # Atlas EV - Upstream Materials
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Battery Recycling | Recycling, Lithium Hydroxide" ~ "Lithium Processing",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Battery Recycling | Remanufacturing, Lithium Carbonate" ~ "Lithium Processing",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Anode Materials" ~ "Anode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Cathode Materials" ~ "Cathode Materials",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Cobalt" ~ "Cobalt",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Graphite" ~ "Graphite",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium" ~ "Lithium",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium Carbonate" ~ "Lithium Compounds",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium Hydroxide" ~ "Lithium Compounds",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Manganese" ~ "Manganese",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Nickel" ~ "Nickel",
+      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Nickel, Cobalt" ~ "Nickel & Cobalt",
+      
+     
+      # CIM - NA
+      data_source == "CIM" & is.na(supply_chain_stage) & project_category_keywords == "Carbon Management | Biofuels" ~ "Biofuels",
+      
+      # CIM - Infrastructure/Deployment
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Carbon Removal | Carbon Management | Direct Air Capture" ~ "Direct Air Capture (DAC)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Carbon Removal | Carbon Management | Storage" ~ "Carbon Storage & Sequestration",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Carbon Management | Refining and Natural Gas Processing" ~ "Industrial Carbon Capture",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | Alt Cement, CO2 Injection" ~ "Low-Carbon Cement",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | CCS" ~ "Low-Carbon Cement",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | CCS + Alt Cement" ~ "Low-Carbon Cement",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | Electrolysis" ~ "Low-Carbon Cement",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | ALK" ~ "Hydrogen Production (Alkaline)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Aluminum to Hydrogen using a steam turbine" ~ "Hydrogen Production (Other)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Biomass" ~ "Hydrogen Production (Biomass)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Coal W CCS" ~ "Hydrogen Production (Coal w/ CCS)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Coal w CCS" ~ "Hydrogen Production (Coal w/ CCS)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Methane Pyrolysis" ~ "Hydrogen Production (Pyrolysis)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | NG w CCS" ~ "Hydrogen Production (Natural Gas w/ CCS)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | NG w CCUS" ~ "Hydrogen Production (Natural Gas w/ CCS)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Oil w CCUS" ~ "Hydrogen Production (Oil w/ CCUS)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Other Electrolysis" ~ "Hydrogen Production (Electrolysis)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | PEM" ~ "Hydrogen Production (PEM)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | SOEC" ~ "Hydrogen Production (SOEC)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Unknown" ~ "Hydrogen Production (Unknown)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Unknown Electrolysis" ~ "Hydrogen Production (Electrolysis)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Waste" ~ "Hydrogen Production (Waste)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | pyrolysis" ~ "Hydrogen Production (Pyrolysis)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | unknown electrolysis" ~ "Hydrogen Production (Electrolysis)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | DRI" ~ "Green Steel",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | H-DRI" ~ "Green Steel",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | Traditional + CCS" ~ "Green Steel",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | Traditional/DRI" ~ "Green Steel",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Pulp & Paper | Liquid Solvent" ~ "Industrial Decarbonization",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Carbon Management | Power" ~ "Power Plant Carbon Capture",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Nuclear | Nuclear" ~ "Nuclear Power",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Conventional Hydroelectric" ~ "Hydropower",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Geothermal" ~ "Geothermal",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Landfill Gas" ~ "Waste-to-Energy",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Municipal Solid Waste" ~ "Waste-to-Energy",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Other Waste Biomass" ~ "Biomass Power",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Wood/Wood Waste Biomass" ~ "Biomass Power",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Solar | Solar Photovoltaic" ~ "Solar Power Generation",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Solar | Solar Thermal without Energy Storage" ~ "Solar Power Generation",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Storage | Batteries" ~ "Grid-Scale Battery Storage",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Storage | Hydroelectric Pumped Storage" ~ "Pumped-Storage Hydropower",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Wind | Offshore Wind Turbine" ~ "Offshore Wind Power",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Wind | Onshore Wind Turbine" ~ "Onshore Wind Power",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | Clean Fuels | Ethanol" ~ "Ethanol",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | ATJ" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | AtJ" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Bio-FT" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Bio-FT,PtJ" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | FT" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | HEFA" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | MSW-FT" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | MtJ" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | PtL" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Unknown" ~ "Sustainable Aviation Fuel (SAF)",
+      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | unknown" ~ "Sustainable Aviation Fuel (SAF)",
+      
+      # CIM - Manufacturing
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | AAM" ~ "Battery Active Materials",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells" ~ "Battery Cells",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells, Modules" ~ "Battery Cells & Modules",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Cell to Pack)",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM" ~ "Battery Active Materials",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM, Cells" ~ "Battery Active Materials & Cells",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM, Cells, Modules" ~ "Battery - Vertically Integrated (Material to Module)",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Modules" ~ "Battery Modules",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Modules, Packs" ~ "Battery Modules & Packs",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Packs" ~ "Battery Packs",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | AEM" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | Alkaline" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | Alkaline, PEM" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | PEM" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | SMR, Electrolysis" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | SOEC" ~ "Electrolyzer Manufacturing",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Fueling Equipment | EV Chargers" ~ "EV Charging Stations",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Backsheets" ~ "Solar Panel Components",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Cells" ~ "Solar Cells",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Cells, Modules" ~ "Solar Cells & Modules",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Commercial Inverters, Residential Inverters" ~ "Solar Inverters",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers" ~ "Solar Ingots & Wafers",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers, Cells" ~ "Solar - Vertically Integrated (Ingot to Cell)",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers, Cells, Modules" ~ "Solar - Vertically Integrated (Ingot to Module)",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Integrated CdTE" ~ "Solar Modules (Thin-Film)",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Microinverters" ~ "Solar Inverters",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Modules" ~ "Solar Modules",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Modules, Cells" ~ "Solar Modules & Cells",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equipment (Racking)" ~ "Solar Mounting & Racking",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equpment (Frames)" ~ "Solar Mounting & Racking",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equpment (Steel back rails)" ~ "Solar Mounting & Racking",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting equipment" ~ "Solar Mounting & Racking",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Polysilicon" ~ "Polysilicon",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Power optimizers, commercial inverters, residential inverters" ~ "Solar Inverters & Power Electronics",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Residential inverters" ~ "Solar Inverters",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque Tubes" ~ "Solar Trackers & Components",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque Tubes, Mounting Equipment" ~ "Solar Mounting & Racking",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque tubes" ~ "Solar Trackers & Components",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Trackers" ~ "Solar Trackers & Components",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Trackers, Torque Tubes" ~ "Solar Trackers & Components",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Utility Inverters" ~ "Solar Inverters",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Utility Inverters, Unknown Inverters" ~ "Solar Inverters",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Wafers" ~ "Solar Wafers",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Blades" ~ "Wind Blades",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Foundations" ~ "Wind Foundations",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Nacelles" ~ "Wind Nacelles",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Towers" ~ "Wind Towers",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Turbines" ~ "Wind Turbines",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs" ~ "ZEV Assembly",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs, FCEVs" ~ "ZEV Assembly",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs, PHEVs" ~ "ZEV Assembly",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | EVs" ~ "ZEV Assembly",
+      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | PHEVs" ~ "ZEV Assembly",
+      
+      # CIM - Upstream Materials
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Chromium" ~ "Chromium",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt Sulfate" ~ "Cobalt Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt, Nickel" ~ "Cobalt & Nickel",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt, Nickel, Lithium" ~ "Cobalt, Nickel & Lithium",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Graphite" ~ "Graphite",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Carbonate" ~ "Lithium Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Carbonate, Lithium Hydroxide" ~ "Lithium Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide" ~ "Lithium Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Lithium Carbonate" ~ "Lithium Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Lithium Carbonate, Rare-earth oxides, Antimony Trisulfide" ~ "Diversified Mineral Processing",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Spodumene" ~ "Lithium & Spodumene",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium, Nickel, Cobalt" ~ "Lithium, Nickel & Cobalt",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Manganese Sulphate" ~ "Manganese Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel" ~ "Nickel",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel, Cobalt" ~ "Nickel & Cobalt",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel, Lithium Carbonate" ~ "Nickel & Lithium Compounds",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare earths" ~ "Rare Earth Elements",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare-earth metals" ~ "Rare Earth Elements",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare-earth oxides, Neodymium" ~ "Rare Earth Elements",
+      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Zinc" ~ "Zinc",
+      
+      # Clean Economy Tracker Consolidations (abbreviated for length)
+    
+      # Default case for any combinations not explicitly mapped
+      TRUE ~ NA_character_
+    )
+  )
+
+# Optional: View the results to verify
+glimpse(strata_matrix_updated)
+
+# PART 10: CONSOLIDATE FINAL DATASET
+# This section joins the consolidated category back to the master dataset,
+# adds timeline information, and creates a combined source/category keyword field.
+# The final result is a single, comprehensive 'all_facilities' dataframe, overwriting the previous version.
+
+all_facilities <- all_facilities %>%
+  # Join the consolidated category from strata_matrix_updated
+  left_join(
+    select(strata_matrix_updated, project_category_keywords, supply_chain_stage, data_source, consolidated_category),
+    by = c("project_category_keywords", "supply_chain_stage", "data_source")
+  ) %>%
+  # Add announcement timeline info and source-specific category keywords
+  mutate(
+    announcement_year = ifelse(announcement_date_available, year(announcement_date), NA_integer_),
+    announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date), "-Q", quarter(announcement_date)), NA_character_),
+    source_project_category_keywords = paste(data_source, project_category_keywords, sep = " | ")
+  )
+
+# PART 11: VERIFY CAPEX INFORMATION AND FINAL DATASET
+
+# Check CAPEX data availability by data source
+capex_summary <- all_facilities %>%
+  group_by(data_source) %>%
+  summarise(
+    total_facilities = n(),
+    facilities_with_capex = sum(capex_info_available, na.rm = TRUE),
+    percent_with_capex = round(facilities_with_capex / total_facilities * 100, 1),
+    total_capex_million = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
+    median_capex_million = round(median(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
+    .groups = "drop"
+  )
+
+print("CAPEX Summary by Data Source:")
+print(capex_summary)
+
+# Final verification
+print(paste("Total facilities in final dataset:", nrow(all_facilities)))
+print(paste("Facilities with CAPEX info:", sum(all_facilities$capex_info_available, na.rm = TRUE)))
+print(paste("Percent with CAPEX info:", round(sum(all_facilities$capex_info_available, na.rm = TRUE) / nrow(all_facilities) * 100, 1), "%"))
+
+# Final glimpse to verify structure
+glimpse(all_facilities)
+
+#Add month and quarter columns needed for matching
+#Check to see if announcement_month, announcement_quarter, and announcement_year are in all_facilities
+#If they are, check to make sure they are in the right format, eg: "January 2025"; "2025-Q1"; "2025"
+#If they are not, create from announcement_date 
+if (!("announcement_month" %in% names(all_facilities))) {
+  all_facilities <- all_facilities %>%
+    mutate(
+      # Convert announcement_date from character to Date first
+      announcement_date_as_date = as.Date(announcement_date),
+      announcement_month = ifelse(announcement_date_available, format(announcement_date_as_date, "%B %Y"), NA_character_),
+      announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date_as_date), "-Q", quarter(announcement_date_as_date)), NA_character_),
+      announcement_year = ifelse(announcement_date_available, year(announcement_date_as_date), NA_integer_)
+    ) %>%
+    select(-announcement_date_as_date)  # Remove the temporary column
+}
+
+
+#Part II: Identify possible matches---------------
+# Part II: Identify possible matches (MULTI-FACILITY AWARE VERSION) ---------------
+
+cat("\n================================================================================\n")
+cat("PART II: FACILITY MATCHING - MULTI-FACILITY AWARE VERSION\n")
+cat("================================================================================\n\n")
+
+# --- 1. Loading libraries and setting parameters ---
+cat("--- 1. Loading libraries and setting parameters ---\n")
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringdist)
+  library(geosphere)
+  library(purrr)
+  library(igraph)
+  library(lubridate)
+  library(tidyr)
+  library(stringr)
+})
+
+# Define matching parameters with multi-facility awareness
+params <- list(
+  # Distance thresholds
+  max_coord_km_exact = 2,      # Same facility
+  max_coord_km_close = 10,     # Nearby facilities  
+  max_coord_km_moderate = 50,  # Same metro area
+  max_coord_km_loose = 100,    # Same region
+  
+  # Name similarity thresholds
+  name_similarity_exact = 0.95,  # Exact match
+  name_similarity_high = 0.85,   # High confidence
+  name_similarity_medium = 0.75, # Medium confidence
+  name_similarity_low = 0.65,    # Minimum threshold
+  
+  # Date thresholds
+  max_date_diff_days_exact = 30,    # Same month
+  max_date_diff_days_close = 180,   # Same half-year
+  max_date_diff_days_loose = 365,   # Same year
+  
+  # Category similarity thresholds
+  category_similarity_high = 0.80,
+  category_similarity_medium = 0.60,
+  
+  # Multi-facility scoring weights
+  # For same company + same state matches
+  weight_name_multifacility = 0.60,      # Increased
+  weight_category_multifacility = 0.20,
+  weight_location_multifacility = 0.05,  # Decreased
+  weight_date_multifacility = 0.15,
+  
+  # Standard scoring weights
+  weight_name_standard = 0.45,
+  weight_category_standard = 0.25,
+  weight_location_standard = 0.15,
+  weight_date_standard = 0.15,
+  
+  # Confidence thresholds
+  confidence_very_high = 0.90,
+  confidence_high = 0.80,
+  confidence_medium = 0.70,
+  
+  # Memory management
+  chunking_threshold = 50000,
+  chunk_size = 100
+)
+
+cat("Parameters loaded.\n\n")
+
+# --- 2. COMPANY/FACILITY EXTRACTION FUNCTIONS ---
+cat("--- 2. Setting up company/facility extraction functions ---\n")
+
+# Function to parse company_project_keywords based on data source
+parse_company_info <- function(keywords, data_source) {
+  if (is.na(keywords) || keywords == "") {
+    return(list(
+      company = NA_character_,
+      parent_company = NA_character_,
+      facility_name = NA_character_,
+      has_facility_info = FALSE
+    ))
+  }
+  
+  # Split by | separator
+  parts <- str_split(keywords, "\\s*\\|\\s*")[[1]]
+  
+  if (data_source == "CIM") {
+    # CIM: Just Company
+    return(list(
+      company = parts[1],
+      parent_company = NA_character_,
+      facility_name = NA_character_,
+      has_facility_info = FALSE
+    ))
+  } else if (data_source == "Atlas EV" || data_source == "Clean Economy Tracker") {
+    # Atlas EV/CET: Company | Parent Company | Facility Name
+    return(list(
+      company = if(length(parts) >= 1) parts[1] else NA_character_,
+      parent_company = if(length(parts) >= 2) parts[2] else NA_character_,
+      facility_name = if(length(parts) >= 3) parts[3] else NA_character_,
+      has_facility_info = length(parts) >= 3 && !is.na(parts[3]) && parts[3] != ""
+    ))
+  } else if (data_source == "Wellesley") {
+    # Wellesley: Name | Company
+    return(list(
+      company = if(length(parts) >= 2) parts[2] else parts[1],  # Use Company if available, else Name
+      parent_company = NA_character_,
+      facility_name = if(length(parts) >= 2) parts[1] else NA_character_,  # Name is facility
+      has_facility_info = TRUE  # Wellesley Name field is facility-specific
+    ))
+  } else {
+    # Unknown source
+    return(list(
+      company = parts[1],
+      parent_company = NA_character_,
+      facility_name = NA_character_,
+      has_facility_info = FALSE
+    ))
+  }
+}
+
+# Vectorized version of parse_company_info
+parse_company_info_vectorized <- function(keywords_vec, source_vec) {
+  n <- length(keywords_vec)
+  
+  # Initialize result vectors
+  company <- character(n)
+  parent_company <- character(n)
+  facility_name <- character(n)
+  has_facility_info <- logical(n)
+  
+  for (i in 1:n) {
+    parsed <- parse_company_info(keywords_vec[i], source_vec[i])
+    company[i] <- parsed$company
+    parent_company[i] <- parsed$parent_company
+    facility_name[i] <- parsed$facility_name
+    has_facility_info[i] <- parsed$has_facility_info
+  }
+  
+  return(data.frame(
+    company = company,
+    parent_company = parent_company,
+    facility_name = facility_name,
+    has_facility_info = has_facility_info,
+    stringsAsFactors = FALSE
+  ))
+}
+
+# --- 3. DATA QUALITY CHECKS ---
+cat("\n--- 3. Performing comprehensive data quality checks ---\n")
+
+# Check for required columns
+required_cols <- c("master_id", "data_source", "company_project_keywords", 
+                   "project_category_keywords", "state", "coordinates_available",
+                   "latitude_if_available", "longitude_if_available", 
+                   "announcement_date", "capex_amount_estimated")
+
+missing_cols <- setdiff(required_cols, names(all_facilities))
+if (length(missing_cols) > 0) {
+  cat("WARNING: Missing required columns:", paste(missing_cols, collapse = ", "), "\n")
+} else {
+  cat("SUCCESS: All required columns present\n")
+}
+
+# Data quality summary
+data_quality <- all_facilities %>%
+  group_by(data_source) %>%
+  summarise(
+    total_records = n(),
+    has_coordinates = sum(coordinates_available, na.rm = TRUE),
+    has_company_name = sum(!is.na(company_project_keywords) & company_project_keywords != ""),
+    has_category = sum(!is.na(project_category_keywords) & project_category_keywords != ""),
+    has_date = sum(!is.na(announcement_date)),
+    has_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    pct_coordinates = round(has_coordinates / total_records * 100, 1),
+    pct_company = round(has_company_name / total_records * 100, 1)
+  )
+
+print(data_quality %>% select(data_source, total_records, pct_coordinates, pct_company))
+cat("\n")
+
+# --- 4. PREPARE MATCHING DATAFRAME ---
+cat("--- 4. Preparing matching dataframe with company/facility parsing ---\n")
+
+# Parse company information and prepare for matching
+match_df <- all_facilities %>%
+  # Parse company_project_keywords based on data source
+  bind_cols(parse_company_info_vectorized(.$company_project_keywords, .$data_source)) %>%
+  mutate(
+    # Normalize company names (use parent if available, else company)
+    company_to_normalize = coalesce(parent_company, company),
+    company_normalized = normalize_company_name(company_to_normalize),
+    # Also normalize the facility name if present
+    facility_normalized = if_else(
+      !is.na(facility_name) & facility_name != "",
+      normalize_company_name(facility_name),
+      NA_character_
+    ),
+    # Clean category
+    category_clean = str_replace_all(project_category_keywords, " \\| ", " ") %>% str_to_lower(),
+    # Parse date
+    announcement_date_parsed = as.Date(announcement_date)
+  ) %>%
+  # Only keep records with minimum required information
+  filter(
+    !is.na(state) & 
+      !is.na(company_normalized) & 
+      company_normalized != ""
+  ) %>%
+  select(
+    master_id, data_source,
+    company_project_keywords,  # Keep original
+    company, parent_company, facility_name, has_facility_info,
+    company_normalized, facility_normalized,
+    category_clean, project_category_keywords,
+    state,
+    coordinates_available,
+    latitude_if_available, longitude_if_available,
+    announcement_date_parsed,
+    announcement_month, announcement_quarter, announcement_year,
+    capex_amount_estimated
+  )
+
+cat("Prepared", nrow(match_df), "facilities for matching\n")
+
+# Show sample of parsed data
+cat("\nSample of parsed company information:\n")
+sample_parsed <- match_df %>%
+  filter(has_facility_info) %>%
+  select(data_source, company, facility_name, company_normalized) %>%
+  head(5)
+print(sample_parsed)
+cat("\n")
+
+# --- 5. GENERATE CANDIDATE PAIRS ---
+cat("--- 5. Generating candidate pairs with intelligent blocking ---\n")
+
+sources <- unique(match_df$data_source)
+source_pairs <- combn(sources, 2, simplify = FALSE)
+
+process_pair_multifacility <- function(pair, match_data, params) {
+  source1 <- pair[1]
+  source2 <- pair[2]
+  cat(paste0("  -> Processing: ", source1, " <-> ", source2, "\n"))
+  
+  df1 <- filter(match_data, data_source == source1)
+  df2 <- filter(match_data, data_source == source2)
+  
+  # Find common states
+  common_states <- intersect(unique(df1$state), unique(df2$state))
+  
+  if (length(common_states) == 0) return(NULL)
+  
+  # Process each state
+  candidates <- map_dfr(common_states, function(st) {
+    block_df1 <- filter(df1, state == st)
+    block_df2 <- filter(df2, state == st)
+    
+    potential_pairs <- nrow(block_df1) * nrow(block_df2)
+    
+    # Apply chunking for large blocks
+    if (potential_pairs > params$chunking_threshold) {
+      chunks <- split(block_df1, ceiling(seq_len(nrow(block_df1)) / params$chunk_size))
+      result <- map_dfr(chunks, function(chunk) {
+        inner_join(chunk, block_df2, by = character(), suffix = c("_1", "_2"))
+      })
+    } else {
+      result <- inner_join(block_df1, block_df2, by = character(), suffix = c("_1", "_2"))
+    }
+    
+    return(result)
+  })
+  
+  if (nrow(candidates) == 0) return(NULL)
+  
+  # Calculate similarities and filter
+  filtered <- candidates %>%
+    mutate(
+      # Company name similarity (use normalized names)
+      name_similarity = stringsim(company_normalized_1, company_normalized_2, method = "jw"),
+      
+      # Facility name similarity (if both have facility info)
+      facility_similarity = case_when(
+        has_facility_info_1 & has_facility_info_2 & 
+          !is.na(facility_normalized_1) & !is.na(facility_normalized_2) ~ 
+          stringsim(facility_normalized_1, facility_normalized_2, method = "jw"),
+        TRUE ~ NA_real_
+      ),
+      
+      # Calculate distance
+      distance_km = if_else(
+        coordinates_available_1 & coordinates_available_2,
+        distHaversine(
+          p1 = cbind(longitude_if_available_1, latitude_if_available_1),
+          p2 = cbind(longitude_if_available_2, latitude_if_available_2)
+        ) / 1000,
+        NA_real_
+      ),
+      
+      # Detect if likely same company but different facilities
+      likely_same_company = name_similarity >= 0.90,
+      likely_different_facilities = likely_same_company & 
+        has_facility_info_1 & has_facility_info_2 & 
+        !is.na(facility_similarity) & facility_similarity < 0.70
+    ) %>%
+    # More permissive filtering
+    filter(
+      name_similarity >= params$name_similarity_low |
+        (!is.na(distance_km) & distance_km <= params$max_coord_km_loose)
+    )
+  
+  cat(paste0("     Generated ", nrow(filtered), " candidates\n"))
+  
+  return(filtered)
+}
+
+# Process all source pairs
+all_candidate_pairs <- map_dfr(source_pairs, ~process_pair_multifacility(.x, match_df, params))
+
+# Remove duplicates
+all_candidate_pairs <- all_candidate_pairs %>%
+  distinct(master_id_1, master_id_2, .keep_all = TRUE)
+
+cat("\nUnique candidate pairs:", nrow(all_candidate_pairs), "\n\n")
+
+# --- 6. MULTI-FACILITY AWARE SCORING ---
+cat("--- 6. Computing multi-facility aware similarity scores ---\n")
+
+scored_matches <- all_candidate_pairs %>%
+  mutate(
+    # Determine match type based on available information
+    match_scenario = case_when(
+      # Both have facility info and high company similarity
+      likely_same_company & likely_different_facilities ~ "same_company_diff_facility",
+      likely_same_company & !likely_different_facilities & 
+        has_facility_info_1 & has_facility_info_2 ~ "same_company_same_facility",
+      # High company similarity but limited facility info
+      likely_same_company & (!has_facility_info_1 | !has_facility_info_2) ~ "same_company_unknown_facility",
+      # Different companies
+      TRUE ~ "different_companies"
+    ),
+    
+    # Name score (use company similarity)
+    name_score = name_similarity,
+    
+    # Category similarity
+    category_similarity = stringsim(category_clean_1, category_clean_2, method = "jw"),
+    category_score = category_similarity,
+    
+    # Location score - adjusted based on match scenario
+    location_score = case_when(
+      # No coordinates available - neutral score
+      !coordinates_available_1 | !coordinates_available_2 ~ 0.5,
+      
+      # Same company, different facilities - distance less important
+      match_scenario == "same_company_diff_facility" ~ case_when(
+        distance_km <= params$max_coord_km_moderate ~ 0.7,
+        distance_km <= params$max_coord_km_loose ~ 0.5,
+        TRUE ~ 0.3
+      ),
+      
+      # Same company, unknown facility - moderate importance
+      match_scenario == "same_company_unknown_facility" ~ case_when(
+        distance_km <= params$max_coord_km_exact ~ 0.9,
+        distance_km <= params$max_coord_km_close ~ 0.7,
+        distance_km <= params$max_coord_km_moderate ~ 0.5,
+        TRUE ~ 0.3
+      ),
+      
+      # Standard scoring for other cases
+      TRUE ~ case_when(
+        distance_km <= params$max_coord_km_exact ~ 1.0,
+        distance_km <= params$max_coord_km_close ~ 0.8,
+        distance_km <= params$max_coord_km_moderate ~ 0.6,
+        distance_km <= params$max_coord_km_loose ~ 0.4,
+        TRUE ~ 0
+      )
+    ),
+    
+    # Date similarity
+    date_diff_days = abs(as.numeric(announcement_date_parsed_1 - announcement_date_parsed_2)),
+    date_score = case_when(
+      is.na(announcement_date_parsed_1) | is.na(announcement_date_parsed_2) ~ 0.5,
+      date_diff_days == 0 ~ 1.0,
+      date_diff_days <= params$max_date_diff_days_exact ~ 0.9,
+      announcement_month_1 == announcement_month_2 ~ 0.85,
+      announcement_quarter_1 == announcement_quarter_2 ~ 0.7,
+      date_diff_days <= params$max_date_diff_days_close ~ 0.6,
+      announcement_year_1 == announcement_year_2 ~ 0.5,
+      date_diff_days <= params$max_date_diff_days_loose ~ 0.3,
+      TRUE ~ 0
+    ),
+    
+    # CAPEX similarity
+    capex_score = case_when(
+      is.na(capex_amount_estimated_1) | is.na(capex_amount_estimated_2) ~ 0.5,
+      capex_amount_estimated_1 == 0 | capex_amount_estimated_2 == 0 ~ 0.5,
+      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
+        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.1 ~ 0.9,
+      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
+        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.2 ~ 0.7,
+      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
+        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.5 ~ 0.5,
+      TRUE ~ 0.3
+    ),
+    
+    # Use different weights based on match scenario
+    composite_score = case_when(
+      # Same company, different facilities - less weight on location
+      match_scenario == "same_company_diff_facility" ~ 
+        (name_score * params$weight_name_multifacility) +
+        (category_score * params$weight_category_multifacility) +
+        (location_score * params$weight_location_multifacility) +
+        (date_score * params$weight_date_multifacility),
+      
+      # Same company, unknown facility - moderate weight on location
+      match_scenario == "same_company_unknown_facility" ~ 
+        (name_score * 0.55) +
+        (category_score * 0.20) +
+        (location_score * 0.10) +
+        (date_score * 0.15),
+      
+      # Standard scoring
+      TRUE ~ 
+        (name_score * params$weight_name_standard) +
+        (category_score * params$weight_category_standard) +
+        (location_score * params$weight_location_standard) +
+        (date_score * params$weight_date_standard)
+    ),
+    
+    # Match type classification
+    match_type = case_when(
+      match_scenario == "same_company_diff_facility" ~ "Same Company - Different Facilities",
+      match_scenario == "same_company_same_facility" ~ "Same Company - Same Facility", 
+      match_scenario == "same_company_unknown_facility" & distance_km < 10 ~ "Same Company - Likely Same Facility",
+      match_scenario == "same_company_unknown_facility" ~ "Same Company - Unknown if Same Facility",
+      name_score >= 0.85 & capex_score >= 0.9 ~ "Likely Same Project",
+      location_score >= 0.8 & category_score >= 0.8 ~ "Same Location - Similar Type",
+      TRUE ~ "Different Projects"
+    ),
+    
+    # Confidence assignment
+    confidence = case_when(
+      # Very high confidence
+      match_type == "Same Company - Same Facility" ~ "Very High",
+      match_type == "Same Company - Likely Same Facility" ~ "Very High",
+      composite_score >= params$confidence_very_high & capex_score >= 0.7 ~ "Very High",
+      
+      # High confidence
+      match_type == "Same Company - Different Facilities" & 
+        (date_score >= 0.7 | capex_score >= 0.7) ~ "High",
+      match_type == "Same Company - Unknown if Same Facility" & 
+        state_1 == state_2 ~ "High",
+      match_type == "Likely Same Project" ~ "High",
+      composite_score >= params$confidence_high ~ "High",
+      
+      # Medium confidence
+      composite_score >= params$confidence_medium ~ "Medium",
+      name_score >= 0.85 & (capex_score >= 0.7 | date_score >= 0.7) ~ "Medium",
+      
+      # Low confidence
+      TRUE ~ "Low"
+    ),
+    
+    # Duplicate likelihood
+    is_likely_duplicate = case_when(
+      match_type %in% c("Same Company - Same Facility", 
+                        "Same Company - Likely Same Facility",
+                        "Likely Same Project") ~ TRUE,
+      match_type == "Same Company - Different Facilities" ~ FALSE,
+      match_type == "Same Company - Unknown if Same Facility" & 
+        distance_km < 50 & date_score > 0.7 ~ TRUE,
+      confidence == "Very High" ~ TRUE,
+      TRUE ~ FALSE
+    )
+  ) %>%
+  arrange(desc(composite_score))
+
+# Summary statistics
+cat("\nMatch Type Distribution:\n")
+match_type_summary <- scored_matches %>%
+  count(match_type, confidence) %>%
+  pivot_wider(names_from = confidence, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(select(., -match_type))) %>%
+  arrange(desc(Total))
+print(match_type_summary)
+
+cat("\nDuplicate Likelihood by Confidence:\n")
+dup_summary <- scored_matches %>%
+  group_by(confidence, is_likely_duplicate) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = is_likely_duplicate, values_from = count, values_fill = 0,
+              names_prefix = "is_duplicate_")
+print(dup_summary)
+
+# --- 7. CREATE DETAILED REVIEW TABLE ---
+cat("\n--- 7. Creating detailed review table ---\n")
+
+matches_for_review <- scored_matches %>%
+  inner_join(all_facilities, by = c("master_id_1" = "master_id")) %>%
+  inner_join(all_facilities, by = c("master_id_2" = "master_id"), suffix = c("_1", "_2")) %>%
+  mutate(
+    # CAPEX analysis
+    capex_M_1 = round(capex_amount_estimated_1 / 1e6, 2),
+    capex_M_2 = round(capex_amount_estimated_2 / 1e6, 2),
+    capex_diff_M = abs(capex_M_1 - capex_M_2),
+    capex_diff_pct = if_else(
+      !is.na(capex_M_1) & !is.na(capex_M_2) & (capex_M_1 > 0 | capex_M_2 > 0),
+      round(capex_diff_M / pmax(capex_M_1, capex_M_2, na.rm = TRUE) * 100, 1),
+      NA_real_
+    )
+  ) %>%
+  select(
+    # Match classification
+    match_type, match_scenario, is_likely_duplicate,
+    confidence, composite_score,
+    # Component scores
+    name_score, facility_similarity, category_score, location_score, 
+    date_score, capex_score,
+    # Distance and date
+    distance_km, date_diff_days,
+    # Facility 1
+    master_id_1, data_source_1, 
+    company_1 = company_project_keywords_1,
+    state_1, capex_M_1, announcement_date_1,
+    # Facility 2
+    master_id_2, data_source_2,
+    company_2 = company_project_keywords_2,
+    state_2, capex_M_2, announcement_date_2,
+    # Additional info
+    capex_diff_pct,
+    status_1 = facility_status_standardized_1,
+    status_2 = facility_status_standardized_2,
+    category_1 = project_category_keywords_1,
+    category_2 = project_category_keywords_2
+  ) %>%
+  arrange(desc(composite_score))
+
+# --- 8. CLUSTERING WITH DUPLICATE AWARENESS ---
+cat("\n--- 8. Clustering matches with duplicate awareness ---\n")
+
+# Only cluster likely duplicates
+duplicate_edges <- scored_matches %>%
+  filter(is_likely_duplicate == TRUE) %>%
+  select(master_id_1, master_id_2, composite_score)
+
+if (nrow(duplicate_edges) > 0) {
+  g <- graph_from_data_frame(duplicate_edges, directed = FALSE)
+  components <- components(g)
+  
+  facility_groups <- data.frame(
+    master_id = names(components$membership),
+    duplicate_group_id = components$membership,
+    stringsAsFactors = FALSE
+  )
+  
+  all_facilities_with_groups <- all_facilities %>%
+    left_join(facility_groups, by = "master_id")
+  
+  # Group summary
+  group_summary <- all_facilities_with_groups %>%
+    filter(!is.na(duplicate_group_id)) %>%
+    group_by(duplicate_group_id) %>%
+    summarise(
+      group_size = n(),
+      sources = paste(sort(unique(data_source)), collapse = ", "),
+      states = paste(sort(unique(state)), collapse = ", "),
+      companies = paste(unique(company_project_keywords), collapse = " || "),
+      total_capex_M = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
+      date_range = paste(min(announcement_date, na.rm = TRUE), "to", 
+                         max(announcement_date, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    filter(group_size > 1) %>%
+    arrange(desc(group_size))
+  
+  cat("Found", nrow(group_summary), "duplicate groups\n")
+  
+  # Also identify multi-facility companies
+  multifacility_companies <- scored_matches %>%
+    filter(match_type == "Same Company - Different Facilities") %>%
+    select(company_1, company_2, state_1, state_2, distance_km) %>%
+    distinct()
+  
+  cat("Found", nrow(multifacility_companies), "multi-facility company pairs\n")
+  
+} else {
+  all_facilities_with_groups <- all_facilities %>%
+    mutate(duplicate_group_id = NA_integer_)
+  group_summary <- data.frame()
+}
+
+# --- 9. FINAL SUMMARY ---
+cat("\n================================================================================\n")
+cat("MATCHING SUMMARY - MULTI-FACILITY AWARE\n")
+cat("================================================================================\n")
+
+# Overall statistics
+cat("\nOverall Statistics:\n")
+cat("- Total facilities:", nrow(all_facilities), "\n")
+cat("- Candidate pairs evaluated:", nrow(all_candidate_pairs), "\n")
+cat("- Matches found:", nrow(scored_matches), "\n")
+
+# Confidence breakdown
+cat("\nConfidence Breakdown:\n")
+conf_summary <- scored_matches %>%
+  count(confidence, is_likely_duplicate) %>%
+  mutate(match_desc = if_else(is_likely_duplicate, "Likely Duplicate", "Different Facilities")) %>%
+  select(-is_likely_duplicate) %>%
+  pivot_wider(names_from = match_desc, values_from = n, values_fill = 0) %>%
+  mutate(Total = `Likely Duplicate` + `Different Facilities`)
+print(conf_summary)
+
+# Key findings
+cat("\nKey Findings:\n")
+same_company_diff_facilities <- sum(scored_matches$match_type == "Same Company - Different Facilities")
+cat("- Same company, different facilities:", same_company_diff_facilities, "matches\n")
+cat("- These are NOT duplicates but represent legitimate multi-facility operations\n")
+
+likely_duplicates <- sum(scored_matches$is_likely_duplicate)
+cat("\n- Likely duplicate records:", likely_duplicates, "\n")
+cat("- These should be reviewed for consolidation\n")
+
+# Show how company_project_keywords parsing worked
+cat("\nExample Company Info Parsing:\n")
+example_parsing <- match_df %>%
+  filter(has_facility_info) %>%
+  select(data_source, company_project_keywords, company, facility_name) %>%
+  group_by(data_source) %>%
+  slice_head(n = 2) %>%
+  ungroup()
+print(example_parsing)
+
+# Sample matches
+cat("\nSample High-Confidence Duplicate Matches:\n")
+sample_dups <- matches_for_review %>%
+  filter(is_likely_duplicate == TRUE & confidence %in% c("Very High", "High")) %>%
+  select(match_type, company_1, company_2, state_1, distance_km, capex_diff_pct) %>%
+  head(5)
+print(sample_dups)
+
+cat("\nSample Multi-Facility Matches (NOT duplicates):\n")
+sample_multi <- matches_for_review %>%
+  filter(match_type == "Same Company - Different Facilities") %>%
+  select(company_1, company_2, state_1, distance_km) %>%
+  head(5)
+print(sample_multi)
+
+cat("\n================================================================================\n")
+cat("MATCHING COMPLETE - Results distinguish between duplicates and multi-facility operations\n")
+cat("================================================================================\n")
+
+# --- 10. SAVE OUTPUTS ---
+# Uncomment to save files
+# write_csv(matches_for_review, "matches_for_review_multifacility.csv")
+# write_csv(group_summary, "duplicate_groups.csv")
+# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_groups.csv")
+# write_csv(filter(scored_matches, is_likely_duplicate), "likely_duplicates.csv")
+# write_csv(filter(scored_matches, !is_likely_duplicate), "non_duplicates.csv")
