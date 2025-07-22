@@ -1,0 +1,93 @@
+#DATA SOURCE: https://ssti.org/key-technology-area-investment-data-tool
+
+# Flourish Data Extraction - Create investment_data table
+library(httr)
+library(rvest)
+library(jsonlite)
+library(stringr)
+library(V8)
+library(dplyr)
+
+extract_flourish_data <- function(url) {
+  headers <- add_headers(
+    "Accept" = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language" = "en-US,en;q=0.9",
+    "Accept-Encoding" = "gzip, deflate, br",
+    "User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",
+    "Sec-Fetch-Site" = "none",
+    "Sec-Fetch-Mode" = "navigate",
+    "Sec-Fetch-Dest" = "document",
+    "Priority" = "u=0, i"
+  )
+  
+  response <- GET(url, headers, timeout(30))
+  html_content <- content(response, "text", encoding = "UTF-8")
+  page <- read_html(html_content)
+  scripts <- html_nodes(page, "script") %>% html_text()
+  
+  data_frames <- list()
+  
+  for (i in seq_along(scripts)) {
+    script <- scripts[i]
+    if (nchar(script) < 100) next
+    
+    patterns <- list(
+      json_block = "(\\[\\s*\\{.*?\\}\\s*(?:,\\s*\\{.*?\\}\\s*)*\\])"
+    )
+    
+    for (pattern_name in names(patterns)) {
+      matches <- str_extract_all(script, patterns[[pattern_name]])[[1]]
+      
+      if (length(matches) > 0) {
+        for (j in seq_along(matches)) {
+          json_str <- matches[j]
+          
+          tryCatch({
+            parsed_data <- fromJSON(json_str, simplifyDataFrame = TRUE)
+            
+            if (is.data.frame(parsed_data) && nrow(parsed_data) > 0) {
+              df_name <- paste0("data_", pattern_name, "_", i, "_", j, "_1")
+              data_frames[[df_name]] <- parsed_data
+            }
+          }, error = function(e) {})
+        }
+      }
+    }
+  }
+  
+  return(data_frames)
+}
+
+# Extract data from both URLs
+urls <- c(
+  "https://flo.uri.sh/visualisation/24071662/embed?auto=1",
+  "https://flo.uri.sh/visualisation/24071657/embed?auto=1"
+)
+
+dashboard_data <- list()
+for (i in seq_along(urls)) {
+  data <- extract_flourish_data(urls[i])
+  dashboard_data[[paste0("dashboard_", i)]] <- data
+}
+
+# Get main dataset and create clean table
+main_df <- dashboard_data$dashboard_1$data_json_block_4_4_1
+
+state <- sapply(main_df$popup_metadata, function(x) x[1])
+year <- sapply(main_df$popup_metadata, function(x) x[2])
+tech_category <- sapply(main_df$popup_metadata, function(x) x[3])
+investment_stage <- sapply(main_df$popup_metadata, function(x) x[4])
+deals <- as.numeric(sapply(main_df$popup_metadata, function(x) x[5]))
+companies <- as.numeric(sapply(main_df$popup_metadata, function(x) x[6]))
+investment_millions <- as.numeric(sapply(main_df$popup_metadata, function(x) x[7]))
+
+
+
+investment_data <- (data.frame(state = state, year = year, tech_category = tech_category,investment_stage = investment_stage, deals = deals, companies = companies, investment_millions = investment_millions, stringsAsFactors = FALSE)) %>%
+  rename(investment = investment_millions) %>%
+  mutate(investment = investment * 1e6)
+
+glimpse(investment_data)
+
+#Write csv
+write.csv(investment_data, "SSTI_STATE_INVESTMENT_DATA_1H_2025_UPDATE.csv", row.names = FALSE)
