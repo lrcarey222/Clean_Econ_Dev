@@ -118,12 +118,33 @@ read_excel_cross_platform <- function(mac_path, organization_name = "RMI", ...) 
   return(read_excel(full_path, ...))
 }
 
-# PART 1: LOAD AND PROCESS RAW DATA
 
 # Load CIM Data
 CIM_2025_Q2_MFG <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/CleanInvestmentMonitor_Download_Manufacturing/manufacturing_facility_metadata.csv", skip = 4)
 CIM_2025_Q1_ALL <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/manufacturing_energy_and_industry_facility_metadata.csv", skip = 5)
 
+# First, let's check the structure of the date columns before joining
+cat("Q2 MFG Announcement_Date class:", class(CIM_2025_Q2_MFG$Announcement_Date), "\n")
+cat("Q1 ALL Announcement_Date class:", class(CIM_2025_Q1_ALL$Announcement_Date), "\n")
+
+# Check sample values
+cat("\nSample Q2 MFG dates:\n")
+print(head(CIM_2025_Q2_MFG$Announcement_Date, 10))
+cat("\nSample Q1 ALL dates:\n")
+print(head(CIM_2025_Q1_ALL$Announcement_Date, 10))
+
+# Check unique IDs
+cat("\nUnique IDs in Q2 MFG:", n_distinct(CIM_2025_Q2_MFG$unique_id), "\n")
+cat("Unique IDs in Q1 ALL:", n_distinct(CIM_2025_Q1_ALL$unique_id), "\n")
+cat("Common unique IDs:", length(intersect(CIM_2025_Q2_MFG$unique_id, CIM_2025_Q1_ALL$unique_id)), "\n\n")
+
+# Convert Q1 ALL dates to Date format before joining
+CIM_2025_Q1_ALL <- CIM_2025_Q1_ALL %>%
+  mutate(
+    Announcement_Date = as.Date(Announcement_Date, format = "%m/%d/%y")
+  )
+
+# Now perform the join
 CIM_FACILITY_DATA_CONSOLIDATED <- CIM_2025_Q2_MFG %>%
   full_join(CIM_2025_Q1_ALL,
             by = "unique_id",
@@ -134,7 +155,8 @@ CIM_FACILITY_DATA_CONSOLIDATED <- CIM_2025_Q2_MFG %>%
     Technology = coalesce(Technology_mfg, Technology_all),
     Subcategory = coalesce(Subcategory_mfg, Subcategory_all),
     Decarb_Sector = coalesce(Decarb_Sector_mfg, Decarb_Sector_all),
-    Announcement_Date = coalesce(as.character(Announcement_Date_mfg), as.character(Announcement_Date_all)),
+    # Now both date columns are Date type, so coalesce works properly
+    Announcement_Date = coalesce(Announcement_Date_mfg, Announcement_Date_all),
     State = coalesce(State_mfg, State_all),
     Current_Facility_Status = coalesce(Current_Facility_Status_mfg, Current_Facility_Status_all),
     Latitude = coalesce(Latitude_mfg, Latitude_all),
@@ -142,17 +164,79 @@ CIM_FACILITY_DATA_CONSOLIDATED <- CIM_2025_Q2_MFG %>%
     Address = coalesce(Address_mfg, Address_all),
     LatLon_Valid = !is.na(Latitude) & !is.na(Longitude),
     Estimated_Total_Facility_CAPEX = coalesce(Estimated_Total_Facility_CAPEX_mfg, Estimated_Total_Facility_CAPEX_all) * 1e6,
-    # Correctly reference job columns (no suffix is applied as they are only in one dataframe)
-    Reported_Operational_Jobs,
-    Reported_Construction_Jobs
+    # Check if these columns exist in the joined data
+    Reported_Operational_Jobs = if("Reported_Operational_Jobs" %in% names(.)) {
+      Reported_Operational_Jobs
+    } else if("Reported_Operational_Jobs_mfg" %in% names(.) | "Reported_Operational_Jobs_all" %in% names(.)) {
+      coalesce(
+        if("Reported_Operational_Jobs_mfg" %in% names(.)) Reported_Operational_Jobs_mfg else NA_character_,
+        if("Reported_Operational_Jobs_all" %in% names(.)) Reported_Operational_Jobs_all else NA_character_
+      )
+    } else {
+      NA_character_
+    },
+    Reported_Construction_Jobs = if("Reported_Construction_Jobs" %in% names(.)) {
+      Reported_Construction_Jobs
+    } else if("Reported_Construction_Jobs_mfg" %in% names(.) | "Reported_Construction_Jobs_all" %in% names(.)) {
+      coalesce(
+        if("Reported_Construction_Jobs_mfg" %in% names(.)) Reported_Construction_Jobs_mfg else NA_character_,
+        if("Reported_Construction_Jobs_all" %in% names(.)) Reported_Construction_Jobs_all else NA_character_
+      )
+    } else {
+      NA_character_
+    }
   ) %>%
   mutate(
-    Announcement_Date = as.Date(Announcement_Date, format = "%Y-%m-%d"),
     Announcement_Year = year(Announcement_Date),
     Announcement_Quarter = paste0(Announcement_Year, " Q", quarter(Announcement_Date)),
     Announcement_Month_Year = paste0(Announcement_Year, "-", month(Announcement_Date)),
     Announcement_Half_Year = paste0("H", ifelse(month(Announcement_Date) <= 6, "1", "2"), " ", Announcement_Year)
   )
+
+cat("Glimpse of Clean Investment Monitor data...\n")
+glimpse(CIM_FACILITY_DATA_CONSOLIDATED)
+
+
+
+# Print out the % of rows that have no information/NA in Announcement_Date
+cat("Percentage of records with no Announcement Date in CIM:", 
+    sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Announcement_Date)) / nrow(CIM_FACILITY_DATA_CONSOLIDATED) * 100, "%\n")
+
+# Let's also check which dataset each record comes from
+CIM_source_check <- CIM_FACILITY_DATA_CONSOLIDATED %>%
+  mutate(
+    in_mfg = unique_id %in% CIM_2025_Q2_MFG$unique_id,
+    in_all = unique_id %in% CIM_2025_Q1_ALL$unique_id,
+    source = case_when(
+      in_mfg & in_all ~ "Both",
+      in_mfg ~ "MFG only",
+      in_all ~ "ALL only",
+      TRUE ~ "Neither"
+    )
+  )
+
+cat("\nRecord source distribution:\n")
+print(table(CIM_source_check$source))
+
+cat("\nAnnouncement Date availability by source:\n")
+CIM_source_check %>%
+  group_by(source) %>%
+  summarise(
+    total = n(),
+    has_date = sum(!is.na(Announcement_Date)),
+    pct_with_date = round(has_date / total * 100, 1)
+  ) %>%
+  print()
+
+
+cat("Glimpse of Clean Investment Monitor data...")
+glimpse(CIM_FACILITY_DATA_CONSOLIDATED)
+
+
+# Data validation for CIM:
+cat("Data validation for CIM:\n")
+cat("  - Records with NA state:", sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$State)), "\n")
+cat("  - Records with NA technology:", sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Technology)), "\n")
 
 # Load ATLAS EV Data
 ATLAS_EV_DATA <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Atlas EV Jobs Hub/Atlas EV Jobs Hub - July 15 2025 - Investment Overview.xlsx",
@@ -164,6 +248,14 @@ ATLAS_EV_DATA <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/
     Announcement_Month_Year = paste0(year(`Announcement Date`), "-", month(`Announcement Date`)),
     Announcement_Half_Year = paste0("H", ifelse(month(`Announcement Date`) <= 6, "1", "2"), " ", year(`Announcement Date`))
   )
+
+cat("Glimpse of Atlas EV Jobs Hub data...")
+glimpse(ATLAS_EV_DATA)
+
+# Data validation for ATLAS EV:
+cat("Data validation for ATLAS EV:\n")
+cat("  - Records with NA state:", sum(is.na(ATLAS_EV_DATA$State)), "\n")
+cat("  - Records with NA manufacturing focus:", sum(is.na(ATLAS_EV_DATA$`Manufacturing Focus`)), "\n")
 
 # Load Clean Economy Tracker
 CLEAN_ECONOMY_TRACKER <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_07_14_2025.xlsx") %>%
@@ -179,6 +271,14 @@ CLEAN_ECONOMY_TRACKER <- read_excel_cross_platform("~/Library/CloudStorage/OneDr
     New_OR_Canceled = ifelse(Phase == "Update" & `Operating Status` == "Canceled", "Canceled", "New"),
     Investment = ifelse(New_OR_Canceled == "Canceled" & Investment > 0 & !is.na(Investment), -Investment, Investment)
   )
+
+cat("Glimpse of Clean Economy Tracker data...")
+glimpse(CLEAN_ECONOMY_TRACKER)
+
+# Data validation for Clean Economy Tracker:
+cat("Data validation for Clean Economy Tracker:\n")
+cat("  - Records with NA state:", sum(is.na(CLEAN_ECONOMY_TRACKER$State)), "\n")
+cat("  - Records with NA manufacturing sector:", sum(is.na(CLEAN_ECONOMY_TRACKER$`Manufacturing Sector`)), "\n")
 
 # Load and Process Wellesley Data
 WELLESLEY_JUNE_2025 <- read_excel_cross_platform(
@@ -204,8 +304,8 @@ WELLESLEY_JUNE_2025 <- read_excel_cross_platform(
     date_char = as.character(`Project Announcement Date`),
     
     `Project Announcement Date` = case_when(
-      # Handle NA and explicit "N.D." text
-      is.na(date_char) | toupper(date_char) == "N.D." ~ NA_Date_,
+      # Handle NA and explicit "N.D." text (both cases)
+      is.na(date_char) | toupper(date_char) == "N.D." | toupper(date_char) == "N.D" ~ NA_Date_,
       
       # Handle Excel numeric dates (the most common format in this file)
       !is.na(suppressWarnings(as.numeric(date_char))) & 
@@ -232,8 +332,11 @@ cat("Total rows:", nrow(WELLESLEY_JUNE_2025), "\n")
 cat("Rows with valid dates:", valid_dates_count, "\n")
 cat("Rows with NA dates:", na_dates_count, "\n")
 
+# Data validation for Wellesley:
+cat("Data validation for Wellesley:\n")
+cat("  - Records with NA state:", sum(is.na(WELLESLEY_JUNE_2025$State)), "\n")
+cat("  - Records with NA sector:", sum(is.na(WELLESLEY_JUNE_2025$Sector)), "\n")
 
-cat("--------------------------------------------\n\n")
 
 # Optional: See what dates couldn't be converted
 unconverted <- WELLESLEY_JUNE_2025 %>%
@@ -245,6 +348,8 @@ if(nrow(unconverted) > 0) {
   print(head(unconverted, 10))
 }
 
+cat("Glimpse of Wellesley data...")
+glimpse(WELLESLEY_JUNE_2025)
 
 # PART 2: CREATE CATEGORY MATRICES FOR REFERENCE
 
@@ -919,239 +1024,19 @@ strata_matrix <- facilities_for_matching %>%
   distinct() %>%
   arrange(data_source, project_category_keywords, supply_chain_stage)
 
-# PART 9: CONSOLIDATE PROJECT CATEGORIES
-# This section adds the 'consolidated_category' column to the strata_matrix.
-# It uses a detailed case_when statement to map the raw project keywords from each data source 
-# to a standardized, consolidated category, balancing granularity and usability.
 
-strata_matrix_updated <- strata_matrix %>%
-  mutate(
-    consolidated_category = case_when(
-   # Atlas EV - Manufacturing
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes" ~ "Battery Anode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes, Cathodes" ~ "Battery Anode & Cathode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Anodes, Cells" ~ "Battery Cells & Anode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Enclosures" ~ "Battery Housing & Enclosures",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Enclosures, Battery Pack Components" ~ "Battery Housing & Pack Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Battery Pack Components" ~ "Battery Pack Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathode Materials" ~ "Battery Cathode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes" ~ "Battery Cathode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Anodes" ~ "Battery Cathode & Anode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Cells" ~ "Battery Cells & Cathode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cathodes, Cells, Packs" ~ "Battery - Vertically Integrated (Cathode to Pack)",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells" ~ "Battery Cells",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Modules" ~ "Battery Cells & Modules",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Cell to Pack)",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Cells, Packs" ~ "Battery Cells & Packs",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Electrolytes and Electrolyte Inputs" ~ "Battery Electrolytes",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules" ~ "Battery Modules",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules, Packs" ~ "Battery Modules & Packs",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Modules; Packs" ~ "Battery Modules & Packs",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Packs" ~ "Battery Packs",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Packs, Modules" ~ "Battery Modules & Packs",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Recycling" ~ "Battery Recycling",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Separators" ~ "Battery Separators",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Batteries | Separators, Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Component to Pack)",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Recycling" ~ "Battery Recycling",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Remanufacturing" ~ "Battery Remanufacturing",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Battery Recycling | Remanufacturing, Cathode Materials" ~ "Battery Remanufacturing",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Charging Units" ~ "EV Charging Stations",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Charging Units, Electrical Components" ~ "EV Charging Stations & Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Displays" ~ "EV Charging Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "EV Charging | Electrical Components" ~ "EV Charging Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Heavy-Duty (Class 7-8) | Vehicle Assembly" ~ "Heavy-Duty EV Assembly",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Light-Duty (Class 1-2) | Vehicle Assembly" ~ "Light-Duty EV Assembly",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Medium-Duty (Class 3-6) | Vehicle Assembly" ~ "Medium-Duty EV Assembly",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Multiple Classes | Vehicle Assembly" ~ "Multi-Class EV Assembly",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Battery Disconnect Units, Other Electrification Components" ~ "EV Electrical Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Charging Control Units" ~ "EV Electrical Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Systems" ~ "EV Drivetrain",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Units" ~ "EV Drivetrain",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Drive Units, Power Electronics" ~ "EV Drivetrain & Power Electronics",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors" ~ "EV Motors",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, EV Drive Systems" ~ "EV Motors & Drivetrain",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, Electric Axles" ~ "EV Motors & Axles",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | EV Motors, Other Electrification Components" ~ "EV Motors & Electrical Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Electric Axles" ~ "EV Drivetrain",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Electric Powertrains" ~ "EV Powertrain",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Magnet Recycling" ~ "Magnet Recycling",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Magnets" ~ "Magnets",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Other Electrification Components" ~ "EV Electrical Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Plastic Moldings" ~ "EV Body & Interior Components",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Power Electronics" ~ "EV Power Electronics",
-      data_source == "Atlas EV" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Parts | Power Electronics, Other Electrification Components" ~ "EV Power Electronics",
-      
-      # Atlas EV - Upstream Materials
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Battery Recycling | Recycling, Lithium Hydroxide" ~ "Lithium Processing",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Battery Recycling | Remanufacturing, Lithium Carbonate" ~ "Lithium Processing",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Anode Materials" ~ "Anode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Cathode Materials" ~ "Cathode Materials",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Cobalt" ~ "Cobalt",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Graphite" ~ "Graphite",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium" ~ "Lithium",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium Carbonate" ~ "Lithium Compounds",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Lithium Hydroxide" ~ "Lithium Compounds",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Manganese" ~ "Manganese",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Nickel" ~ "Nickel",
-      data_source == "Atlas EV" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Minerals | Nickel, Cobalt" ~ "Nickel & Cobalt",
-      
-     
-      # CIM - NA
-      data_source == "CIM" & is.na(supply_chain_stage) & project_category_keywords == "Carbon Management | Biofuels" ~ "Biofuels",
-      
-      # CIM - Infrastructure/Deployment
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Carbon Removal | Carbon Management | Direct Air Capture" ~ "Direct Air Capture (DAC)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Carbon Removal | Carbon Management | Storage" ~ "Carbon Storage & Sequestration",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Carbon Management | Refining and Natural Gas Processing" ~ "Industrial Carbon Capture",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | Alt Cement, CO2 Injection" ~ "Low-Carbon Cement",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | CCS" ~ "Low-Carbon Cement",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | CCS + Alt Cement" ~ "Low-Carbon Cement",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Cement | Electrolysis" ~ "Low-Carbon Cement",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | ALK" ~ "Hydrogen Production (Alkaline)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Aluminum to Hydrogen using a steam turbine" ~ "Hydrogen Production (Other)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Biomass" ~ "Hydrogen Production (Biomass)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Coal W CCS" ~ "Hydrogen Production (Coal w/ CCS)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Coal w CCS" ~ "Hydrogen Production (Coal w/ CCS)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Methane Pyrolysis" ~ "Hydrogen Production (Pyrolysis)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | NG w CCS" ~ "Hydrogen Production (Natural Gas w/ CCS)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | NG w CCUS" ~ "Hydrogen Production (Natural Gas w/ CCS)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Oil w CCUS" ~ "Hydrogen Production (Oil w/ CCUS)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Other Electrolysis" ~ "Hydrogen Production (Electrolysis)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | PEM" ~ "Hydrogen Production (PEM)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | SOEC" ~ "Hydrogen Production (SOEC)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Unknown" ~ "Hydrogen Production (Unknown)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Unknown Electrolysis" ~ "Hydrogen Production (Electrolysis)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | Waste" ~ "Hydrogen Production (Waste)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | pyrolysis" ~ "Hydrogen Production (Pyrolysis)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Hydrogen | unknown electrolysis" ~ "Hydrogen Production (Electrolysis)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | DRI" ~ "Green Steel",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | H-DRI" ~ "Green Steel",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | Traditional + CCS" ~ "Green Steel",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Iron & Steel | Traditional/DRI" ~ "Green Steel",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Industry | Pulp & Paper | Liquid Solvent" ~ "Industrial Decarbonization",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Carbon Management | Power" ~ "Power Plant Carbon Capture",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Nuclear | Nuclear" ~ "Nuclear Power",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Conventional Hydroelectric" ~ "Hydropower",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Geothermal" ~ "Geothermal",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Landfill Gas" ~ "Waste-to-Energy",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Municipal Solid Waste" ~ "Waste-to-Energy",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Other Waste Biomass" ~ "Biomass Power",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Other | Wood/Wood Waste Biomass" ~ "Biomass Power",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Solar | Solar Photovoltaic" ~ "Solar Power Generation",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Solar | Solar Thermal without Energy Storage" ~ "Solar Power Generation",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Storage | Batteries" ~ "Grid-Scale Battery Storage",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Storage | Hydroelectric Pumped Storage" ~ "Pumped-Storage Hydropower",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Wind | Offshore Wind Turbine" ~ "Offshore Wind Power",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Power | Wind | Onshore Wind Turbine" ~ "Onshore Wind Power",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | Clean Fuels | Ethanol" ~ "Ethanol",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | ATJ" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | AtJ" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Bio-FT" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Bio-FT,PtJ" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | FT" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | HEFA" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | MSW-FT" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | MtJ" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | PtL" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | Unknown" ~ "Sustainable Aviation Fuel (SAF)",
-      data_source == "CIM" & supply_chain_stage == "Infrastructure/Deployment" & project_category_keywords == "Transport | SAF | unknown" ~ "Sustainable Aviation Fuel (SAF)",
-      
-      # CIM - Manufacturing
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | AAM" ~ "Battery Active Materials",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells" ~ "Battery Cells",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells, Modules" ~ "Battery Cells & Modules",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Cells, Modules, Packs" ~ "Battery - Vertically Integrated (Cell to Pack)",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM" ~ "Battery Active Materials",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM, Cells" ~ "Battery Active Materials & Cells",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | EAM, Cells, Modules" ~ "Battery - Vertically Integrated (Material to Module)",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Modules" ~ "Battery Modules",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Modules, Packs" ~ "Battery Modules & Packs",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Batteries | Packs" ~ "Battery Packs",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | AEM" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | Alkaline" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | Alkaline, PEM" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | PEM" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | SMR, Electrolysis" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Electrolyzers | SOEC" ~ "Electrolyzer Manufacturing",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Fueling Equipment | EV Chargers" ~ "EV Charging Stations",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Backsheets" ~ "Solar Panel Components",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Cells" ~ "Solar Cells",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Cells, Modules" ~ "Solar Cells & Modules",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Commercial Inverters, Residential Inverters" ~ "Solar Inverters",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers" ~ "Solar Ingots & Wafers",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers, Cells" ~ "Solar - Vertically Integrated (Ingot to Cell)",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Ingots, Wafers, Cells, Modules" ~ "Solar - Vertically Integrated (Ingot to Module)",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Integrated CdTE" ~ "Solar Modules (Thin-Film)",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Microinverters" ~ "Solar Inverters",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Modules" ~ "Solar Modules",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Modules, Cells" ~ "Solar Modules & Cells",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equipment (Racking)" ~ "Solar Mounting & Racking",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equpment (Frames)" ~ "Solar Mounting & Racking",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting Equpment (Steel back rails)" ~ "Solar Mounting & Racking",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Mounting equipment" ~ "Solar Mounting & Racking",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Polysilicon" ~ "Polysilicon",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Power optimizers, commercial inverters, residential inverters" ~ "Solar Inverters & Power Electronics",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Residential inverters" ~ "Solar Inverters",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque Tubes" ~ "Solar Trackers & Components",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque Tubes, Mounting Equipment" ~ "Solar Mounting & Racking",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Torque tubes" ~ "Solar Trackers & Components",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Trackers" ~ "Solar Trackers & Components",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Trackers, Torque Tubes" ~ "Solar Trackers & Components",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Utility Inverters" ~ "Solar Inverters",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Utility Inverters, Unknown Inverters" ~ "Solar Inverters",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Solar | Wafers" ~ "Solar Wafers",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Blades" ~ "Wind Blades",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Foundations" ~ "Wind Foundations",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Nacelles" ~ "Wind Nacelles",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Towers" ~ "Wind Towers",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Wind | Turbines" ~ "Wind Turbines",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs" ~ "ZEV Assembly",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs, FCEVs" ~ "ZEV Assembly",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | BEVs, PHEVs" ~ "ZEV Assembly",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | EVs" ~ "ZEV Assembly",
-      data_source == "CIM" & supply_chain_stage == "Manufacturing" & project_category_keywords == "Clean Tech Manufacturing | Zero Emission Vehicles | PHEVs" ~ "ZEV Assembly",
-      
-      # CIM - Upstream Materials
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Chromium" ~ "Chromium",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt Sulfate" ~ "Cobalt Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt, Nickel" ~ "Cobalt & Nickel",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Cobalt, Nickel, Lithium" ~ "Cobalt, Nickel & Lithium",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Graphite" ~ "Graphite",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Carbonate" ~ "Lithium Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Carbonate, Lithium Hydroxide" ~ "Lithium Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide" ~ "Lithium Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Lithium Carbonate" ~ "Lithium Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Lithium Carbonate, Rare-earth oxides, Antimony Trisulfide" ~ "Diversified Mineral Processing",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium Hydroxide, Spodumene" ~ "Lithium & Spodumene",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Lithium, Nickel, Cobalt" ~ "Lithium, Nickel & Cobalt",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Manganese Sulphate" ~ "Manganese Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel" ~ "Nickel",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel, Cobalt" ~ "Nickel & Cobalt",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Nickel, Lithium Carbonate" ~ "Nickel & Lithium Compounds",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare earths" ~ "Rare Earth Elements",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare-earth metals" ~ "Rare Earth Elements",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Rare-earth oxides, Neodymium" ~ "Rare Earth Elements",
-      data_source == "CIM" & supply_chain_stage == "Upstream Materials" & project_category_keywords == "Clean Tech Manufacturing | Critical Minerals | Zinc" ~ "Zinc",
-      
-      # Clean Economy Tracker Consolidations (abbreviated for length)
-    
-      # Default case for any combinations not explicitly mapped
-      TRUE ~ NA_character_
-    )
-  )
+#write_csv(strata_matrix, "strata_matrix.csv")
 
-# Optional: View the results to verify
-glimpse(strata_matrix_updated)
 
-# PART 10: CONSOLIDATE FINAL DATASET
+#CONSOLIDATE FINAL DATASET
 # This section joins the consolidated category back to the master dataset,
 # adds timeline information, and creates a combined source/category keyword field.
 # The final result is a single, comprehensive 'all_facilities' dataframe, overwriting the previous version.
 
 all_facilities <- all_facilities %>%
-  # Join the consolidated category from strata_matrix_updated
+  # Join the consolidated category from strata_matrix
   left_join(
-    select(strata_matrix_updated, project_category_keywords, supply_chain_stage, data_source, consolidated_category),
+    select(strata_matrix, project_category_keywords, supply_chain_stage, data_source),
     by = c("project_category_keywords", "supply_chain_stage", "data_source")
   ) %>%
   # Add announcement timeline info and source-specific category keywords
@@ -1204,10 +1089,9 @@ if (!("announcement_month" %in% names(all_facilities))) {
 
 
 #Part II: Identify possible matches---------------
-# Part II: Identify possible matches (MULTI-FACILITY AWARE VERSION) ---------------
 
 cat("\n================================================================================\n")
-cat("PART II: FACILITY MATCHING - MULTI-FACILITY AWARE VERSION\n")
+cat("PART II: FACILITY MATCHING\n")
 cat("================================================================================\n\n")
 
 # --- 1. Loading libraries and setting parameters ---
@@ -1775,8 +1659,14 @@ if (nrow(duplicate_edges) > 0) {
       states = paste(sort(unique(state)), collapse = ", "),
       companies = paste(unique(company_project_keywords), collapse = " || "),
       total_capex_M = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
-      date_range = paste(min(announcement_date, na.rm = TRUE), "to", 
-                         max(announcement_date, na.rm = TRUE)),
+      date_range = {
+        valid_dates <- !is.na(announcement_date)
+        if(any(valid_dates)) {
+          paste(min(announcement_date[valid_dates]), "to", max(announcement_date[valid_dates]))
+        } else {
+          "No dates available"
+        }
+      },
       .groups = "drop"
     ) %>%
     filter(group_size > 1) %>%
@@ -1854,14 +1744,228 @@ sample_multi <- matches_for_review %>%
   head(5)
 print(sample_multi)
 
-cat("\n================================================================================\n")
-cat("MATCHING COMPLETE - Results distinguish between duplicates and multi-facility operations\n")
-cat("================================================================================\n")
 
-# --- 10. SAVE OUTPUTS ---
+cat("MATCHING COMPLETE - Results distinguish between duplicates and multi-facility operations\n")
+
+#View(matches_for_review)
+
+
 # Uncomment to save files
 # write_csv(matches_for_review, "matches_for_review_multifacility.csv")
 # write_csv(group_summary, "duplicate_groups.csv")
 # write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_groups.csv")
 # write_csv(filter(scored_matches, is_likely_duplicate), "likely_duplicates.csv")
 # write_csv(filter(scored_matches, !is_likely_duplicate), "non_duplicates.csv")
+
+#Part III: Descriptive statistics by data source
+
+# PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE - IMPROVED VERSION
+
+cat("\n================================================================================\n")
+cat("PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE\n")
+cat("================================================================================\n\n")
+
+# First, let's create a more robust summary statistics function
+create_category_summary <- function(data) {
+  
+  # Step 1: Create base summary by category
+  category_summary <- data %>%
+    filter(!is.na(data_source) & 
+             !is.na(supply_chain_stage) & 
+             !is.na(project_category_keywords)) %>%
+    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
+    summarise(
+      n_facilities = n(),
+      
+      # Date statistics
+      first_announcement_year = {
+        valid_years <- announcement_year[!is.na(announcement_year)]
+        if(length(valid_years) > 0) min(valid_years) else NA_integer_
+      },
+      
+      last_announcement_year = {
+        valid_years <- announcement_year[!is.na(announcement_year)]
+        if(length(valid_years) > 0) max(valid_years) else NA_integer_
+      },
+      
+      n_with_dates = sum(!is.na(announcement_year)),
+      
+      # CAPEX statistics
+      total_announced_capex_m = {
+        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
+        if(length(valid_capex) > 0) sum(valid_capex) / 1e6 else NA_real_
+      },
+      
+      avg_capex_per_facility_m = {
+        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
+        if(length(valid_capex) > 0) mean(valid_capex) / 1e6 else NA_real_
+      },
+      
+      median_capex_m = {
+        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
+        if(length(valid_capex) > 0) median(valid_capex) / 1e6 else NA_real_
+      },
+      
+      n_with_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0),
+      
+      # State distribution (all states, not just top 3)
+      states_list = {
+        valid_states <- state[!is.na(state)]
+        if(length(valid_states) > 0) {
+          paste(sort(unique(valid_states)), collapse = ", ")
+        } else {
+          NA_character_
+        }
+      },
+      
+      n_states = n_distinct(state[!is.na(state)]),
+      
+      .groups = "drop"
+    )
+  
+  # Step 2: Calculate state-level CAPEX separately for top states
+  state_capex <- data %>%
+    filter(!is.na(data_source) & 
+             !is.na(supply_chain_stage) & 
+             !is.na(project_category_keywords) &
+             !is.na(state) &
+             !is.na(capex_amount_estimated) & 
+             capex_amount_estimated > 0) %>%
+    group_by(data_source, supply_chain_stage, project_category_keywords, state) %>%
+    summarise(
+      state_total_capex = sum(capex_amount_estimated, na.rm = TRUE),
+      state_facility_count = n(),
+      .groups = "drop"
+    ) %>%
+    # Rank states within each category
+    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
+    arrange(desc(state_total_capex)) %>%
+    mutate(state_rank = row_number()) %>%
+    ungroup()
+  
+  # Step 3: Extract top 3 states by CAPEX
+  top_states <- state_capex %>%
+    filter(state_rank <= 3) %>%
+    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
+    summarise(
+      highest_capex_state = ifelse(any(state_rank == 1), state[state_rank == 1][1], NA_character_),
+      highest_capex_amount_m = ifelse(any(state_rank == 1), round(state_total_capex[state_rank == 1][1] / 1e6, 2), NA_real_),
+      
+      second_highest_capex_state = ifelse(any(state_rank == 2), state[state_rank == 2][1], NA_character_),
+      second_highest_capex_amount_m = ifelse(any(state_rank == 2), round(state_total_capex[state_rank == 2][1] / 1e6, 2), NA_real_),
+      
+      third_highest_capex_state = ifelse(any(state_rank == 3), state[state_rank == 3][1], NA_character_),
+      third_highest_capex_amount_m = ifelse(any(state_rank == 3), round(state_total_capex[state_rank == 3][1] / 1e6, 2), NA_real_),
+      
+      .groups = "drop"
+    )
+  
+  # Step 4: Calculate facility status distribution
+  status_summary <- data %>%
+    filter(!is.na(data_source) & 
+             !is.na(supply_chain_stage) & 
+             !is.na(project_category_keywords)) %>%
+    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
+    summarise(
+      n_operational = sum(facility_status_standardized == "Operational", na.rm = TRUE),
+      n_under_construction = sum(facility_status_standardized == "Under Construction", na.rm = TRUE),
+      n_planned = sum(facility_status_standardized == "Planned/Announced", na.rm = TRUE),
+      n_cancelled = sum(facility_status_standardized == "Paused, Closed/Retired, or Cancelled", na.rm = TRUE),
+      n_status_unknown = sum(facility_status_standardized == "Status Unknown" | is.na(facility_status_standardized)),
+      .groups = "drop"
+    )
+  
+  # Step 5: Join all summaries together
+  final_summary <- category_summary %>%
+    left_join(top_states, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>%
+    left_join(status_summary, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>%
+    # Add percentage calculations
+    mutate(
+      pct_with_capex = round(n_with_capex / n_facilities * 100, 1),
+      pct_with_dates = round(n_with_dates / n_facilities * 100, 1),
+      pct_operational = round(n_operational / n_facilities * 100, 1),
+      
+      # Create a category ID for easier reference
+      category_id = paste(data_source, supply_chain_stage, sep = "_")
+    ) %>%
+    # Reorder columns for clarity
+    select(
+      category_id, data_source, supply_chain_stage, project_category_keywords,
+      n_facilities, n_states, states_list,
+      
+      # Date info
+      first_announcement_year, last_announcement_year, n_with_dates, pct_with_dates,
+      
+      # CAPEX info
+      total_announced_capex_m, avg_capex_per_facility_m, median_capex_m, 
+      n_with_capex, pct_with_capex,
+      
+      # Top states by CAPEX
+      highest_capex_state, highest_capex_amount_m,
+      second_highest_capex_state, second_highest_capex_amount_m,
+      third_highest_capex_state, third_highest_capex_amount_m,
+      
+      # Status distribution
+      n_operational, n_under_construction, n_planned, n_cancelled, n_status_unknown,
+      pct_operational
+    )
+  
+  return(final_summary)
+}
+
+# Apply the function to create comprehensive summary
+summary_stats_by_source <- create_category_summary(all_facilities)
+
+# Display summary
+cat("Summary statistics created with", nrow(summary_stats_by_source), "unique category combinations\n\n")
+
+# Show sample of results
+cat("Sample of summary statistics:\n")
+print(summary_stats_by_source %>% 
+        select(data_source, supply_chain_stage, n_facilities, 
+               total_announced_capex_m, highest_capex_state) %>% 
+        head(10))
+
+# Additional validation checks
+cat("\n\nValidation Checks:\n")
+
+# Check for categories with high facility counts but no CAPEX data
+no_capex_categories <- summary_stats_by_source %>%
+  filter(n_facilities > 10 & n_with_capex == 0) %>%
+  select(data_source, project_category_keywords, n_facilities)
+
+if(nrow(no_capex_categories) > 0) {
+  cat("\nCategories with >10 facilities but no CAPEX data:\n")
+  print(no_capex_categories)
+}
+
+# Check for categories where top states don't match facility distribution
+state_mismatch <- summary_stats_by_source %>%
+  filter(n_states > 3 & is.na(third_highest_capex_state)) %>%
+  select(data_source, project_category_keywords, n_states, n_with_capex)
+
+if(nrow(state_mismatch) > 0) {
+  cat("\nCategories with many states but incomplete top 3 CAPEX states:\n")
+  print(state_mismatch)
+}
+
+# Create a high-level summary by data source
+source_level_summary <- all_facilities %>%
+  group_by(data_source) %>%
+  summarise(
+    total_facilities = n(),
+    total_capex_b = sum(capex_amount_estimated, na.rm = TRUE) / 1e9,
+    n_categories = n_distinct(paste(supply_chain_stage, project_category_keywords)),
+    n_states = n_distinct(state[!is.na(state)]),
+    avg_capex_per_facility_m = mean(capex_amount_estimated[!is.na(capex_amount_estimated)]) / 1e6,
+    .groups = "drop"
+  ) %>%
+  mutate(total_capex_b = round(total_capex_b, 2),
+         avg_capex_per_facility_m = round(avg_capex_per_facility_m, 2))
+
+cat("\n\nHigh-level summary by data source:\n")
+glimpse(source_level_summary)
+
+# Export if needed
+# write_csv(summary_stats_by_source, "category_summary_statistics.csv")
+# write_csv(source_level_summary, "source_level_summary.csv")
