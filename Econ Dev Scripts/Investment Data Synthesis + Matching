@@ -1088,10 +1088,10 @@ if (!("announcement_month" %in% names(all_facilities))) {
 }
 
 
-#Part II: Identify possible matches---------------
+# Part II: Identify Duplicate Facilities ---------------
 
 cat("\n================================================================================\n")
-cat("PART II: FACILITY MATCHING\n")
+cat("PART II: FACILITY DUPLICATE DETECTION\n")
 cat("================================================================================\n\n")
 
 # --- 1. Loading libraries and setting parameters ---
@@ -1108,656 +1108,468 @@ suppressPackageStartupMessages({
   library(stringr)
 })
 
-# Define matching parameters with multi-facility awareness
+# Define matching parameters focused on duplicate detection
 params <- list(
-  # Distance thresholds
-  max_coord_km_exact = 2,      # Same facility
-  max_coord_km_close = 10,     # Nearby facilities  
-  max_coord_km_moderate = 50,  # Same metro area
-  max_coord_km_loose = 100,    # Same region
+  # Distance thresholds (km)
+  max_distance_same_facility = 5,      # Within 5km = likely same facility
+  max_distance_maybe_same = 25,        # Within 25km = possibly same facility
+  max_distance_consider = 100,         # Beyond 100km = unlikely same facility
   
   # Name similarity thresholds
-  name_similarity_exact = 0.95,  # Exact match
-  name_similarity_high = 0.85,   # High confidence
-  name_similarity_medium = 0.75, # Medium confidence
-  name_similarity_low = 0.65,    # Minimum threshold
+  name_similarity_high = 0.85,         # High confidence same company
+  name_similarity_medium = 0.70,       # Medium confidence
+  name_similarity_low = 0.60,          # Minimum to consider
   
-  # Date thresholds
-  max_date_diff_days_exact = 30,    # Same month
-  max_date_diff_days_close = 180,   # Same half-year
-  max_date_diff_days_loose = 365,   # Same year
+  # Date thresholds (days)
+  max_date_diff_same_announcement = 90,    # Within 3 months = likely same announcement
+  max_date_diff_related = 365,             # Within 1 year = possibly related
   
-  # Category similarity thresholds
-  category_similarity_high = 0.80,
-  category_similarity_medium = 0.60,
+  # Category similarity threshold
+  category_similarity_threshold = 0.70,
   
-  # Multi-facility scoring weights
-  # For same company + same state matches
-  weight_name_multifacility = 0.60,      # Increased
-  weight_category_multifacility = 0.20,
-  weight_location_multifacility = 0.05,  # Decreased
-  weight_date_multifacility = 0.15,
+  # Scoring weights for duplicate detection
+  weight_name = 0.35,
+  weight_location = 0.25,
+  weight_date = 0.20,
+  weight_category = 0.15,
+  weight_capex = 0.05,
   
-  # Standard scoring weights
-  weight_name_standard = 0.45,
-  weight_category_standard = 0.25,
-  weight_location_standard = 0.15,
-  weight_date_standard = 0.15,
-  
-  # Confidence thresholds
-  confidence_very_high = 0.90,
-  confidence_high = 0.80,
-  confidence_medium = 0.70,
+  # Duplicate confidence thresholds
+  duplicate_confidence_high = 0.85,
+  duplicate_confidence_medium = 0.70,
+  duplicate_confidence_low = 0.60,
   
   # Memory management
-  chunking_threshold = 50000,
-  chunk_size = 100
+  chunk_size = 100,
+  max_pairs_per_chunk = 50000
 )
 
 cat("Parameters loaded.\n\n")
 
-# --- 2. COMPANY/FACILITY EXTRACTION FUNCTIONS ---
-cat("--- 2. Setting up company/facility extraction functions ---\n")
+# --- 2. Data preparation and quality checks ---
+cat("--- 2. Data preparation and quality checks ---\n")
 
-# Function to parse company_project_keywords based on data source
-parse_company_info <- function(keywords, data_source) {
-  if (is.na(keywords) || keywords == "") {
-    return(list(
-      company = NA_character_,
-      parent_company = NA_character_,
-      facility_name = NA_character_,
-      has_facility_info = FALSE
-    ))
-  }
-  
-  # Split by | separator
-  parts <- str_split(keywords, "\\s*\\|\\s*")[[1]]
-  
-  if (data_source == "CIM") {
-    # CIM: Just Company
-    return(list(
-      company = parts[1],
-      parent_company = NA_character_,
-      facility_name = NA_character_,
-      has_facility_info = FALSE
-    ))
-  } else if (data_source == "Atlas EV" || data_source == "Clean Economy Tracker") {
-    # Atlas EV/CET: Company | Parent Company | Facility Name
-    return(list(
-      company = if(length(parts) >= 1) parts[1] else NA_character_,
-      parent_company = if(length(parts) >= 2) parts[2] else NA_character_,
-      facility_name = if(length(parts) >= 3) parts[3] else NA_character_,
-      has_facility_info = length(parts) >= 3 && !is.na(parts[3]) && parts[3] != ""
-    ))
-  } else if (data_source == "Wellesley") {
-    # Wellesley: Name | Company
-    return(list(
-      company = if(length(parts) >= 2) parts[2] else parts[1],  # Use Company if available, else Name
-      parent_company = NA_character_,
-      facility_name = if(length(parts) >= 2) parts[1] else NA_character_,  # Name is facility
-      has_facility_info = TRUE  # Wellesley Name field is facility-specific
-    ))
-  } else {
-    # Unknown source
-    return(list(
-      company = parts[1],
-      parent_company = NA_character_,
-      facility_name = NA_character_,
-      has_facility_info = FALSE
-    ))
-  }
-}
-
-# Vectorized version of parse_company_info
-parse_company_info_vectorized <- function(keywords_vec, source_vec) {
-  n <- length(keywords_vec)
-  
-  # Initialize result vectors
-  company <- character(n)
-  parent_company <- character(n)
-  facility_name <- character(n)
-  has_facility_info <- logical(n)
-  
-  for (i in 1:n) {
-    parsed <- parse_company_info(keywords_vec[i], source_vec[i])
-    company[i] <- parsed$company
-    parent_company[i] <- parsed$parent_company
-    facility_name[i] <- parsed$facility_name
-    has_facility_info[i] <- parsed$has_facility_info
-  }
-  
-  return(data.frame(
-    company = company,
-    parent_company = parent_company,
-    facility_name = facility_name,
-    has_facility_info = has_facility_info,
-    stringsAsFactors = FALSE
-  ))
-}
-
-# --- 3. DATA QUALITY CHECKS ---
-cat("\n--- 3. Performing comprehensive data quality checks ---\n")
-
-# Check for required columns
-required_cols <- c("master_id", "data_source", "company_project_keywords", 
-                   "project_category_keywords", "state", "coordinates_available",
-                   "latitude_if_available", "longitude_if_available", 
-                   "announcement_date", "capex_amount_estimated")
-
-missing_cols <- setdiff(required_cols, names(all_facilities))
-if (length(missing_cols) > 0) {
-  cat("WARNING: Missing required columns:", paste(missing_cols, collapse = ", "), "\n")
-} else {
-  cat("SUCCESS: All required columns present\n")
-}
-
-# Data quality summary
+# Check data quality
 data_quality <- all_facilities %>%
   group_by(data_source) %>%
   summarise(
     total_records = n(),
     has_coordinates = sum(coordinates_available, na.rm = TRUE),
-    has_company_name = sum(!is.na(company_project_keywords) & company_project_keywords != ""),
-    has_category = sum(!is.na(project_category_keywords) & project_category_keywords != ""),
+    has_company = sum(!is.na(company_project_keywords) & company_project_keywords != ""),
     has_date = sum(!is.na(announcement_date)),
     has_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0),
     .groups = "drop"
   ) %>%
   mutate(
     pct_coordinates = round(has_coordinates / total_records * 100, 1),
-    pct_company = round(has_company_name / total_records * 100, 1)
+    pct_with_date = round(has_date / total_records * 100, 1)
   )
 
-print(data_quality %>% select(data_source, total_records, pct_coordinates, pct_company))
+cat("Data quality summary:\n")
+print(data_quality %>% select(data_source, total_records, pct_coordinates, pct_with_date))
 cat("\n")
 
-# --- 4. PREPARE MATCHING DATAFRAME ---
-cat("--- 4. Preparing matching dataframe with company/facility parsing ---\n")
+# --- 3. Prepare data for matching ---
+cat("--- 3. Preparing data for matching ---\n")
 
-# Parse company information and prepare for matching
+# Simplified matching dataframe
 match_df <- all_facilities %>%
-  # Parse company_project_keywords based on data source
-  bind_cols(parse_company_info_vectorized(.$company_project_keywords, .$data_source)) %>%
   mutate(
-    # Normalize company names (use parent if available, else company)
-    company_to_normalize = coalesce(parent_company, company),
-    company_normalized = normalize_company_name(company_to_normalize),
-    # Also normalize the facility name if present
-    facility_normalized = if_else(
-      !is.na(facility_name) & facility_name != "",
-      normalize_company_name(facility_name),
-      NA_character_
-    ),
-    # Clean category
-    category_clean = str_replace_all(project_category_keywords, " \\| ", " ") %>% str_to_lower(),
+    # Normalize company name for matching
+    company_normalized = normalize_company_name(company_project_keywords),
+    # Clean category for comparison
+    category_clean = str_to_lower(str_replace_all(project_category_keywords, " \\| ", " ")),
     # Parse date
-    announcement_date_parsed = as.Date(announcement_date)
+    announcement_date_parsed = as.Date(announcement_date),
+    # Create simple location identifier
+    location_key = paste(state, round(latitude_if_available, 2), round(longitude_if_available, 2), sep = "_")
   ) %>%
-  # Only keep records with minimum required information
+  # Keep only records with minimum required info
   filter(
     !is.na(state) & 
       !is.na(company_normalized) & 
       company_normalized != ""
   ) %>%
   select(
-    master_id, data_source,
-    company_project_keywords,  # Keep original
-    company, parent_company, facility_name, has_facility_info,
-    company_normalized, facility_normalized,
-    category_clean, project_category_keywords,
+    master_id, 
+    data_source,
+    company_project_keywords,
+    company_normalized,
+    category_clean,
     state,
     coordinates_available,
-    latitude_if_available, longitude_if_available,
+    latitude_if_available,
+    longitude_if_available,
+    location_key,
     announcement_date_parsed,
-    announcement_month, announcement_quarter, announcement_year,
-    capex_amount_estimated
+    announcement_month,
+    announcement_quarter,
+    announcement_year,
+    capex_amount_estimated,
+    facility_status_standardized
   )
 
-cat("Prepared", nrow(match_df), "facilities for matching\n")
+cat("Prepared", nrow(match_df), "facilities for matching\n\n")
 
-# Show sample of parsed data
-cat("\nSample of parsed company information:\n")
-sample_parsed <- match_df %>%
-  filter(has_facility_info) %>%
-  select(data_source, company, facility_name, company_normalized) %>%
-  head(5)
-print(sample_parsed)
-cat("\n")
+# --- 4. Generate candidate pairs ---
+cat("--- 4. Generating candidate pairs using blocking strategy ---\n")
 
-# --- 5. GENERATE CANDIDATE PAIRS ---
-cat("--- 5. Generating candidate pairs with intelligent blocking ---\n")
-
+# Get unique data sources
 sources <- unique(match_df$data_source)
 source_pairs <- combn(sources, 2, simplify = FALSE)
 
-process_pair_multifacility <- function(pair, match_data, params) {
+# Function to process pairs between two sources
+process_source_pair <- function(pair, match_data, params) {
   source1 <- pair[1]
   source2 <- pair[2]
-  cat(paste0("  -> Processing: ", source1, " <-> ", source2, "\n"))
+  
+  cat(sprintf("  Processing: %s <-> %s\n", source1, source2))
   
   df1 <- filter(match_data, data_source == source1)
   df2 <- filter(match_data, data_source == source2)
   
-  # Find common states
+  # Find common states for blocking
   common_states <- intersect(unique(df1$state), unique(df2$state))
   
-  if (length(common_states) == 0) return(NULL)
+  if (length(common_states) == 0) {
+    cat("    No common states found\n")
+    return(NULL)
+  }
   
-  # Process each state
+  # Process each state block
   candidates <- map_dfr(common_states, function(st) {
     block_df1 <- filter(df1, state == st)
     block_df2 <- filter(df2, state == st)
     
-    potential_pairs <- nrow(block_df1) * nrow(block_df2)
+    # Create all pairs within state
+    pairs <- expand_grid(
+      id1 = block_df1$master_id,
+      id2 = block_df2$master_id
+    ) %>%
+      left_join(block_df1 %>% select(-data_source), by = c("id1" = "master_id"), suffix = c("", "_1")) %>%
+      left_join(block_df2 %>% select(-data_source), by = c("id2" = "master_id"), suffix = c("_1", "_2"))
     
-    # Apply chunking for large blocks
-    if (potential_pairs > params$chunking_threshold) {
-      chunks <- split(block_df1, ceiling(seq_len(nrow(block_df1)) / params$chunk_size))
-      result <- map_dfr(chunks, function(chunk) {
-        inner_join(chunk, block_df2, by = character(), suffix = c("_1", "_2"))
-      })
-    } else {
-      result <- inner_join(block_df1, block_df2, by = character(), suffix = c("_1", "_2"))
+    # Calculate name similarity and filter early
+    pairs <- pairs %>%
+      mutate(
+        name_similarity = stringsim(company_normalized_1, company_normalized_2, method = "jw")
+      ) %>%
+      # Keep only pairs with reasonable name similarity OR close proximity
+      filter(
+        name_similarity >= params$name_similarity_low |
+          (coordinates_available_1 & coordinates_available_2)  # Will check distance next
+      )
+    
+    # Calculate distance for those with coordinates
+    if (nrow(pairs) > 0) {
+      pairs <- pairs %>%
+        mutate(
+          distance_km = if_else(
+            coordinates_available_1 & coordinates_available_2,
+            distHaversine(
+              cbind(longitude_if_available_1, latitude_if_available_1),
+              cbind(longitude_if_available_2, latitude_if_available_2)
+            ) / 1000,
+            NA_real_
+          )
+        ) %>%
+        # Final filter: good name match OR close distance
+        filter(
+          name_similarity >= params$name_similarity_low |
+            (!is.na(distance_km) & distance_km <= params$max_distance_consider)
+        )
     }
     
-    return(result)
+    return(pairs)
   })
   
-  if (nrow(candidates) == 0) return(NULL)
+  if (nrow(candidates) > 0) {
+    candidates$source_1 <- source1
+    candidates$source_2 <- source2
+  }
   
-  # Calculate similarities and filter
-  filtered <- candidates %>%
-    mutate(
-      # Company name similarity (use normalized names)
-      name_similarity = stringsim(company_normalized_1, company_normalized_2, method = "jw"),
-      
-      # Facility name similarity (if both have facility info)
-      facility_similarity = case_when(
-        has_facility_info_1 & has_facility_info_2 & 
-          !is.na(facility_normalized_1) & !is.na(facility_normalized_2) ~ 
-          stringsim(facility_normalized_1, facility_normalized_2, method = "jw"),
-        TRUE ~ NA_real_
-      ),
-      
-      # Calculate distance
-      distance_km = if_else(
-        coordinates_available_1 & coordinates_available_2,
-        distHaversine(
-          p1 = cbind(longitude_if_available_1, latitude_if_available_1),
-          p2 = cbind(longitude_if_available_2, latitude_if_available_2)
-        ) / 1000,
-        NA_real_
-      ),
-      
-      # Detect if likely same company but different facilities
-      likely_same_company = name_similarity >= 0.90,
-      likely_different_facilities = likely_same_company & 
-        has_facility_info_1 & has_facility_info_2 & 
-        !is.na(facility_similarity) & facility_similarity < 0.70
-    ) %>%
-    # More permissive filtering
-    filter(
-      name_similarity >= params$name_similarity_low |
-        (!is.na(distance_km) & distance_km <= params$max_coord_km_loose)
-    )
-  
-  cat(paste0("     Generated ", nrow(filtered), " candidates\n"))
-  
-  return(filtered)
+  cat(sprintf("    Found %d candidate pairs\n", nrow(candidates)))
+  return(candidates)
 }
 
 # Process all source pairs
-all_candidate_pairs <- map_dfr(source_pairs, ~process_pair_multifacility(.x, match_df, params))
+all_candidates <- map_dfr(source_pairs, ~process_source_pair(.x, match_df, params))
 
-# Remove duplicates
-all_candidate_pairs <- all_candidate_pairs %>%
-  distinct(master_id_1, master_id_2, .keep_all = TRUE)
+# Add IDs and remove any accidental duplicates
+if (nrow(all_candidates) > 0) {
+  all_candidates <- all_candidates %>%
+    mutate(pair_id = row_number()) %>%
+    distinct(id1, id2, .keep_all = TRUE)
+}
 
-cat("\nUnique candidate pairs:", nrow(all_candidate_pairs), "\n\n")
+cat(sprintf("\nTotal candidate pairs to evaluate: %d\n\n", nrow(all_candidates)))
 
-# --- 6. MULTI-FACILITY AWARE SCORING ---
-cat("--- 6. Computing multi-facility aware similarity scores ---\n")
+# --- 5. Score candidate pairs for duplicate likelihood ---
+cat("--- 5. Scoring pairs for duplicate likelihood ---\n")
 
-scored_matches <- all_candidate_pairs %>%
+scored_pairs <- all_candidates %>%
   mutate(
-    # Determine match type based on available information
-    match_scenario = case_when(
-      # Both have facility info and high company similarity
-      likely_same_company & likely_different_facilities ~ "same_company_diff_facility",
-      likely_same_company & !likely_different_facilities & 
-        has_facility_info_1 & has_facility_info_2 ~ "same_company_same_facility",
-      # High company similarity but limited facility info
-      likely_same_company & (!has_facility_info_1 | !has_facility_info_2) ~ "same_company_unknown_facility",
-      # Different companies
-      TRUE ~ "different_companies"
-    ),
-    
-    # Name score (use company similarity)
+    # Name/company similarity score (already calculated)
     name_score = name_similarity,
     
-    # Category similarity
-    category_similarity = stringsim(category_clean_1, category_clean_2, method = "jw"),
-    category_score = category_similarity,
-    
-    # Location score - adjusted based on match scenario
+    # Location score based on distance
     location_score = case_when(
-      # No coordinates available - neutral score
+      # No coordinates available
       !coordinates_available_1 | !coordinates_available_2 ~ 0.5,
-      
-      # Same company, different facilities - distance less important
-      match_scenario == "same_company_diff_facility" ~ case_when(
-        distance_km <= params$max_coord_km_moderate ~ 0.7,
-        distance_km <= params$max_coord_km_loose ~ 0.5,
-        TRUE ~ 0.3
-      ),
-      
-      # Same company, unknown facility - moderate importance
-      match_scenario == "same_company_unknown_facility" ~ case_when(
-        distance_km <= params$max_coord_km_exact ~ 0.9,
-        distance_km <= params$max_coord_km_close ~ 0.7,
-        distance_km <= params$max_coord_km_moderate ~ 0.5,
-        TRUE ~ 0.3
-      ),
-      
-      # Standard scoring for other cases
-      TRUE ~ case_when(
-        distance_km <= params$max_coord_km_exact ~ 1.0,
-        distance_km <= params$max_coord_km_close ~ 0.8,
-        distance_km <= params$max_coord_km_moderate ~ 0.6,
-        distance_km <= params$max_coord_km_loose ~ 0.4,
-        TRUE ~ 0
-      )
+      # Very close = likely same facility
+      distance_km <= params$max_distance_same_facility ~ 1.0,
+      # Nearby = possibly same facility  
+      distance_km <= params$max_distance_maybe_same ~ 0.7,
+      # Same region
+      distance_km <= params$max_distance_consider ~ 0.3,
+      # Too far
+      TRUE ~ 0
     ),
     
-    # Date similarity
+    # Date similarity score
     date_diff_days = abs(as.numeric(announcement_date_parsed_1 - announcement_date_parsed_2)),
     date_score = case_when(
       is.na(announcement_date_parsed_1) | is.na(announcement_date_parsed_2) ~ 0.5,
-      date_diff_days == 0 ~ 1.0,
-      date_diff_days <= params$max_date_diff_days_exact ~ 0.9,
-      announcement_month_1 == announcement_month_2 ~ 0.85,
-      announcement_quarter_1 == announcement_quarter_2 ~ 0.7,
-      date_diff_days <= params$max_date_diff_days_close ~ 0.6,
-      announcement_year_1 == announcement_year_2 ~ 0.5,
-      date_diff_days <= params$max_date_diff_days_loose ~ 0.3,
-      TRUE ~ 0
+      date_diff_days <= params$max_date_diff_same_announcement ~ 1.0,
+      announcement_quarter_1 == announcement_quarter_2 ~ 0.8,
+      date_diff_days <= params$max_date_diff_related ~ 0.6,
+      announcement_year_1 == announcement_year_2 ~ 0.4,
+      TRUE ~ 0.2
     ),
+    
+    # Category similarity
+    category_score = stringsim(category_clean_1, category_clean_2, method = "jw"),
     
     # CAPEX similarity
     capex_score = case_when(
       is.na(capex_amount_estimated_1) | is.na(capex_amount_estimated_2) ~ 0.5,
       capex_amount_estimated_1 == 0 | capex_amount_estimated_2 == 0 ~ 0.5,
       abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
-        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.1 ~ 0.9,
+        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.1 ~ 1.0,
       abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
-        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.2 ~ 0.7,
-      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
-        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.5 ~ 0.5,
+        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.25 ~ 0.7,
       TRUE ~ 0.3
     ),
     
-    # Use different weights based on match scenario
-    composite_score = case_when(
-      # Same company, different facilities - less weight on location
-      match_scenario == "same_company_diff_facility" ~ 
-        (name_score * params$weight_name_multifacility) +
-        (category_score * params$weight_category_multifacility) +
-        (location_score * params$weight_location_multifacility) +
-        (date_score * params$weight_date_multifacility),
-      
-      # Same company, unknown facility - moderate weight on location
-      match_scenario == "same_company_unknown_facility" ~ 
-        (name_score * 0.55) +
-        (category_score * 0.20) +
-        (location_score * 0.10) +
-        (date_score * 0.15),
-      
-      # Standard scoring
-      TRUE ~ 
-        (name_score * params$weight_name_standard) +
-        (category_score * params$weight_category_standard) +
-        (location_score * params$weight_location_standard) +
-        (date_score * params$weight_date_standard)
+    # Calculate weighted composite score
+    composite_score = (
+      name_score * params$weight_name +
+        location_score * params$weight_location +
+        date_score * params$weight_date +
+        category_score * params$weight_category +
+        capex_score * params$weight_capex
     ),
     
-    # Match type classification
-    match_type = case_when(
-      match_scenario == "same_company_diff_facility" ~ "Same Company - Different Facilities",
-      match_scenario == "same_company_same_facility" ~ "Same Company - Same Facility", 
-      match_scenario == "same_company_unknown_facility" & distance_km < 10 ~ "Same Company - Likely Same Facility",
-      match_scenario == "same_company_unknown_facility" ~ "Same Company - Unknown if Same Facility",
-      name_score >= 0.85 & capex_score >= 0.9 ~ "Likely Same Project",
-      location_score >= 0.8 & category_score >= 0.8 ~ "Same Location - Similar Type",
-      TRUE ~ "Different Projects"
+    # Determine duplicate likelihood
+    match_likelihood = case_when(
+      composite_score >= params$duplicate_confidence_high ~ "High",
+      composite_score >= params$duplicate_confidence_medium ~ "Medium", 
+      composite_score >= params$duplicate_confidence_low ~ "Low",
+      TRUE ~ "Very Low"
     ),
     
-    # Confidence assignment
-    confidence = case_when(
-      # Very high confidence
-      match_type == "Same Company - Same Facility" ~ "Very High",
-      match_type == "Same Company - Likely Same Facility" ~ "Very High",
-      composite_score >= params$confidence_very_high & capex_score >= 0.7 ~ "Very High",
-      
-      # High confidence
-      match_type == "Same Company - Different Facilities" & 
-        (date_score >= 0.7 | capex_score >= 0.7) ~ "High",
-      match_type == "Same Company - Unknown if Same Facility" & 
-        state_1 == state_2 ~ "High",
-      match_type == "Likely Same Project" ~ "High",
-      composite_score >= params$confidence_high ~ "High",
-      
-      # Medium confidence
-      composite_score >= params$confidence_medium ~ "Medium",
-      name_score >= 0.85 & (capex_score >= 0.7 | date_score >= 0.7) ~ "Medium",
-      
-      # Low confidence
-      TRUE ~ "Low"
-    ),
+    # Binary duplicate flag (for high confidence only)
+    is_likely_duplicate = match_likelihood == "High",
     
-    # Duplicate likelihood
-    is_likely_duplicate = case_when(
-      match_type %in% c("Same Company - Same Facility", 
-                        "Same Company - Likely Same Facility",
-                        "Likely Same Project") ~ TRUE,
-      match_type == "Same Company - Different Facilities" ~ FALSE,
-      match_type == "Same Company - Unknown if Same Facility" & 
-        distance_km < 50 & date_score > 0.7 ~ TRUE,
-      confidence == "Very High" ~ TRUE,
-      TRUE ~ FALSE
+    # Add match characteristics
+    match_characteristics = case_when(
+      name_score >= 0.9 & location_score >= 0.9 ~ "Same company, same location",
+      name_score >= 0.9 & location_score >= 0.7 ~ "Same company, nearby location",
+      name_score >= 0.7 & location_score >= 0.9 ~ "Similar company, same location",
+      name_score >= 0.7 & date_score >= 0.8 ~ "Similar company, similar timing",
+      TRUE ~ "Other similarity pattern"
     )
   ) %>%
+  # Keep only meaningful matches
+  filter(composite_score >= 0.5) %>%
   arrange(desc(composite_score))
 
-# Summary statistics
-cat("\nMatch Type Distribution:\n")
-match_type_summary <- scored_matches %>%
-  count(match_type, confidence) %>%
-  pivot_wider(names_from = confidence, values_from = n, values_fill = 0) %>%
-  mutate(Total = rowSums(select(., -match_type))) %>%
-  arrange(desc(Total))
-print(match_type_summary)
+cat(sprintf("Scored %d potential matches\n", nrow(scored_pairs)))
 
-cat("\nDuplicate Likelihood by Confidence:\n")
-dup_summary <- scored_matches %>%
-  group_by(confidence, is_likely_duplicate) %>%
-  summarise(count = n(), .groups = "drop") %>%
-  pivot_wider(names_from = is_likely_duplicate, values_from = count, values_fill = 0,
-              names_prefix = "is_duplicate_")
-print(dup_summary)
+# Show distribution of duplicate likelihood
+dup_dist <- scored_pairs %>%
+  count(match_likelihood, match_characteristics) %>%
+  arrange(match_likelihood, desc(n))
 
-# --- 7. CREATE DETAILED REVIEW TABLE ---
-cat("\n--- 7. Creating detailed review table ---\n")
+cat("\nDuplicate likelihood distribution:\n")
+print(dup_dist)
 
-matches_for_review <- scored_matches %>%
-  inner_join(all_facilities, by = c("master_id_1" = "master_id")) %>%
-  inner_join(all_facilities, by = c("master_id_2" = "master_id"), suffix = c("_1", "_2")) %>%
-  mutate(
-    # CAPEX analysis
-    capex_M_1 = round(capex_amount_estimated_1 / 1e6, 2),
-    capex_M_2 = round(capex_amount_estimated_2 / 1e6, 2),
-    capex_diff_M = abs(capex_M_1 - capex_M_2),
-    capex_diff_pct = if_else(
-      !is.na(capex_M_1) & !is.na(capex_M_2) & (capex_M_1 > 0 | capex_M_2 > 0),
-      round(capex_diff_M / pmax(capex_M_1, capex_M_2, na.rm = TRUE) * 100, 1),
-      NA_real_
-    )
-  ) %>%
-  select(
-    # Match classification
-    match_type, match_scenario, is_likely_duplicate,
-    confidence, composite_score,
-    # Component scores
-    name_score, facility_similarity, category_score, location_score, 
-    date_score, capex_score,
-    # Distance and date
-    distance_km, date_diff_days,
-    # Facility 1
-    master_id_1, data_source_1, 
-    company_1 = company_project_keywords_1,
-    state_1, capex_M_1, announcement_date_1,
-    # Facility 2
-    master_id_2, data_source_2,
-    company_2 = company_project_keywords_2,
-    state_2, capex_M_2, announcement_date_2,
-    # Additional info
-    capex_diff_pct,
-    status_1 = facility_status_standardized_1,
-    status_2 = facility_status_standardized_2,
-    category_1 = project_category_keywords_1,
-    category_2 = project_category_keywords_2
-  ) %>%
-  arrange(desc(composite_score))
+# --- 6. Create duplicate groups using graph clustering ---
+cat("\n--- 6. Creating duplicate groups ---\n")
 
-# --- 8. CLUSTERING WITH DUPLICATE AWARENESS ---
-cat("\n--- 8. Clustering matches with duplicate awareness ---\n")
+# Create graph from high-confidence duplicates only
+high_conf_duplicates <- scored_pairs %>%
+  filter(is_likely_duplicate)
 
-# Only cluster likely duplicates
-duplicate_edges <- scored_matches %>%
-  filter(is_likely_duplicate == TRUE) %>%
-  select(master_id_1, master_id_2, composite_score)
-
-if (nrow(duplicate_edges) > 0) {
-  g <- graph_from_data_frame(duplicate_edges, directed = FALSE)
+if (nrow(high_conf_duplicates) > 0) {
+  # Build graph
+  g <- graph_from_data_frame(
+    high_conf_duplicates %>% select(id1, id2, weight = composite_score),
+    directed = FALSE
+  )
+  
+  # Find connected components
   components <- components(g)
   
+  # Create group assignments
   facility_groups <- data.frame(
     master_id = names(components$membership),
     duplicate_group_id = components$membership,
     stringsAsFactors = FALSE
   )
   
+  # Add groups back to main data
   all_facilities_with_groups <- all_facilities %>%
-    left_join(facility_groups, by = "master_id")
+    left_join(facility_groups, by = "master_id") %>%
+    mutate(
+      has_duplicate_group = !is.na(duplicate_group_id)
+    )
   
-  # Group summary
-  group_summary <- all_facilities_with_groups %>%
-    filter(!is.na(duplicate_group_id)) %>%
+  # Summarize duplicate groups
+  duplicate_group_summary <- all_facilities_with_groups %>%
+    filter(has_duplicate_group) %>%
     group_by(duplicate_group_id) %>%
     summarise(
-      group_size = n(),
-      sources = paste(sort(unique(data_source)), collapse = ", "),
+      n_records = n(),
+      data_sources = paste(sort(unique(data_source)), collapse = ", "),
       states = paste(sort(unique(state)), collapse = ", "),
-      companies = paste(unique(company_project_keywords), collapse = " || "),
-      total_capex_M = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
+      companies = paste(unique(str_extract(company_project_keywords, "^[^|]+")), collapse = " | "),
       date_range = {
-        valid_dates <- !is.na(announcement_date)
-        if(any(valid_dates)) {
-          paste(min(announcement_date[valid_dates]), "to", max(announcement_date[valid_dates]))
+        dates <- announcement_date[!is.na(announcement_date)]
+        if(length(dates) > 0) {
+          paste(min(dates), "to", max(dates))
         } else {
-          "No dates available"
+          "No dates"
         }
       },
+      total_capex_m = sum(capex_amount_estimated, na.rm = TRUE) / 1e6,
       .groups = "drop"
     ) %>%
-    filter(group_size > 1) %>%
-    arrange(desc(group_size))
+    filter(n_records > 1) %>%  # Only groups with actual duplicates
+    arrange(desc(n_records))
   
-  cat("Found", nrow(group_summary), "duplicate groups\n")
-  
-  # Also identify multi-facility companies
-  multifacility_companies <- scored_matches %>%
-    filter(match_type == "Same Company - Different Facilities") %>%
-    select(company_1, company_2, state_1, state_2, distance_km) %>%
-    distinct()
-  
-  cat("Found", nrow(multifacility_companies), "multi-facility company pairs\n")
+  cat(sprintf("Found %d duplicate groups containing 2+ records\n", nrow(duplicate_group_summary)))
   
 } else {
   all_facilities_with_groups <- all_facilities %>%
-    mutate(duplicate_group_id = NA_integer_)
-  group_summary <- data.frame()
+    mutate(
+      duplicate_group_id = NA_integer_,
+      has_duplicate_group = FALSE
+    )
+  duplicate_group_summary <- data.frame()
 }
 
-# --- 9. FINAL SUMMARY ---
+# --- 7. Create summary report ---
+cat("\n--- 7. Creating duplicate detection summary ---\n")
+
+# Create detailed match review table
+matches_for_review <- scored_pairs %>%
+  filter(match_likelihood %in% c("High", "Medium")) %>%
+  left_join(
+    all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords),
+    by = c("id1" = "master_id")
+  ) %>%
+  left_join(
+    all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords),
+    by = c("id2" = "master_id"),
+    suffix = c("_1", "_2")
+  ) %>%
+  mutate(
+    capex_m_1 = round(capex_amount_estimated_1 / 1e6, 1),
+    capex_m_2 = round(capex_amount_estimated_2 / 1e6, 1)
+  ) %>%
+  select(
+    match_likelihood,
+    composite_score,
+    match_characteristics,
+    # Facility 1
+    id1,
+    source_1,
+    company_1 = company_project_keywords_1,
+    state_1,
+    status_1 = facility_status_standardized_1,
+    capex_m_1,
+    date_1 = announcement_date_parsed_1,
+    # Facility 2  
+    id2,
+    source_2,
+    company_2 = company_project_keywords_2,
+    state_2,
+    status_2 = facility_status_standardized_2,
+    capex_m_2,
+    date_2 = announcement_date_parsed_2,
+    # Match details
+    name_score,
+    location_score,
+    distance_km,
+    date_score,
+    category_score,
+    category_1 = project_category_keywords_1,
+    category_2 = project_category_keywords_2
+  ) %>%
+  arrange(desc(composite_score))
+
+# --- 8. Final summary statistics ---
 cat("\n================================================================================\n")
-cat("MATCHING SUMMARY - MULTI-FACILITY AWARE\n")
-cat("================================================================================\n")
+cat("DUPLICATE DETECTION SUMMARY\n")
+cat("================================================================================\n\n")
 
 # Overall statistics
-cat("\nOverall Statistics:\n")
-cat("- Total facilities:", nrow(all_facilities), "\n")
-cat("- Candidate pairs evaluated:", nrow(all_candidate_pairs), "\n")
-cat("- Matches found:", nrow(scored_matches), "\n")
+cat("Overall Statistics:\n")
+cat(sprintf("- Total facilities analyzed: %d\n", nrow(all_facilities)))
+cat(sprintf("- Total pairs evaluated: %d\n", nrow(all_candidates)))
+cat(sprintf("- Potential duplicates found: %d\n", nrow(scored_pairs)))
+cat(sprintf("- High confidence duplicates: %d\n", sum(scored_pairs$match_likelihood == "High")))
 
-# Confidence breakdown
-cat("\nConfidence Breakdown:\n")
-conf_summary <- scored_matches %>%
-  count(confidence, is_likely_duplicate) %>%
-  mutate(match_desc = if_else(is_likely_duplicate, "Likely Duplicate", "Different Facilities")) %>%
-  select(-is_likely_duplicate) %>%
-  pivot_wider(names_from = match_desc, values_from = n, values_fill = 0) %>%
-  mutate(Total = `Likely Duplicate` + `Different Facilities`)
-print(conf_summary)
+# Duplicate statistics by data source pair
+cat("\n\nDuplicates by data source combination:\n")
+source_pair_summary <- scored_pairs %>%
+  filter(match_likelihood %in% c("High", "Medium")) %>%
+  mutate(source_pair = paste(pmin(source_1, source_2), pmax(source_1, source_2), sep = " <-> ")) %>%
+  group_by(source_pair, match_likelihood) %>%
+  summarise(n_matches = n(), .groups = "drop") %>%
+  pivot_wider(names_from = match_likelihood, values_from = n_matches, values_fill = 0) %>%
+  mutate(Total = High + Medium) %>%
+  arrange(desc(Total))
 
-# Key findings
-cat("\nKey Findings:\n")
-same_company_diff_facilities <- sum(scored_matches$match_type == "Same Company - Different Facilities")
-cat("- Same company, different facilities:", same_company_diff_facilities, "matches\n")
-cat("- These are NOT duplicates but represent legitimate multi-facility operations\n")
+print(source_pair_summary)
 
-likely_duplicates <- sum(scored_matches$is_likely_duplicate)
-cat("\n- Likely duplicate records:", likely_duplicates, "\n")
-cat("- These should be reviewed for consolidation\n")
+# Sample high confidence duplicates
+cat("\n\nSample high confidence duplicates:\n")
+if (nrow(filter(matches_for_review, match_likelihood == "High")) > 0) {
+  sample_duplicates <- matches_for_review %>%
+    filter(match_likelihood == "High") %>%
+    select(company_1, state_1, source_1, company_2, state_2, source_2, distance_km, composite_score) %>%
+    head(10)
+  print(sample_duplicates)
+}
 
-# Show how company_project_keywords parsing worked
-cat("\nExample Company Info Parsing:\n")
-example_parsing <- match_df %>%
-  filter(has_facility_info) %>%
-  select(data_source, company_project_keywords, company, facility_name) %>%
-  group_by(data_source) %>%
-  slice_head(n = 2) %>%
-  ungroup()
-print(example_parsing)
+# Duplicate group statistics
+if (nrow(duplicate_group_summary) > 0) {
+  cat("\n\nLargest duplicate groups:\n")
+  print(head(duplicate_group_summary, 10))
+  
+  cat(sprintf("\n\nTotal records that are likely duplicates: %d (%.1f%%)\n", 
+              sum(all_facilities_with_groups$has_duplicate_group),
+              sum(all_facilities_with_groups$has_duplicate_group) / nrow(all_facilities_with_groups) * 100))
+}
 
-# Sample matches
-cat("\nSample High-Confidence Duplicate Matches:\n")
-sample_dups <- matches_for_review %>%
-  filter(is_likely_duplicate == TRUE & confidence %in% c("Very High", "High")) %>%
-  select(match_type, company_1, company_2, state_1, distance_km, capex_diff_pct) %>%
-  head(5)
-print(sample_dups)
+cat("\nDUPLICATE DETECTION COMPLETE\n")
 
-cat("\nSample Multi-Facility Matches (NOT duplicates):\n")
-sample_multi <- matches_for_review %>%
-  filter(match_type == "Same Company - Different Facilities") %>%
-  select(company_1, company_2, state_1, distance_km) %>%
-  head(5)
-print(sample_multi)
+# Save results (uncomment as needed)
+# write_csv(matches_for_review, "duplicate_matches_for_review.csv")
+# write_csv(duplicate_group_summary, "duplicate_groups.csv") 
+# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_flags.csv")
+# write_csv(filter(scored_pairs, match_likelihood == "High"), "high_confidence_duplicates.csv")
 
+cat("\nDUPLICATE DETECTION COMPLETE\n")
 
-cat("MATCHING COMPLETE - Results distinguish between duplicates and multi-facility operations\n")
+# Save results (uncomment as needed)
+# write_csv(matches_for_review, "duplicate_matches_for_review.csv")
+# write_csv(duplicate_group_summary, "duplicate_groups.csv") 
+# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_flags.csv")
+# write_csv(filter(scored_pairs, match_likelihood == "High"), "high_confidence_duplicates.csv")
 
-#View(matches_for_review)
-
-
-# Uncomment to save files
-# write_csv(matches_for_review, "matches_for_review_multifacility.csv")
-# write_csv(group_summary, "duplicate_groups.csv")
-# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_groups.csv")
-# write_csv(filter(scored_matches, is_likely_duplicate), "likely_duplicates.csv")
-# write_csv(filter(scored_matches, !is_likely_duplicate), "non_duplicates.csv")
-
-#Part III: Descriptive statistics by data source
 
 # PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE - IMPROVED VERSION
 
