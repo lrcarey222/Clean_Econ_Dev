@@ -1571,7 +1571,7 @@ cat("\nDUPLICATE DETECTION COMPLETE\n")
 # write_csv(filter(scored_pairs, match_likelihood == "High"), "high_confidence_duplicates.csv")
 
 
-# PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE - IMPROVED VERSION
+# PART III: Summary Stats by Source, Pre-GJF---------
 
 cat("\n================================================================================\n")
 cat("PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE\n")
@@ -1778,6 +1778,766 @@ source_level_summary <- all_facilities %>%
 cat("\n\nHigh-level summary by data source:\n")
 glimpse(source_level_summary)
 
-# Export if needed
-# write_csv(summary_stats_by_source, "category_summary_statistics.csv")
-# write_csv(source_level_summary, "source_level_summary.csv")
+#Part IV: Good Jobs First---------------
+# Complete GJF Data Processing Pipeline
+# This script combines data loading, cleaning, and geographic enrichment
+
+# Complete GJF Data Processing Pipeline
+# This script combines data loading, cleaning, and geographic enrichment
+
+# Load required libraries
+library(tidyverse)
+library(readr)
+library(tigris)
+library(sf)
+
+# Set options
+options(tigris_use_cache = TRUE)
+options(tigris_class = "sf")
+
+# ============================================================================
+# MAIN PROCESSING FUNCTION
+# ============================================================================
+
+process_gjf_data_complete <- function(march_2025_file, new_data_folder, use_tigris = TRUE) {
+  
+  # ---------------------------------------------------------------------------
+  # STEP 1: LOAD AND COMBINE DATA
+  # ---------------------------------------------------------------------------
+  cat("STEP 1: LOADING AND COMBINING DATA\n")
+  cat("==================================\n")
+  
+  # Read March 2025 dataset
+  cat("Reading March 2025 GJF complete dataset...\n")
+  GJF_MARCH_2025 <- read_csv(march_2025_file, 
+                             show_col_types = FALSE,
+                             guess_max = 10000)  # Look at more rows for type guessing
+  
+  # Standardize column names
+  names(GJF_MARCH_2025) <- gsub("\\.", " ", names(GJF_MARCH_2025))
+  
+  # Convert to character for merging
+  GJF_MARCH_2025_char <- GJF_MARCH_2025 %>%
+    mutate(across(everything(), as.character))
+  
+  cat("March 2025 data:", nrow(GJF_MARCH_2025), "rows,", ncol(GJF_MARCH_2025), "columns\n\n")
+  
+  # Read new CSV files
+  csv_files <- list.files(new_data_folder, 
+                          pattern = "\\.csv$", 
+                          full.names = TRUE, 
+                          ignore.case = TRUE)
+  
+  cat("Found", length(csv_files), "CSV files in new folder\n")
+  cat("Reading and processing new CSV files...\n")
+  
+  all_gjf_data <- map_dfr(csv_files, ~ {
+    read_csv(.x, 
+             col_types = cols(.default = "c"),
+             show_col_types = FALSE) %>%
+      filter(rowSums(is.na(.) | . == "") < ncol(.))
+  }) %>%
+    distinct()
+  
+  cat("New data:", nrow(all_gjf_data), "rows,", ncol(all_gjf_data), "columns\n\n")
+  
+  # Find common columns
+  cat("Finding common columns...\n")
+  common_cols <- intersect(names(GJF_MARCH_2025_char), names(all_gjf_data))
+  cat("Common columns found:", length(common_cols), "\n\n")
+  
+  # Select common columns and combine
+  GJF_MARCH_2025_common <- GJF_MARCH_2025_char %>%
+    select(all_of(common_cols)) %>%
+    mutate(data_source = "March 2025")
+  
+  all_gjf_data_common <- all_gjf_data %>%
+    select(all_of(common_cols)) %>%
+    mutate(data_source = "New July 2025")
+  
+  # Combine datasets
+  cat("Combining datasets...\n")
+  combined_GJF_data <- bind_rows(GJF_MARCH_2025_common, all_gjf_data_common)
+  
+  # Remove duplicates (keep July 2025 version)
+  GJF_SUBSIDY_DATA <- combined_GJF_data %>%
+    group_by(across(-data_source)) %>%
+    filter(n() == 1 | data_source == "New July 2025") %>%
+    ungroup() %>%
+    select(-data_source)
+  
+  # ---------------------------------------------------------------------------
+  # STEP 2: ADD DERIVED COLUMNS
+  # ---------------------------------------------------------------------------
+  cat("\nSTEP 2: ADDING DERIVED COLUMNS\n")
+  cat("==============================\n")
+  
+  # Add state abbreviation
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+    mutate(state = case_when(
+      str_detect(Location, "Alabama") ~ "AL",
+      str_detect(Location, "Alaska") ~ "AK",
+      str_detect(Location, "Arizona") ~ "AZ",
+      str_detect(Location, "Arkansas") ~ "AR",
+      str_detect(Location, "California") ~ "CA",
+      str_detect(Location, "Colorado") ~ "CO",
+      str_detect(Location, "Connecticut") ~ "CT",
+      str_detect(Location, "Delaware") ~ "DE",
+      str_detect(Location, "District of Columbia") ~ "DC",
+      str_detect(Location, "Florida") ~ "FL",
+      str_detect(Location, "Georgia") ~ "GA",
+      str_detect(Location, "Hawaii") ~ "HI",
+      str_detect(Location, "Idaho") ~ "ID",
+      str_detect(Location, "Illinois") ~ "IL",
+      str_detect(Location, "Indiana") ~ "IN",
+      str_detect(Location, "Iowa") ~ "IA",
+      str_detect(Location, "Kansas") ~ "KS",
+      str_detect(Location, "Kentucky") ~ "KY",
+      str_detect(Location, "Louisiana") ~ "LA",
+      str_detect(Location, "Maine") ~ "ME",
+      str_detect(Location, "Maryland") ~ "MD",
+      str_detect(Location, "Massachusetts") ~ "MA",
+      str_detect(Location, "Michigan") ~ "MI",
+      str_detect(Location, "Minnesota") ~ "MN",
+      str_detect(Location, "Mississippi") ~ "MS",
+      str_detect(Location, "Missouri") ~ "MO",
+      str_detect(Location, "Montana") ~ "MT",
+      str_detect(Location, "Nebraska") ~ "NE",
+      str_detect(Location, "Nevada") ~ "NV",
+      str_detect(Location, "New Hampshire") ~ "NH",
+      str_detect(Location, "New Jersey") ~ "NJ",
+      str_detect(Location, "New Mexico") ~ "NM",
+      str_detect(Location, "New York") ~ "NY",
+      str_detect(Location, "North Carolina") ~ "NC",
+      str_detect(Location, "North Dakota") ~ "ND",
+      str_detect(Location, "Ohio") ~ "OH",
+      str_detect(Location, "Oklahoma") ~ "OK",
+      str_detect(Location, "Oregon") ~ "OR",
+      str_detect(Location, "Pennsylvania") ~ "PA",
+      str_detect(Location, "Rhode Island") ~ "RI",
+      str_detect(Location, "South Carolina") ~ "SC",
+      str_detect(Location, "South Dakota") ~ "SD",
+      str_detect(Location, "Tennessee") ~ "TN",
+      str_detect(Location, "Texas") ~ "TX",
+      str_detect(Location, "Utah") ~ "UT",
+      str_detect(Location, "Vermont") ~ "VT",
+      str_detect(Location, "Virginia") ~ "VA",
+      str_detect(Location, "Washington") ~ "WA",
+      str_detect(Location, "West Virginia") ~ "WV",
+      str_detect(Location, "Wisconsin") ~ "WI",
+      str_detect(Location, "Wyoming") ~ "WY",
+      TRUE ~ NA_character_
+    ))
+  
+  # Add company_parent column - combine Company and Parent Company
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+    mutate(
+      # Create combined Company | Parent Company field
+      company_parent = case_when(
+        # Both Company and Parent Company exist
+        !is.na(Company) & !is.na(`Parent Company`) ~ 
+          paste0(str_trim(Company), " | ", str_trim(`Parent Company`)),
+        # Only Company exists
+        !is.na(Company) & is.na(`Parent Company`) ~ str_trim(Company),
+        # Only Parent Company exists (rare case)
+        is.na(Company) & !is.na(`Parent Company`) ~ str_trim(`Parent Company`),
+        # Neither exists
+        TRUE ~ NA_character_
+      )
+    )
+  
+  cat("Added state abbreviations and Company; Parent column\n")
+  
+  # ---------------------------------------------------------------------------
+  # STEP 3: CLEAN ZIP CODES
+  # ---------------------------------------------------------------------------
+  cat("\nSTEP 3: CLEANING ZIP CODES\n")
+  cat("==========================\n")
+  
+  # Report initial state
+  dash_count <- sum(str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE)
+  total_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip))
+  cat("Total ZIP codes:", total_zips, "\n")
+  cat("ZIP codes with dashes:", dash_count, "\n")
+  
+  # Clean ZIP codes with more robust pattern matching
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+    mutate(
+      # First, extract numeric portion before any dash/hyphen
+      Zip_numeric = case_when(
+        is.na(Zip) ~ NA_character_,
+        # Handle various dash types and extract first part
+        str_detect(Zip, "[-—–]") ~ str_trim(str_extract(Zip, "^[^-—–]+")),
+        # For non-dash ZIPs, extract first 5-9 digits
+        TRUE ~ str_extract(Zip, "^\\d{1,9}")
+      ),
+      # Clean up any remaining non-numeric characters
+      Zip_numeric = str_replace_all(Zip_numeric, "[^0-9]", ""),
+      # Handle ZIP+4 format (keep only first 5 digits)
+      Zip_clean = case_when(
+        is.na(Zip_numeric) ~ NA_character_,
+        nchar(Zip_numeric) >= 5 ~ substr(Zip_numeric, 1, 5),
+        nchar(Zip_numeric) > 0 ~ str_pad(Zip_numeric, 5, "left", "0"),
+        TRUE ~ NA_character_
+      ),
+      # Final validation
+      Zip_clean = case_when(
+        str_detect(Zip_clean, "^\\d{5}$") ~ Zip_clean,
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    select(-Zip_numeric)
+  
+  # Report cleaning results
+  cleaned_dash <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
+                        str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE)
+  valid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean))
+  invalid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip) & is.na(GJF_SUBSIDY_DATA$Zip_clean))
+  
+  cat("Successfully cleaned", cleaned_dash, "ZIP codes with dashes\n")
+  cat("Total valid ZIP codes after cleaning:", valid_zips, "\n")
+  cat("Invalid ZIP codes that couldn't be cleaned:", invalid_zips, "\n\n")
+  
+  # ---------------------------------------------------------------------------
+  # STEP 4: FILL MISSING CITY/COUNTY (if requested)
+  # ---------------------------------------------------------------------------
+  
+  if (use_tigris) {
+    cat("\nSTEP 4: FILLING MISSING CITY/COUNTY DATA\n")
+    cat("=========================================\n")
+    
+    # Identify rows needing lookup
+    rows_needing_lookup <- GJF_SUBSIDY_DATA %>%
+      filter(!is.na(Zip_clean) & !is.na(state) & (is.na(City) | is.na(County)))
+    
+    cat("Rows with ZIP but missing city/county:", nrow(rows_needing_lookup), "\n")
+    
+    if (nrow(rows_needing_lookup) > 0) {
+      # Get unique ZIP-state combinations
+      zips_to_lookup <- rows_needing_lookup %>%
+        distinct(Zip_clean, state) %>%
+        arrange(state, Zip_clean)
+      
+      cat("Unique ZIP-state combinations to lookup:", nrow(zips_to_lookup), "\n")
+      
+      # Try simplified tigris approach
+      cat("\nAttempting geographic lookup...\n")
+      cat("NOTE: This may take several minutes and requires internet connection\n\n")
+      
+      zip_crosswalk <- tibble()
+      states_to_process <- unique(zips_to_lookup$state)
+      successful_lookups <- 0
+      
+      # Try a simpler approach - just get ZCTA data for all states at once
+      tryCatch({
+        cat("Downloading ZIP code data...\n")
+        # Get all ZCTAs for the US
+        all_zctas <- zctas(cb = TRUE, year = 2020, progress_bar = FALSE)
+        
+        # Filter to our needed ZIPs
+        needed_zips <- unique(zips_to_lookup$Zip_clean)
+        zctas_filtered <- all_zctas %>%
+          filter(ZCTA5CE20 %in% needed_zips)
+        
+        cat("Found", nrow(zctas_filtered), "matching ZCTAs\n")
+        
+        # For each state, try to get county/place data
+        pb <- txtProgressBar(min = 0, max = length(states_to_process), style = 3)
+        
+        for (i in seq_along(states_to_process)) {
+          st <- states_to_process[i]
+          setTxtProgressBar(pb, i)
+          
+          state_zips <- zips_to_lookup %>%
+            filter(state == st) %>%
+            pull(Zip_clean)
+          
+          state_zctas <- zctas_filtered %>%
+            filter(ZCTA5CE20 %in% state_zips)
+          
+          if (nrow(state_zctas) > 0) {
+            tryCatch({
+              # Get county data
+              counties <- counties(state = st, cb = TRUE, year = 2020, progress_bar = FALSE)
+              
+              # Simple spatial join for counties
+              zcta_county <- st_join(
+                st_point_on_surface(state_zctas),
+                counties,
+                join = st_within
+              ) %>%
+                st_drop_geometry() %>%
+                select(ZCTA5CE20, NAME) %>%
+                rename(Zip_clean = ZCTA5CE20, County_from_zip = NAME) %>%
+                filter(!is.na(County_from_zip))
+              
+              if (nrow(zcta_county) > 0) {
+                zcta_county$City_from_zip <- NA_character_
+                zcta_county$state <- st
+                zip_crosswalk <- bind_rows(zip_crosswalk, zcta_county)
+                successful_lookups <- successful_lookups + nrow(zcta_county)
+              }
+              
+            }, error = function(e) {
+              # Silent fail for individual states
+            })
+          }
+        }
+        
+        close(pb)
+        
+      }, error = function(e) {
+        cat("\nERROR: Could not download geographic data\n")
+        cat("Error message:", e$message, "\n")
+      })
+      
+      cat("\n\nSuccessfully looked up", successful_lookups, "ZIP codes\n")
+      
+      # Apply the crosswalk if we have any data
+      if (nrow(zip_crosswalk) > 0) {
+        rows_before <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
+                             (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
+        
+        GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+          left_join(
+            zip_crosswalk %>% select(Zip_clean, City_from_zip, County_from_zip),
+            by = "Zip_clean"
+          ) %>%
+          mutate(
+            City = coalesce(City, City_from_zip),
+            County = coalesce(County, County_from_zip)
+          ) %>%
+          select(-City_from_zip, -County_from_zip)
+        
+        rows_after <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
+                            (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
+        
+        cat("Rows filled:", rows_before - rows_after, "\n")
+      } else {
+        cat("WARNING: No geographic lookups succeeded\n")
+      }
+    }
+  } else {
+    cat("\nSTEP 4: SKIPPING GEOGRAPHIC LOOKUP (use_tigris = FALSE)\n")
+  }
+  
+  # ---------------------------------------------------------------------------
+  # STEP 5: FINALIZE AND CONVERT DATA TYPES
+  # ---------------------------------------------------------------------------
+  cat("\nSTEP 5: FINALIZING DATA\n")
+  cat("=======================\n")
+  
+  # Replace original Zip with cleaned version
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+    mutate(Zip = Zip_clean) %>%
+    select(-Zip_clean)
+  
+  # Convert numeric columns to proper types
+  cat("Converting numeric columns to appropriate types...\n")
+  
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
+    mutate(
+      # Year as integer
+      Year = as.integer(Year),
+      
+      # Clean and convert subsidy values
+      `Subsidy Value` = as.numeric(str_replace_all(`Subsidy Value`, "[^0-9.-]", "")),
+      
+      # Clean and convert other numeric fields
+      `Number of Jobs or Training Slots` = as.integer(`Number of Jobs or Training Slots`),
+      `Wage Data` = as.numeric(str_replace_all(`Wage Data`, "[^0-9.-]", "")),
+      `Investment Data` = as.numeric(str_replace_all(`Investment Data`, "[^0-9.-]", "")),
+      `Value of Exempted Property` = as.numeric(str_replace_all(`Value of Exempted Property`, "[^0-9.-]", "")),
+      `Loan Value` = as.numeric(str_replace_all(`Loan Value`, "[^0-9.-]", ""))
+    )
+  
+  # ---------------------------------------------------------------------------
+  # FINAL SUMMARY
+  # ---------------------------------------------------------------------------
+  cat("\n=== FINAL SUMMARY ===\n")
+  cat("Total rows:", format(nrow(GJF_SUBSIDY_DATA), big.mark = ","), "\n")
+  cat("Rows with valid ZIP:", format(sum(!is.na(GJF_SUBSIDY_DATA$Zip)), big.mark = ","), "\n")
+  cat("Rows with City:", format(sum(!is.na(GJF_SUBSIDY_DATA$City)), big.mark = ","), "\n")
+  cat("Rows with County:", format(sum(!is.na(GJF_SUBSIDY_DATA$County)), big.mark = ","), "\n")
+  cat("Rows with all three (ZIP, City, County):", 
+      format(sum(!is.na(GJF_SUBSIDY_DATA$Zip) & 
+                   !is.na(GJF_SUBSIDY_DATA$City) & 
+                   !is.na(GJF_SUBSIDY_DATA$County)), big.mark = ","), "\n")
+  cat("Total subsidy value: $", 
+      format(sum(GJF_SUBSIDY_DATA$`Subsidy Value`, na.rm = TRUE), 
+             big.mark = ",", scientific = FALSE), "\n")
+  
+  return(GJF_SUBSIDY_DATA)
+}
+
+# PART V: FACILITY-SUBSIDY MATCHING (IMPROVED VERSION)
+# Enhanced matching with better filtering and validation
+
+cat("\n================================================================================\n")
+cat("PART V: FACILITY-SUBSIDY MATCHING (IMPROVED)\n")
+cat("================================================================================\n\n")
+
+# --- 1. First, analyze the existing matches to identify issues ---
+cat("--- 1. Analyzing existing matches to identify patterns ---\n")
+
+# Load the existing matches if available
+if (exists("facility_subsidy_matches") && nrow(facility_subsidy_matches) > 0) {
+  
+  # Analyze similarity distribution
+  cat("\nSimilarity score distribution:\n")
+  similarity_summary <- facility_subsidy_matches %>%
+    summarise(
+      total_matches = n(),
+      min_similarity = min(name_similarity),
+      q1_similarity = quantile(name_similarity, 0.25),
+      median_similarity = median(name_similarity),
+      q3_similarity = quantile(name_similarity, 0.75),
+      max_similarity = max(name_similarity),
+      matches_60_70 = sum(name_similarity >= 0.6 & name_similarity < 0.7),
+      matches_70_80 = sum(name_similarity >= 0.7 & name_similarity < 0.8),
+      matches_80_90 = sum(name_similarity >= 0.8 & name_similarity < 0.9),
+      matches_90_100 = sum(name_similarity >= 0.9)
+    )
+  print(similarity_summary)
+  
+  # Check match types
+  cat("\nMatch type distribution:\n")
+  print(table(facility_subsidy_matches$match_type))
+  
+  # Look for problematic patterns
+  cat("\nSample low-similarity matches (0.6-0.7):\n")
+  low_matches <- facility_subsidy_matches %>%
+    filter(name_similarity >= 0.6 & name_similarity < 0.7) %>%
+    select(facility_company, subsidy_company, name_similarity) %>%
+    head(10)
+  print(low_matches)
+}
+
+# --- 2. Enhanced matching parameters ---
+cat("\n--- 2. Setting enhanced matching parameters ---\n")
+
+matching_params <- list(
+  # Stricter name similarity thresholds
+  similarity_threshold_high = 0.85,      # High confidence matches
+  similarity_threshold_medium = 0.75,    # Medium confidence matches
+  similarity_threshold_low = 0.65,       # Low confidence (requiring additional validation)
+  
+  # Temporal constraints
+  max_years_before_announcement = 3,    # Subsidies up to 3 years before facility announcement
+  max_years_after_announcement = 2,      # Subsidies up to 2 years after announcement
+  
+  # Common company name variations to handle
+  company_variations = c(
+    "incorporated|inc" = "inc",
+    "corporation|corp" = "corp",
+    "company|co" = "co",
+    "limited|ltd" = "ltd",
+    "llc|l\\.l\\.c\\." = "llc",
+    "manufacturing|mfg" = "mfg",
+    "technologies|tech" = "tech",
+    "international|intl" = "intl",
+    "associates|assoc" = "assoc"
+  )
+)
+
+cat("Parameters set for multi-tier matching\n\n")
+
+# --- 3. Enhanced company name normalization ---
+normalize_company_name_enhanced <- function(name) {
+  if (is.na(name) || name == "") return("")
+  
+  # Convert to lowercase
+  name <- str_to_lower(name)
+  
+  # Remove common prefixes/suffixes that don't help matching
+  name <- str_remove_all(name, "\\b(the|a|an)\\s+")
+  
+  # Standardize common variations
+  for (pattern in names(matching_params$company_variations)) {
+    replacement <- matching_params$company_variations[pattern]
+    name <- str_replace_all(name, pattern, replacement)
+  }
+  
+  # Remove punctuation and extra spaces
+  name <- str_replace_all(name, "[^a-z0-9\\s]", " ")
+  name <- str_squish(name)
+  
+  # Remove trailing company identifiers
+  name <- str_remove(name, "\\s+(inc|corp|co|llc|ltd|lp|llp|plc)$")
+  
+  return(name)
+}
+
+# --- 4. Prepare enhanced facility and subsidy data ---
+cat("--- 3. Preparing enhanced facility and subsidy data ---\n")
+
+facilities_enhanced <- all_facilities %>%
+  filter(!is.na(company_project_keywords) & !is.na(state)) %>%
+  mutate(
+    # Enhanced normalization
+    company_normalized = map_chr(company_project_keywords, normalize_company_name_enhanced),
+    company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(),
+    company_primary_normalized = map_chr(company_primary, normalize_company_name_enhanced),
+    # Parse announcement year for temporal filtering
+    announcement_year = year(as.Date(announcement_date))
+  ) %>%
+  filter(!is.na(company_normalized) & company_normalized != "" & 
+           !is.na(announcement_year)) %>%
+  select(master_id, data_source, state, company_project_keywords, 
+         company_normalized, company_primary_normalized,
+         announcement_date, announcement_year, capex_amount_estimated,
+         project_category_keywords, supply_chain_stage)
+
+cat("Enhanced facilities prepared:", nrow(facilities_enhanced), "\n")
+
+subsidies_enhanced <- GJF_SUBSIDY_DATA %>%
+  filter(!is.na(company_parent) & !is.na(state) & 
+           !is.na(`Subsidy Value`) & !is.na(Year)) %>%
+  mutate(
+    subsidy_id = row_number(),
+    # Enhanced normalization
+    company_normalized = map_chr(Company, normalize_company_name_enhanced),
+    parent_normalized = map_chr(`Parent Company`, normalize_company_name_enhanced),
+    company_parent_normalized = map_chr(company_parent, normalize_company_name_enhanced),
+    subsidy_year = Year
+  ) %>%
+  select(subsidy_id, state, Company, `Parent Company`, company_parent,
+         company_normalized, parent_normalized, company_parent_normalized,
+         subsidy_year, `Subsidy Value`, `Program Name`, `Type of Subsidy`,
+         City, County)
+
+cat("Enhanced subsidies prepared:", nrow(subsidies_enhanced), "\n")
+
+# --- 5. Matching function with temporal and confidence filtering ---
+cat("\n--- 4. Creating enhanced matching function ---\n")
+
+match_state_enhanced <- function(state_code, params, max_facilities = 200) {
+  state_facilities <- filter(facilities_enhanced, state == state_code)
+  state_subsidies <- filter(subsidies_enhanced, state == state_code)
+  
+  if (nrow(state_facilities) == 0 || nrow(state_subsidies) == 0) {
+    return(NULL)
+  }
+  
+  # Sample if too many facilities
+  if (nrow(state_facilities) > max_facilities) {
+    state_facilities <- sample_n(state_facilities, max_facilities)
+  }
+  
+  # Create pairs
+  pairs <- expand_grid(
+    master_id = state_facilities$master_id,
+    subsidy_id = state_subsidies$subsidy_id
+  )
+  
+  # Join data
+  pairs <- pairs %>%
+    left_join(state_facilities, by = "master_id") %>%
+    left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
+  
+  # Calculate similarities and apply filters
+  pairs %>%
+    mutate(
+      # Calculate all similarity scores
+      sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"),
+      sim_fac_parent = stringsim(company_normalized_facility, parent_normalized, method = "jw"),
+      sim_primary_company = stringsim(company_primary_normalized, company_normalized_subsidy, method = "jw"),
+      sim_primary_parent = stringsim(company_primary_normalized, parent_normalized, method = "jw"),
+      
+      # Maximum similarity
+      max_similarity = pmax(sim_fac_company, sim_fac_parent, 
+                            sim_primary_company, sim_primary_parent, na.rm = TRUE),
+      
+      # Temporal alignment
+      year_diff = subsidy_year - announcement_year,
+      temporal_match = year_diff >= -params$max_years_before_announcement & 
+        year_diff <= params$max_years_after_announcement,
+      
+      # Confidence level based on similarity and temporal alignment
+      confidence_level = case_when(
+        max_similarity >= params$similarity_threshold_high & temporal_match ~ "High",
+        max_similarity >= params$similarity_threshold_high & !temporal_match ~ "Medium (time mismatch)",
+        max_similarity >= params$similarity_threshold_medium & temporal_match ~ "Medium",
+        max_similarity >= params$similarity_threshold_low & temporal_match ~ "Low",
+        TRUE ~ "Very Low"
+      ),
+      
+      # Match type
+      best_match_type = case_when(
+        max_similarity == sim_fac_company ~ "Facility company matches subsidy company",
+        max_similarity == sim_fac_parent ~ "Facility company matches subsidy parent",
+        max_similarity == sim_primary_company ~ "Facility primary matches subsidy company",
+        max_similarity == sim_primary_parent ~ "Facility primary matches subsidy parent",
+        TRUE ~ "No match"
+      ),
+      
+      # Additional validation flags
+      exact_name_match = (company_normalized_facility == company_normalized_subsidy) |
+        (company_normalized_facility == parent_normalized),
+      
+      # Check if subsidy is before announcement (common pattern)
+      subsidy_before_announcement = year_diff < 0,
+      
+      # Flag suspicious matches (very different years)
+      suspicious_timing = abs(year_diff) > 5
+    ) %>%
+    # Filter to meaningful matches only
+    filter(
+      max_similarity >= params$similarity_threshold_low &
+        !suspicious_timing
+    ) %>%
+    select(
+      master_id,
+      subsidy_id,
+      facility_data_source = data_source,
+      facility_state = state_facility,
+      facility_company = company_project_keywords,
+      facility_category = project_category_keywords,
+      subsidy_company = Company,
+      subsidy_parent = `Parent Company`,
+      subsidy_year,
+      facility_year = announcement_year,
+      year_diff,
+      subsidy_value = `Subsidy Value`,
+      subsidy_program = `Program Name`,
+      subsidy_type = `Type of Subsidy`,
+      subsidy_city = City,
+      subsidy_county = County,
+      facility_announcement = announcement_date,
+      facility_capex = capex_amount_estimated,
+      name_similarity = max_similarity,
+      confidence_level,
+      match_type = best_match_type,
+      exact_name_match,
+      temporal_match,
+      subsidy_before_announcement
+    )
+}
+
+# --- 6. Process states with enhanced matching ---
+cat("\n--- 5. Processing states with enhanced matching ---\n")
+
+# Process all states with both data
+state_coverage <- data.frame(state = unique(c(facilities_enhanced$state, subsidies_enhanced$state))) %>%
+  left_join(
+    facilities_enhanced %>% group_by(state) %>% summarise(n_facilities = n()),
+    by = "state"
+  ) %>%
+  left_join(
+    subsidies_enhanced %>% group_by(state) %>% summarise(n_subsidies = n()),
+    by = "state"
+  ) %>%
+  mutate(
+    n_facilities = replace_na(n_facilities, 0),
+    n_subsidies = replace_na(n_subsidies, 0),
+    has_both = n_facilities > 0 & n_subsidies > 0
+  ) %>%
+  filter(has_both) %>%
+  arrange(state)
+
+states_to_process <- state_coverage$state
+
+all_matches_enhanced <- list()
+pb <- txtProgressBar(min = 0, max = length(states_to_process), style = 3)
+
+for (i in seq_along(states_to_process)) {
+  st <- states_to_process[i]
+  setTxtProgressBar(pb, i)
+  
+  tryCatch({
+    matches <- match_state_enhanced(st, matching_params, max_facilities = 200)
+    if (!is.null(matches) && nrow(matches) > 0) {
+      all_matches_enhanced[[st]] <- matches
+    }
+  }, error = function(e) {
+    # Silent error handling
+  })
+}
+close(pb)
+
+# Combine results
+all_matches_enhanced_df <- bind_rows(all_matches_enhanced)
+cat("\n\nTotal enhanced matches found:", nrow(all_matches_enhanced_df), "\n")
+
+# --- 7. Analyze and summarize enhanced results ---
+cat("\n--- 6. Enhanced matching results ---\n")
+
+if (nrow(all_matches_enhanced_df) > 0) {
+  
+  # Overall summary by confidence level
+  confidence_summary <- all_matches_enhanced_df %>%
+    group_by(confidence_level) %>%
+    summarise(
+      n_matches = n(),
+      avg_similarity = round(mean(name_similarity), 3),
+      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
+      pct_temporal_match = round(mean(temporal_match) * 100, 1),
+      pct_exact_match = round(mean(exact_name_match) * 100, 1),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_matches))
+  
+  cat("\nMatches by confidence level:\n")
+  print(confidence_summary)
+  
+  # High confidence matches sample
+  cat("\nSample HIGH confidence matches:\n")
+  high_conf_sample <- all_matches_enhanced_df %>%
+    filter(confidence_level == "High") %>%
+    select(facility_company, subsidy_company, facility_state,
+           name_similarity, subsidy_value, year_diff) %>%
+    mutate(subsidy_value_m = round(subsidy_value / 1e6, 2)) %>%
+    select(-subsidy_value) %>%
+    arrange(desc(name_similarity)) %>%
+    head(10)
+  print(high_conf_sample)
+  
+  # Temporal patterns
+  cat("\nTemporal patterns (subsidy year - facility year):\n")
+  temporal_summary <- all_matches_enhanced_df %>%
+    filter(confidence_level %in% c("High", "Medium")) %>%
+    group_by(year_diff) %>%
+    summarise(
+      n_matches = n(),
+      avg_similarity = round(mean(name_similarity), 3),
+      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
+      .groups = "drop"
+    ) %>%
+    filter(n_matches >= 10) %>%
+    arrange(year_diff)
+  print(temporal_summary)
+  
+  # State summary
+  cat("\nTop states by high-confidence matches:\n")
+  state_summary <- all_matches_enhanced_df %>%
+    filter(confidence_level == "High") %>%
+    group_by(facility_state) %>%
+    summarise(
+      n_matches = n(),
+      n_facilities = n_distinct(master_id),
+      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_matches)) %>%
+    head(15)
+  print(state_summary)
+  
+  # Save enhanced results
+  facility_subsidy_matches_enhanced <- all_matches_enhanced_df
+  
+  # Optional: Create high-confidence only dataset
+  high_confidence_matches <- all_matches_enhanced_df %>%
+    filter(confidence_level == "High")
+  
+  cat("\n\nHigh confidence matches:", nrow(high_confidence_matches), "\n")
+  cat("Medium confidence matches:", sum(str_detect(all_matches_enhanced_df$confidence_level, "Medium")), "\n")
+  cat("Low confidence matches:", sum(all_matches_enhanced_df$confidence_level == "Low"), "\n")
+}
+
+cat("\n================================================================================\n")
+cat("ENHANCED FACILITY-SUBSIDY MATCHING COMPLETE\n")
+cat("================================================================================\n")
+
+# Save results
+# write_csv(facility_subsidy_matches_enhanced, "facility_subsidy_matches_enhanced.csv")
+# write_csv(high_confidence_matches, "facility_subsidy_matches_high_confidence.csv")
