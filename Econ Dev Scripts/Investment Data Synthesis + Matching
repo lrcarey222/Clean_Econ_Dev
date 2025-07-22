@@ -2534,6 +2534,8 @@ if (nrow(all_matches_enhanced_df) > 0) {
   cat("Low confidence matches:", sum(all_matches_enhanced_df$confidence_level == "Low"), "\n")
 }
 
+View(high_confidence_matches)
+
 cat("\n================================================================================\n")
 cat("ENHANCED FACILITY-SUBSIDY MATCHING COMPLETE\n")
 cat("================================================================================\n")
