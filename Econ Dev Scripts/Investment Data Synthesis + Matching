@@ -2534,12 +2534,10 @@ if (nrow(all_matches_enhanced_df) > 0) {
   cat("Low confidence matches:", sum(all_matches_enhanced_df$confidence_level == "Low"), "\n")
 }
 
-View(high_confidence_matches)
+#Rename high_confidence_matches as high_confidence_investment_subsidy_matches
+high_confidence_investment_subsidy_matches <- high_confidence_matches
+View(high_confidence_investment_subsidy_matches)
 
-cat("\n================================================================================\n")
-cat("ENHANCED FACILITY-SUBSIDY MATCHING COMPLETE\n")
-cat("================================================================================\n")
-
-# Save results
-# write_csv(facility_subsidy_matches_enhanced, "facility_subsidy_matches_enhanced.csv")
-# write_csv(high_confidence_matches, "facility_subsidy_matches_high_confidence.csv")
+#Rename high_conf_duplicates to high_confidence_investment_database_overlaps
+high_confidence_investment_database_overlaps <- high_confidence_matches 
+View(high_confidence_investment_database_overlaps)
