@@ -2539,5 +2539,5 @@ high_confidence_investment_subsidy_matches <- high_confidence_matches
 View(high_confidence_investment_subsidy_matches)
 
 #Rename high_conf_duplicates to high_confidence_investment_database_overlaps
-high_confidence_investment_database_overlaps <- high_confidence_matches 
+high_confidence_investment_database_overlaps <- high_conf_duplicates
 View(high_confidence_investment_database_overlaps)
