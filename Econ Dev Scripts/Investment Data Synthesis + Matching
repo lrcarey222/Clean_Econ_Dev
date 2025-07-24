@@ -2174,9 +2174,9 @@ process_gjf_data_complete <- function(march_2025_file, new_data_folder, use_tigr
 # EXECUTE THE GJF DATA PROCESSING
 # Update these file paths to match your actual file locations
 GJF_SUBSIDY_DATA <- process_gjf_data_complete(
-  march_2025_file = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/good_jobs_first/good_jobs_first_march_2025.csv",
-  new_data_folder = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/good_jobs_first/new_july_2025/",
-  use_tigris = FALSE  # Set to TRUE if you want geographic lookups (requires internet)
+  march_2025_file = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Good Jobs First/gjf_complete.csv",
+  new_data_folder = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Good Jobs First/Good Jobs First Downloads 22 July 2025",
+  use_tigris = TRUE  # Set to TRUE if you want geographic lookups (requires internet)
 )
 
 # PART V: FACILITY-SUBSIDY MATCHING (IMPROVED VERSION)
