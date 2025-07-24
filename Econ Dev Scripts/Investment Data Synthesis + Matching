@@ -381,7 +381,8 @@ CIM_FACILITY_CATEGORIES_STAGE <- CIM_FACILITY_CATEGORIES %>%
   mutate(
     Supply_Chain_Stage = case_when(
       Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Critical Minerals" ~ "Upstream Materials",
-      Decarb_Sector == "Clean Tech Manufacturing" ~ "Manufacturing",
+      Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Solar" & Subcategory == "Polysilicon" ~ "Upstream Materials",
+      Decarb_Sector == "Clean Tech Manufacturing" & Subcategory != "Polysilicon"~ "Manufacturing",
       TRUE ~ "Infrastructure/Deployment"
     )
   )
@@ -2169,6 +2170,14 @@ process_gjf_data_complete <- function(march_2025_file, new_data_folder, use_tigr
   
   return(GJF_SUBSIDY_DATA)
 }
+
+# EXECUTE THE GJF DATA PROCESSING
+# Update these file paths to match your actual file locations
+GJF_SUBSIDY_DATA <- process_gjf_data_complete(
+  march_2025_file = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/good_jobs_first/good_jobs_first_march_2025.csv",
+  new_data_folder = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/good_jobs_first/new_july_2025/",
+  use_tigris = FALSE  # Set to TRUE if you want geographic lookups (requires internet)
+)
 
 # PART V: FACILITY-SUBSIDY MATCHING (IMPROVED VERSION)
 # Enhanced matching with better filtering and validation
