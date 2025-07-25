@@ -1,2552 +1,997 @@
 #Part I: Synthesize Data----------------------
 
+# Create output folder with timestamp
+timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+output_folder <- paste0("investment_subsidy_synthesis_", timestamp)
+dir.create(output_folder, showWarnings = FALSE)
+
+# Start logging console output
+sink(file.path(output_folder, "console_output.txt"), split = TRUE)
+cat("Investment Subsidy Synthesis Script\n")
+cat("Started at:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("Output folder:", output_folder, "\n\n")
+
+# Save copy of this script
+script_path <- rstudioapi::getSourceEditorContext()$path
+if (!is.null(script_path) && file.exists(script_path)) {
+  file.copy(script_path, file.path(output_folder, "synthesis_script.R"))
+}
+
 # INVESTMENT DATA SYNTHESIS - REVISED WITH CATEGORY KEYWORDS
-# Ensure all necessary libraries are loaded. If not installed, run install.packages("package_name")
-library(readr)
-library(dplyr)
-library(tidyverse)
-library(readxl)
-library(lubridate)
-library(stringr)
-library(fuzzyjoin)      # stringdist_*_join
-library(geosphere)      # distHaversine
-library(purrr)
+library(readr); library(dplyr); library(tidyverse); library(readxl); library(lubridate); library(stringr); library(fuzzyjoin); library(geosphere); library(purrr); library(tigris); library(sf); library(parallel); library(doParallel); library(httr); library(jsonlite); library(foreach)
+
+# Set options
+options(tigris_use_cache = TRUE); options(tigris_class = "sf")
 
 # PART 0: CROSS-PLATFORM FILE PATH FUNCTIONS
-
-# Function to detect operating system
 detect_os <- function() {
-  sys_info <- Sys.info()
-  os_name <- sys_info["sysname"]
-  
-  if (os_name == "Darwin") {
-    return("Mac")
-  } else if (os_name == "Windows") {
-    return("Windows")
-  } else if (os_name == "Linux") {
-    return("Linux")
-  } else {
-    return("Unknown")
-  }
+  sys_info <- Sys.info(); os_name <- sys_info["sysname"]
+  if (os_name == "Darwin") return("Mac")
+  else if (os_name == "Windows") return("Windows")
+  else if (os_name == "Linux") return("Linux")
+  else return("Unknown")
 }
 
-# Function to convert Mac-style OneDrive paths to Windows-style paths
 convert_onedrive_path <- function(mac_path, organization_name = "RMI") {
   current_os <- detect_os()
-  
-  if (current_os == "Mac") {
-    # On Mac, return the path as-is
-    return(mac_path)
-  } else if (current_os == "Windows") {
-    # Convert Mac OneDrive path to Windows OneDrive path
-    # Mac format: ~/Library/CloudStorage/OneDrive-RMI/...
-    # Windows format: %USERPROFILE%\OneDrive - RMI\...
-    
-    # Extract the part after OneDrive-[org]/
+  if (current_os == "Mac") return(mac_path)
+  else if (current_os == "Windows") {
     if (grepl("~/Library/CloudStorage/OneDrive-", mac_path)) {
-      # Remove the Mac OneDrive prefix
-      relative_path <- sub("^~/Library/CloudStorage/OneDrive-[^/]+/", "", mac_path)
-      
-      # Get user home directory
-      home_dir <- Sys.getenv("USERPROFILE")
-      
-      # Try different OneDrive folder patterns
-      possible_onedrive_dirs <- c(
-        file.path(home_dir, paste0("OneDrive - ", organization_name)),
-        file.path(home_dir, paste0("OneDrive-", organization_name)),
-        file.path(home_dir, "OneDrive"),
-        file.path(home_dir, "OneDrive - Personal")
-      )
-      
-      # Find the OneDrive directory that exists
+      relative_path <- sub("^~/Library/CloudStorage/OneDrive-[^/]+/", "", mac_path); home_dir <- Sys.getenv("USERPROFILE")
+      possible_onedrive_dirs <- c(file.path(home_dir, paste0("OneDrive - ", organization_name)), file.path(home_dir, paste0("OneDrive-", organization_name)), file.path(home_dir, "OneDrive"), file.path(home_dir, "OneDrive - Personal"))
       onedrive_dir <- NULL
-      for (dir in possible_onedrive_dirs) {
-        if (dir.exists(dir)) {
-          onedrive_dir <- dir
-          break
-        }
-      }
-      
-      if (is.null(onedrive_dir)) {
-        # If no OneDrive directory found, try the first pattern as default
-        onedrive_dir <- possible_onedrive_dirs[1]
-        warning(paste("OneDrive directory not found. Using default:", onedrive_dir))
-      }
-      
-      # Construct the Windows path
+      for (dir in possible_onedrive_dirs) if (dir.exists(dir)) { onedrive_dir <- dir; break }
+      if (is.null(onedrive_dir)) { onedrive_dir <- possible_onedrive_dirs[1]; warning(paste("OneDrive directory not found. Using default:", onedrive_dir)) }
       windows_path <- file.path(onedrive_dir, relative_path)
-      
-      # Convert forward slashes to backslashes for Windows
       windows_path <- normalizePath(windows_path, winslash = "\\", mustWork = FALSE)
-      
       return(windows_path)
-    } else {
-      # If it's not a OneDrive path, return as-is
-      return(mac_path)
-    }
-  } else {
-    # For Linux or other OS, return as-is
-    return(mac_path)
-  }
+    } else return(mac_path)
+  } else return(mac_path)
 }
 
-# Function to create cross-platform file paths
-create_cross_platform_path <- function(mac_path, organization_name = "RMI") {
-  converted_path <- convert_onedrive_path(mac_path, organization_name)
-  return(converted_path)
-}
+create_cross_platform_path <- function(mac_path, organization_name = "RMI") { convert_onedrive_path(mac_path, organization_name) }
 
-# Function to safely read CSV with cross-platform path support
 read_csv_cross_platform <- function(mac_path, organization_name = "RMI", ...) {
   full_path <- create_cross_platform_path(mac_path, organization_name)
-  
-  if (!file.exists(full_path)) {
-    stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
-  }
-  
-  return(read_csv(full_path, ...))
+  if (!file.exists(full_path)) stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
+  data <- read_csv(full_path, ...)
+  # Save unmodified source data
+  file.copy(full_path, file.path(output_folder, paste0("source_", basename(full_path))))
+  return(data)
 }
 
-# Function to safely read Excel with cross-platform path support
 read_excel_cross_platform <- function(mac_path, organization_name = "RMI", ...) {
   full_path <- create_cross_platform_path(mac_path, organization_name)
-  
-  if (!file.exists(full_path)) {
-    stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
-  }
-  
-  return(read_excel(full_path, ...))
+  if (!file.exists(full_path)) stop(paste("File not found:", full_path, "\nPlease check the path and ensure OneDrive is properly synced."))
+  data <- read_excel(full_path, ...)
+  # Save unmodified source data
+  file.copy(full_path, file.path(output_folder, paste0("source_", basename(full_path))))
+  return(data)
 }
 
-
-# Load CIM Data
+cat("Loading CIM Data...\n")
 CIM_2025_Q2_MFG <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/CleanInvestmentMonitor_Download_Manufacturing/manufacturing_facility_metadata.csv", skip = 4)
 CIM_2025_Q1_ALL <- read_csv_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/manufacturing_energy_and_industry_facility_metadata.csv", skip = 5)
 
-# First, let's check the structure of the date columns before joining
-cat("Q2 MFG Announcement_Date class:", class(CIM_2025_Q2_MFG$Announcement_Date), "\n")
-cat("Q1 ALL Announcement_Date class:", class(CIM_2025_Q1_ALL$Announcement_Date), "\n")
+cat("Q2 MFG rows:", nrow(CIM_2025_Q2_MFG), "| Q1 ALL rows:", nrow(CIM_2025_Q1_ALL), "\n")
+cat("Date format check - Q2 MFG:", class(CIM_2025_Q2_MFG$Announcement_Date), "| Q1 ALL:", class(CIM_2025_Q1_ALL$Announcement_Date), "\n")
+cat("Unique IDs - Q2 MFG:", n_distinct(CIM_2025_Q2_MFG$unique_id), "| Q1 ALL:", n_distinct(CIM_2025_Q1_ALL$unique_id), "| Common:", length(intersect(CIM_2025_Q2_MFG$unique_id, CIM_2025_Q1_ALL$unique_id)), "\n")
 
-# Check sample values
-cat("\nSample Q2 MFG dates:\n")
-print(head(CIM_2025_Q2_MFG$Announcement_Date, 10))
-cat("\nSample Q1 ALL dates:\n")
-print(head(CIM_2025_Q1_ALL$Announcement_Date, 10))
+CIM_2025_Q1_ALL <- CIM_2025_Q1_ALL %>% mutate(Announcement_Date = as.Date(Announcement_Date, format = "%m/%d/%y"))
 
-# Check unique IDs
-cat("\nUnique IDs in Q2 MFG:", n_distinct(CIM_2025_Q2_MFG$unique_id), "\n")
-cat("Unique IDs in Q1 ALL:", n_distinct(CIM_2025_Q1_ALL$unique_id), "\n")
-cat("Common unique IDs:", length(intersect(CIM_2025_Q2_MFG$unique_id, CIM_2025_Q1_ALL$unique_id)), "\n\n")
-
-# Convert Q1 ALL dates to Date format before joining
-CIM_2025_Q1_ALL <- CIM_2025_Q1_ALL %>%
-  mutate(
-    Announcement_Date = as.Date(Announcement_Date, format = "%m/%d/%y")
-  )
-
-# Now perform the join
+cat("Joining CIM datasets...\n")
 CIM_FACILITY_DATA_CONSOLIDATED <- CIM_2025_Q2_MFG %>%
-  full_join(CIM_2025_Q1_ALL,
-            by = "unique_id",
-            suffix = c("_mfg", "_all")) %>%
+  full_join(CIM_2025_Q1_ALL, by = "unique_id", suffix = c("_mfg", "_all")) %>%
   transmute(
-    unique_id,
-    Company = coalesce(Company_mfg, Company_all),
-    Technology = coalesce(Technology_mfg, Technology_all),
-    Subcategory = coalesce(Subcategory_mfg, Subcategory_all),
-    Decarb_Sector = coalesce(Decarb_Sector_mfg, Decarb_Sector_all),
-    # Now both date columns are Date type, so coalesce works properly
-    Announcement_Date = coalesce(Announcement_Date_mfg, Announcement_Date_all),
-    State = coalesce(State_mfg, State_all),
+    unique_id, Company = coalesce(Company_mfg, Company_all), Technology = coalesce(Technology_mfg, Technology_all),
+    Subcategory = coalesce(Subcategory_mfg, Subcategory_all), Decarb_Sector = coalesce(Decarb_Sector_mfg, Decarb_Sector_all),
+    Announcement_Date = coalesce(Announcement_Date_mfg, Announcement_Date_all), State = coalesce(State_mfg, State_all),
     Current_Facility_Status = coalesce(Current_Facility_Status_mfg, Current_Facility_Status_all),
-    Latitude = coalesce(Latitude_mfg, Latitude_all),
-    Longitude = coalesce(Longitude_mfg, Longitude_all),
-    Address = coalesce(Address_mfg, Address_all),
-    LatLon_Valid = !is.na(Latitude) & !is.na(Longitude),
+    Latitude = coalesce(Latitude_mfg, Latitude_all), Longitude = coalesce(Longitude_mfg, Longitude_all),
+    Address = coalesce(Address_mfg, Address_all), 
+    LatLon_Valid = if("LatLon_Valid_mfg" %in% names(.) | "LatLon_Valid_all" %in% names(.)) {
+      coalesce(if("LatLon_Valid_mfg" %in% names(.)) LatLon_Valid_mfg else NA, if("LatLon_Valid_all" %in% names(.)) LatLon_Valid_all else NA)
+    } else {!is.na(Latitude) & !is.na(Longitude)},
     Estimated_Total_Facility_CAPEX = coalesce(Estimated_Total_Facility_CAPEX_mfg, Estimated_Total_Facility_CAPEX_all) * 1e6,
-    # Check if these columns exist in the joined data
-    Reported_Operational_Jobs = if("Reported_Operational_Jobs" %in% names(.)) {
-      Reported_Operational_Jobs
-    } else if("Reported_Operational_Jobs_mfg" %in% names(.) | "Reported_Operational_Jobs_all" %in% names(.)) {
-      coalesce(
-        if("Reported_Operational_Jobs_mfg" %in% names(.)) Reported_Operational_Jobs_mfg else NA_character_,
-        if("Reported_Operational_Jobs_all" %in% names(.)) Reported_Operational_Jobs_all else NA_character_
-      )
-    } else {
-      NA_character_
-    },
-    Reported_Construction_Jobs = if("Reported_Construction_Jobs" %in% names(.)) {
-      Reported_Construction_Jobs
-    } else if("Reported_Construction_Jobs_mfg" %in% names(.) | "Reported_Construction_Jobs_all" %in% names(.)) {
-      coalesce(
-        if("Reported_Construction_Jobs_mfg" %in% names(.)) Reported_Construction_Jobs_mfg else NA_character_,
-        if("Reported_Construction_Jobs_all" %in% names(.)) Reported_Construction_Jobs_all else NA_character_
-      )
-    } else {
-      NA_character_
-    }
+    Reported_Operational_Jobs = if("Reported_Operational_Jobs" %in% names(.)) Reported_Operational_Jobs else if("Reported_Operational_Jobs_mfg" %in% names(.) | "Reported_Operational_Jobs_all" %in% names(.)) coalesce(if("Reported_Operational_Jobs_mfg" %in% names(.)) Reported_Operational_Jobs_mfg else NA_character_, if("Reported_Operational_Jobs_all" %in% names(.)) Reported_Operational_Jobs_all else NA_character_) else NA_character_,
+    Reported_Construction_Jobs = if("Reported_Construction_Jobs" %in% names(.)) Reported_Construction_Jobs else if("Reported_Construction_Jobs_mfg" %in% names(.) | "Reported_Construction_Jobs_all" %in% names(.)) coalesce(if("Reported_Construction_Jobs_mfg" %in% names(.)) Reported_Construction_Jobs_mfg else NA_character_, if("Reported_Construction_Jobs_all" %in% names(.)) Reported_Construction_Jobs_all else NA_character_) else NA_character_
   ) %>%
-  mutate(
-    Announcement_Year = year(Announcement_Date),
-    Announcement_Quarter = paste0(Announcement_Year, " Q", quarter(Announcement_Date)),
-    Announcement_Month_Year = paste0(Announcement_Year, "-", month(Announcement_Date)),
-    Announcement_Half_Year = paste0("H", ifelse(month(Announcement_Date) <= 6, "1", "2"), " ", Announcement_Year)
-  )
+  mutate(Announcement_Year = year(Announcement_Date), Announcement_Quarter = paste0(Announcement_Year, " Q", quarter(Announcement_Date)), Announcement_Month_Year = paste0(Announcement_Year, "-", month(Announcement_Date)), Announcement_Half_Year = paste0("H", ifelse(month(Announcement_Date) <= 6, "1", "2"), " ", Announcement_Year))
 
-cat("Glimpse of Clean Investment Monitor data...\n")
-glimpse(CIM_FACILITY_DATA_CONSOLIDATED)
+cat("CIM consolidated rows:", nrow(CIM_FACILITY_DATA_CONSOLIDATED), "| Records with no date:", sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Announcement_Date)), "(", round(sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Announcement_Date)) / nrow(CIM_FACILITY_DATA_CONSOLIDATED) * 100, 1), "%)\n")
 
+CIM_source_check <- CIM_FACILITY_DATA_CONSOLIDATED %>% mutate(in_mfg = unique_id %in% CIM_2025_Q2_MFG$unique_id, in_all = unique_id %in% CIM_2025_Q1_ALL$unique_id, source = case_when(in_mfg & in_all ~ "Both", in_mfg ~ "MFG only", in_all ~ "ALL only", TRUE ~ "Neither"))
+cat("Source distribution: MFG only=", sum(CIM_source_check$source == "MFG only"), "| ALL only=", sum(CIM_source_check$source == "ALL only"), "| Both=", sum(CIM_source_check$source == "Both"), "\n")
 
+cat("\nLoading ATLAS EV Data...\n")
+ATLAS_EV_DATA <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Atlas EV Jobs Hub/Atlas EV Jobs Hub - July 15 2025 - Investment Overview.xlsx", col_types = c("date", "text", "text", "text", "text", "text", "text", "text", "text", "text", "numeric", "text", "numeric", "numeric", "text", "text", "numeric", "text", "text")) %>%
+  mutate(Announcement_Date = as.Date(`Announcement Date`), Announcement_Year = year(`Announcement Date`), Announcement_Quarter = paste0(year(`Announcement Date`), " Q", quarter(`Announcement Date`)), Announcement_Month_Year = paste0(year(`Announcement Date`), "-", month(`Announcement Date`)), Announcement_Half_Year = paste0("H", ifelse(month(`Announcement Date`) <= 6, "1", "2"), " ", year(`Announcement Date`)))
+cat("ATLAS EV rows:", nrow(ATLAS_EV_DATA), "| NA states:", sum(is.na(ATLAS_EV_DATA$State)), "\n")
 
-# Print out the % of rows that have no information/NA in Announcement_Date
-cat("Percentage of records with no Announcement Date in CIM:", 
-    sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Announcement_Date)) / nrow(CIM_FACILITY_DATA_CONSOLIDATED) * 100, "%\n")
-
-# Let's also check which dataset each record comes from
-CIM_source_check <- CIM_FACILITY_DATA_CONSOLIDATED %>%
-  mutate(
-    in_mfg = unique_id %in% CIM_2025_Q2_MFG$unique_id,
-    in_all = unique_id %in% CIM_2025_Q1_ALL$unique_id,
-    source = case_when(
-      in_mfg & in_all ~ "Both",
-      in_mfg ~ "MFG only",
-      in_all ~ "ALL only",
-      TRUE ~ "Neither"
-    )
-  )
-
-cat("\nRecord source distribution:\n")
-print(table(CIM_source_check$source))
-
-cat("\nAnnouncement Date availability by source:\n")
-CIM_source_check %>%
-  group_by(source) %>%
-  summarise(
-    total = n(),
-    has_date = sum(!is.na(Announcement_Date)),
-    pct_with_date = round(has_date / total * 100, 1)
-  ) %>%
-  print()
-
-
-cat("Glimpse of Clean Investment Monitor data...")
-glimpse(CIM_FACILITY_DATA_CONSOLIDATED)
-
-
-# Data validation for CIM:
-cat("Data validation for CIM:\n")
-cat("  - Records with NA state:", sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$State)), "\n")
-cat("  - Records with NA technology:", sum(is.na(CIM_FACILITY_DATA_CONSOLIDATED$Technology)), "\n")
-
-# Load ATLAS EV Data
-ATLAS_EV_DATA <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Atlas EV Jobs Hub/Atlas EV Jobs Hub - July 15 2025 - Investment Overview.xlsx",
-                                           col_types = c("date", "text", "text", "text", "text", "text", "text", "text", "text", "text", "numeric", "text", "numeric", "numeric", "text", "text", "numeric", "text", "text")) %>%
-  mutate(
-    Announcement_Date = as.Date(`Announcement Date`),
-    Announcement_Year = year(`Announcement Date`),
-    Announcement_Quarter = paste0(year(`Announcement Date`), " Q", quarter(`Announcement Date`)),
-    Announcement_Month_Year = paste0(year(`Announcement Date`), "-", month(`Announcement Date`)),
-    Announcement_Half_Year = paste0("H", ifelse(month(`Announcement Date`) <= 6, "1", "2"), " ", year(`Announcement Date`))
-  )
-
-cat("Glimpse of Atlas EV Jobs Hub data...")
-glimpse(ATLAS_EV_DATA)
-
-# Data validation for ATLAS EV:
-cat("Data validation for ATLAS EV:\n")
-cat("  - Records with NA state:", sum(is.na(ATLAS_EV_DATA$State)), "\n")
-cat("  - Records with NA manufacturing focus:", sum(is.na(ATLAS_EV_DATA$`Manufacturing Focus`)), "\n")
-
-# Load Clean Economy Tracker
+cat("\nLoading Clean Economy Tracker...\n")
 CLEAN_ECONOMY_TRACKER <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_economy_tracker/clean_economy_tracker_07_14_2025.xlsx") %>%
-  mutate(
-    Date = as.POSIXct(Date),
-    Post_Inflation_Reduction_Act = Date >= as.Date("2022-08-16"),
-    Post_Election_2024 = Date >= as.Date("2024-11-05"),
-    Post_Inauguration_2025 = Date >= as.Date("2025-01-20"),
-    Announcement_Year = year(Date),
-    Announcement_Quarter = paste0(year(Date), " Q", quarter(Date)),
-    Announcement_Month_Year = paste0(year(Date), "-", month(Date)),
-    Announcement_Half_Year = paste0("H", ifelse(month(Date) <= 6, "1", "2"), " ", year(Date)),
-    New_OR_Canceled = ifelse(Phase == "Update" & `Operating Status` == "Canceled", "Canceled", "New"),
-    Investment = ifelse(New_OR_Canceled == "Canceled" & Investment > 0 & !is.na(Investment), -Investment, Investment)
-  )
+  mutate(Date = as.POSIXct(Date), Post_Inflation_Reduction_Act = Date >= as.Date("2022-08-16"), Post_Election_2024 = Date >= as.Date("2024-11-05"), Post_Inauguration_2025 = Date >= as.Date("2025-01-20"), Announcement_Year = year(Date), Announcement_Quarter = paste0(year(Date), " Q", quarter(Date)), Announcement_Month_Year = paste0(year(Date), "-", month(Date)), Announcement_Half_Year = paste0("H", ifelse(month(Date) <= 6, "1", "2"), " ", year(Date)), New_OR_Canceled = ifelse(Phase == "Update" & `Operating Status` == "Canceled", "Canceled", "New"), Investment = ifelse(New_OR_Canceled == "Canceled" & Investment > 0 & !is.na(Investment), -Investment, Investment))
+cat("Clean Economy Tracker rows:", nrow(CLEAN_ECONOMY_TRACKER), "| NA states:", sum(is.na(CLEAN_ECONOMY_TRACKER$State)), "\n")
 
-cat("Glimpse of Clean Economy Tracker data...")
-glimpse(CLEAN_ECONOMY_TRACKER)
-
-# Data validation for Clean Economy Tracker:
-cat("Data validation for Clean Economy Tracker:\n")
-cat("  - Records with NA state:", sum(is.na(CLEAN_ECONOMY_TRACKER$State)), "\n")
-cat("  - Records with NA manufacturing sector:", sum(is.na(CLEAN_ECONOMY_TRACKER$`Manufacturing Sector`)), "\n")
-
-# Load and Process Wellesley Data
-WELLESLEY_JUNE_2025 <- read_excel_cross_platform(
-  "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/wellesley_big_green_machine/The-Big-Green-Machine Dataset-June-2025.xlsx",
-  sheet = "Dataset-6-21-25"
-) %>%
-  filter(Country == "USA") %>%
-  filter(`Operating Status` != "Rumored" | is.na(`Operating Status`)) %>%
-  mutate(
-    # Standard data cleaning
-    `Capital Investment \n($ million)` = ifelse(`Capital Investment \n($ million)` == "?" | is.na(`Capital Investment \n($ million)`), "", `Capital Investment \n($ million)`),
-    Capex_Info_Available = ifelse(`Capital Investment \n($ million)` == "", FALSE, TRUE),
-    `Capital Investment \n($ million)` = suppressWarnings(as.numeric(`Capital Investment \n($ million)`)) * 1e6,
-    Latitude = suppressWarnings(as.numeric(Latitude)),
-    Longitude = suppressWarnings(as.numeric(Longitude)),
-    State = `State / Province`,
-    Company = Name
-  ) %>%
+cat("\nLoading Wellesley Data...\n")
+WELLESLEY_JULY_2025 <- read_excel_cross_platform("~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/wellesley_big_green_machine/The-Big-Green-Machine Dataset-July-2025.xlsx", sheet = "Copy of Dataset-6-21-25") %>%
+  filter(Country == "USA") %>% filter(`Operating Status` != "Rumored" | is.na(`Operating Status`)) %>%
+  mutate(`Capital Investment \n($ million)` = ifelse(`Capital Investment \n($ million)` == "?" | is.na(`Capital Investment \n($ million)`), "", `Capital Investment \n($ million)`), Capex_Info_Available = ifelse(`Capital Investment \n($ million)` == "", FALSE, TRUE), `Capital Investment \n($ million)` = suppressWarnings(as.numeric(`Capital Investment \n($ million)`)) * 1e6, Latitude = suppressWarnings(as.numeric(Latitude)), Longitude = suppressWarnings(as.numeric(Longitude)), State = `State / Province`, Company = Name) %>%
   rename(CAPEX_ESTIMATED = `Capital Investment \n($ million)`) %>%
-  # --- ROBUST DATE CONVERSION LOGIC (V12) ---
-  mutate(
-    # First, ensure the column is treated as character to handle all cases uniformly
-    date_char = as.character(`Project Announcement Date`),
-    
-    `Project Announcement Date` = case_when(
-      # Handle NA and explicit "N.D." text (both cases)
-      is.na(date_char) | toupper(date_char) == "N.D." | toupper(date_char) == "N.D" ~ NA_Date_,
-      
-      # Handle Excel numeric dates (the most common format in this file)
-      !is.na(suppressWarnings(as.numeric(date_char))) & 
-        suppressWarnings(as.numeric(date_char)) > 1000 & 
-        suppressWarnings(as.numeric(date_char)) < 100000 ~ 
-        as.Date(as.numeric(date_char), origin = "1899-12-30"),
-      
-      # Handle standard date formats stored as text
-      !is.na(suppressWarnings(as.Date(date_char, format = "%Y-%m-%d"))) ~ as.Date(date_char, format = "%Y-%m-%d"),
-      !is.na(suppressWarnings(as.Date(date_char, format = "%m/%d/%Y"))) ~ as.Date(date_char, format = "%m/%d/%Y"),
-      
-      # If we still can't parse it, it's an unknown format, return NA
-      TRUE ~ NA_Date_
-    ),
-    `Announcement Date Available` = !is.na(`Project Announcement Date`)
-  ) %>%
-  select(-date_char) # Clean up the temporary column
-
-# --- Detailed check after loading ---
-cat("\n--- Wellesley Data Date Conversion Results ---\n")
-valid_dates_count <- sum(!is.na(WELLESLEY_JUNE_2025$`Project Announcement Date`))
-na_dates_count <- sum(is.na(WELLESLEY_JUNE_2025$`Project Announcement Date`))
-cat("Total rows:", nrow(WELLESLEY_JUNE_2025), "\n")
-cat("Rows with valid dates:", valid_dates_count, "\n")
-cat("Rows with NA dates:", na_dates_count, "\n")
-
-# Data validation for Wellesley:
-cat("Data validation for Wellesley:\n")
-cat("  - Records with NA state:", sum(is.na(WELLESLEY_JUNE_2025$State)), "\n")
-cat("  - Records with NA sector:", sum(is.na(WELLESLEY_JUNE_2025$Sector)), "\n")
-
-
-# Optional: See what dates couldn't be converted
-unconverted <- WELLESLEY_JUNE_2025 %>%
-  filter(is.na(`Project Announcement Date`) & !is.na(Name)) %>%
-  select(Name, State)
-
-if(nrow(unconverted) > 0) {
-  cat("\nFacilities without announcement dates:\n")
-  print(head(unconverted, 10))
-}
-
-cat("Glimpse of Wellesley data...")
-glimpse(WELLESLEY_JUNE_2025)
+  mutate(date_char = as.character(`Project Announcement Date`), `Project Announcement Date` = case_when(is.na(date_char) | toupper(date_char) == "N.D." | toupper(date_char) == "N.D" ~ NA_Date_, !is.na(suppressWarnings(as.numeric(date_char))) & suppressWarnings(as.numeric(date_char)) > 1000 & suppressWarnings(as.numeric(date_char)) < 100000 ~ as.Date(as.numeric(date_char), origin = "1899-12-30"), !is.na(suppressWarnings(as.Date(date_char, format = "%Y-%m-%d"))) ~ as.Date(date_char, format = "%Y-%m-%d"), !is.na(suppressWarnings(as.Date(date_char, format = "%m/%d/%Y"))) ~ as.Date(date_char, format = "%m/%d/%Y"), TRUE ~ NA_Date_), `Announcement Date Available` = !is.na(`Project Announcement Date`)) %>% select(-date_char)
+cat("Wellesley rows:", nrow(WELLESLEY_JULY_2025), "| Valid dates:", sum(!is.na(WELLESLEY_JULY_2025$`Project Announcement Date`)), "| NA dates:", sum(is.na(WELLESLEY_JULY_2025$`Project Announcement Date`)), "\n")
 
 # PART 2: CREATE CATEGORY MATRICES FOR REFERENCE
+cat("\nCreating category matrices...\n")
+CIM_FACILITY_CATEGORIES <- CIM_FACILITY_DATA_CONSOLIDATED %>% select(Decarb_Sector, Technology, Subcategory) %>% distinct() %>% arrange(Decarb_Sector, Technology, Subcategory)
+WELLESLEY_CATEGORIES <- WELLESLEY_JULY_2025 %>% select(Sector, `Mfg Activity`, `Mfg Product`) %>% distinct() %>% arrange(Sector, `Mfg Activity`, `Mfg Product`)
+ATLAS_EV_CATEGORIES <- ATLAS_EV_DATA %>% select(`Manufacturing Focus`, `Component Category`) %>% distinct() %>% arrange(`Manufacturing Focus`, `Component Category`)
+CLEAN_ECONOMY_CATEGORIES <- CLEAN_ECONOMY_TRACKER %>% select(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`) %>% distinct() %>% arrange(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`)
 
-# Create matrices of possible categories by data source
-CIM_FACILITY_CATEGORIES <- CIM_FACILITY_DATA_CONSOLIDATED %>%
-  select(Decarb_Sector, Technology, Subcategory) %>%
-  distinct() %>%
-  arrange(Decarb_Sector, Technology, Subcategory)
-
-WELLESLEY_CATEGORIES <- WELLESLEY_JUNE_2025 %>%
-  select(Sector, `Mfg Activity`, `Mfg Product`) %>%
-  distinct() %>%
-  arrange(Sector, `Mfg Activity`, `Mfg Product`)
-
-ATLAS_EV_CATEGORIES <- ATLAS_EV_DATA %>%
-  select(`Manufacturing Focus`, `Component Category`) %>%
-  distinct() %>%
-  arrange(`Manufacturing Focus`, `Component Category`)
-
-CLEAN_ECONOMY_CATEGORIES <- CLEAN_ECONOMY_TRACKER %>%
-  select(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`) %>%
-  distinct() %>%
-  arrange(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`)
-
-# Create Supply Chain Stage Matrices
-# For CIM_FACILITY_CATEGORIES, if Decarb_Sector is NOT "Clean Tech Manufacturing", then Supply_Chain_Stage is "Infrastructure/Deployment"
-# If Decarb_Sector is "Clean Tech Manufacturing", then Supply_Chain_Stage is "Manufacturing"—unless "Technology" is "Critical Minerals"; in which case Supply_Chain_Stage is "Upstream Materials"
-CIM_FACILITY_CATEGORIES_STAGE <- CIM_FACILITY_CATEGORIES %>%
-  mutate(
-    Supply_Chain_Stage = case_when(
-      Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Critical Minerals" ~ "Upstream Materials",
-      Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Solar" & Subcategory == "Polysilicon" ~ "Upstream Materials",
-      Decarb_Sector == "Clean Tech Manufacturing" & Subcategory != "Polysilicon"~ "Manufacturing",
-      TRUE ~ "Infrastructure/Deployment"
-    )
-  )
-
-# For WELLESLEY_CATEGORIES, the Supply_Chain_Stage will be either "Manufacturing" or "Upstream Materials"
-# If "Mfg Activity" is "Extraction" or "Materials Processing" then Supply_Chain_Stage is "Upstream Materials"
-# If "Mfg Activity" is "Manufacturing" or "Recycling" and "Mfg_Product" is one of the following: "Rare Earths", "Lithium", "Silicon", "Graphite", then Supply_Chain_Stage is still "Upstream Materials"
-# For all other "Mfg Product" values where "Mfg Activity" is "Manufacturing" or "Recycling", Supply_Chain_Stage is "Manufacturing"
-WELLESLEY_CATEGORIES_STAGE <- WELLESLEY_CATEGORIES %>%
-  mutate(
-    Supply_Chain_Stage = case_when(
-      `Mfg Activity` %in% c("Extraction", "Materials Processing") ~ "Upstream Materials",
-      `Mfg Activity` %in% c("Manufacturing", "Recycling") & `Mfg Product` %in% c("Rare Earths", "Lithium", "Silicon", "Graphite") ~ "Upstream Materials",
-      `Mfg Activity` %in% c("Manufacturing", "Recycling") ~ "Manufacturing",
-      TRUE ~ NA_character_
-    )
-  )
-
-# Now let's create CLEAN_ECONOMY_CATEGORIES_STAGE
-# Here, if "Manufacturing Sector" is "Minerals", then Supply_Chain_Stage is "Upstream Materials"
-# For all other "Manufacturing Sector" values, Supply_Chain_Stage is "Manufacturing"
-CLEAN_ECONOMY_CATEGORIES_STAGE <- CLEAN_ECONOMY_CATEGORIES %>%
-  mutate(
-    Supply_Chain_Stage = case_when(
-      `Manufacturing Sector` == "Minerals" ~ "Upstream Materials",
-      TRUE ~ "Manufacturing"
-    )
-  )
-
-# Now let's create ATLAS_EV_CATEGORIES_STAGE
-#If "Manufacturing Focus" is "Minerals", then Supply_Chain_Stage is "Upstream Materials"
-# For other ATLAS_EV_CATEGORIES, the following Component Category values are "Upstream Materials": 
-# "Recycling, Lithium Hydroxide"; "Remanufacturing, Lithium Carbonate"; "Cobalt"; "Graphite"; "Lithium Carbonate"; "Lithium Hydroxide"; "Manganese"; "Nickel"; "Nickel, Cobalt"
-# For everything else, Supply_Chain_Stage is "Manufacturing"
-ATLAS_EV_CATEGORIES_STAGE <- ATLAS_EV_CATEGORIES %>%
-  mutate(
-    Supply_Chain_Stage = case_when(
-      `Manufacturing Focus` == "Minerals" ~ "Upstream Materials",
-      `Component Category` %in% c("Recycling, Lithium Hydroxide", "Remanufacturing, Lithium Carbonate", "Cobalt", "Graphite", "Lithium Carbonate", "Lithium Hydroxide", "Manganese", "Nickel", "Nickel, Cobalt") ~ "Upstream Materials",
-      TRUE ~ "Manufacturing"
-    )
-  )
+CIM_FACILITY_CATEGORIES_STAGE <- CIM_FACILITY_CATEGORIES %>% mutate(Supply_Chain_Stage = case_when(Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Critical Minerals" ~ "Upstream Materials", Decarb_Sector == "Clean Tech Manufacturing" & Technology == "Solar" & Subcategory == "Polysilicon" ~ "Upstream Materials", Decarb_Sector == "Clean Tech Manufacturing" & Subcategory != "Polysilicon"~ "Manufacturing", TRUE ~ "Infrastructure/Deployment"))
+WELLESLEY_CATEGORIES_STAGE <- WELLESLEY_CATEGORIES %>% mutate(Supply_Chain_Stage = case_when(`Mfg Activity` %in% c("Extraction", "Materials Processing") ~ "Upstream Materials", `Mfg Activity` %in% c("Manufacturing", "Recycling") & `Mfg Product` %in% c("Rare Earths", "Lithium", "Silicon", "Graphite") ~ "Upstream Materials", `Mfg Activity` %in% c("Manufacturing", "Recycling") ~ "Manufacturing", TRUE ~ NA_character_))
+CLEAN_ECONOMY_CATEGORIES_STAGE <- CLEAN_ECONOMY_CATEGORIES %>% mutate(Supply_Chain_Stage = case_when(`Manufacturing Sector` == "Minerals" ~ "Upstream Materials", TRUE ~ "Manufacturing"))
+ATLAS_EV_CATEGORIES_STAGE <- ATLAS_EV_CATEGORIES %>% mutate(Supply_Chain_Stage = case_when(`Manufacturing Focus` == "Minerals" ~ "Upstream Materials", `Component Category` %in% c("Recycling, Lithium Hydroxide", "Remanufacturing, Lithium Carbonate", "Cobalt", "Graphite", "Lithium Carbonate", "Lithium Hydroxide", "Manganese", "Nickel", "Nickel, Cobalt") ~ "Upstream Materials", TRUE ~ "Manufacturing"))
 
 # PART 3: HELPER FUNCTIONS
-
-# Function to normalize company names for matching - VECTORIZED VERSION
 normalize_company_name <- function(x) {
-  # Handle NA and empty values vectorized way
-  result <- rep("", length(x))
-  valid_indices <- !is.na(x) & x != ""
-  
-  if (any(valid_indices)) {
-    result[valid_indices] <- x[valid_indices] %>%
-      str_to_lower() %>%
-      # Remove common business suffixes
-      str_remove_all("\\b(inc|llc|corp|ltd|co|company|corporation|incorporated|limited)\\b") %>%
-      # Remove punctuation and special characters
-      str_remove_all("[,.'&\\-]") %>%
-      # Replace "and" variations
-      str_replace_all("\\band\\b", "") %>%
-      str_replace_all("\\+", "") %>%
-      # Remove extra whitespace
-      str_squish() %>%
-      str_trim()
-  }
-  
+  result <- rep("", length(x)); valid_indices <- !is.na(x) & x != ""
+  if (any(valid_indices)) result[valid_indices] <- x[valid_indices] %>% str_to_lower() %>% str_remove_all("\\b(inc|llc|corp|ltd|co|company|corporation|incorporated|limited)\\b") %>% str_remove_all("[,.'&\\-]") %>% str_replace_all("\\band\\b", "") %>% str_replace_all("\\+", "") %>% str_squish() %>% str_trim()
   return(result)
 }
 
-# Alternative simple name normalization function (original version, vectorized)
-norm_name <- function(x) {
-  x %>% 
-    str_to_lower() %>% 
-    str_replace_all("&", "and") %>%
-    str_replace_all("[,.]", " ") %>%     # strip punctuation
-    str_remove_all("\\b(inc|llc|corp|ltd|co)\\b") %>%
-    str_squish()
-}
+norm_name <- function(x) { x %>% str_to_lower() %>% str_replace_all("&", "and") %>% str_replace_all("[,.]", " ") %>% str_remove_all("\\b(inc|llc|corp|ltd|co)\\b") %>% str_squish() }
+within_km <- function(lat1, lon1, lat2, lon2, km = 5) { if (any(is.na(c(lat1, lon1, lat2, lon2)))) return(FALSE); tryCatch({distHaversine(cbind(lon1, lat1), cbind(lon2, lat2)) / 1000 <= km}, error = function(e) {return(FALSE)}) }
+standardize_latitude <- function(lat) { ifelse(!is.na(lat), round(lat, 1), NA_real_) }
+standardize_longitude <- function(lon) { ifelse(!is.na(lon), round(lon, 1), NA_real_) }
 
-# Function to check if two coordinates are within a specified distance
-within_km <- function(lat1, lon1, lat2, lon2, km = 5) {
-  if (any(is.na(c(lat1, lon1, lat2, lon2)))) return(FALSE)
-  tryCatch({
-    distHaversine(cbind(lon1, lat1), cbind(lon2, lat2)) / 1000 <= km
-  }, error = function(e) {
-    return(FALSE)
-  })
-}
-
-# Function to standardize coordinates (round to 1 decimal place for ~11km precision - easier for matching)
-standardize_latitude <- function(lat) {
-  ifelse(!is.na(lat), round(lat, 1), NA_real_)
-}
-
-standardize_longitude <- function(lon) {
-  ifelse(!is.na(lon), round(lon, 1), NA_real_)
-}
-
-# Function to standardize state names to abbreviations
 standardize_state <- function(state_input) {
-  # Handle vectors using ifelse and case_when
-  case_when(
-    is.na(state_input) ~ NA_character_,
-    # Check if already an abbreviation (2 characters, uppercase)
-    str_detect(str_to_upper(str_trim(state_input)), "^[A-Z]{2}$") ~ str_to_upper(str_trim(state_input)),
-    # Look up full state names
-    str_to_title(str_trim(state_input)) == "Alabama" ~ "AL",
-    str_to_title(str_trim(state_input)) == "Alaska" ~ "AK",
-    str_to_title(str_trim(state_input)) == "Arizona" ~ "AZ",
-    str_to_title(str_trim(state_input)) == "Arkansas" ~ "AR",
-    str_to_title(str_trim(state_input)) == "California" ~ "CA",
-    str_to_title(str_trim(state_input)) == "Colorado" ~ "CO",
-    str_to_title(str_trim(state_input)) == "Connecticut" ~ "CT",
-    str_to_title(str_trim(state_input)) == "Delaware" ~ "DE",
-    str_to_title(str_trim(state_input)) == "Florida" ~ "FL",
-    str_to_title(str_trim(state_input)) == "Georgia" ~ "GA",
-    str_to_title(str_trim(state_input)) == "Hawaii" ~ "HI",
-    str_to_title(str_trim(state_input)) == "Idaho" ~ "ID",
-    str_to_title(str_trim(state_input)) == "Illinois" ~ "IL",
-    str_to_title(str_trim(state_input)) == "Indiana" ~ "IN",
-    str_to_title(str_trim(state_input)) == "Iowa" ~ "IA",
-    str_to_title(str_trim(state_input)) == "Kansas" ~ "KS",
-    str_to_title(str_trim(state_input)) == "Kentucky" ~ "KY",
-    str_to_title(str_trim(state_input)) == "Louisiana" ~ "LA",
-    str_to_title(str_trim(state_input)) == "Maine" ~ "ME",
-    str_to_title(str_trim(state_input)) == "Maryland" ~ "MD",
-    str_to_title(str_trim(state_input)) == "Massachusetts" ~ "MA",
-    str_to_title(str_trim(state_input)) == "Michigan" ~ "MI",
-    str_to_title(str_trim(state_input)) == "Minnesota" ~ "MN",
-    str_to_title(str_trim(state_input)) == "Mississippi" ~ "MS",
-    str_to_title(str_trim(state_input)) == "Missouri" ~ "MO",
-    str_to_title(str_trim(state_input)) == "Montana" ~ "MT",
-    str_to_title(str_trim(state_input)) == "Nebraska" ~ "NE",
-    str_to_title(str_trim(state_input)) == "Nevada" ~ "NV",
-    str_to_title(str_trim(state_input)) == "New Hampshire" ~ "NH",
-    str_to_title(str_trim(state_input)) == "New Jersey" ~ "NJ",
-    str_to_title(str_trim(state_input)) == "New Mexico" ~ "NM",
-    str_to_title(str_trim(state_input)) == "New York" ~ "NY",
-    str_to_title(str_trim(state_input)) == "North Carolina" ~ "NC",
-    str_to_title(str_trim(state_input)) == "North Dakota" ~ "ND",
-    str_to_title(str_trim(state_input)) == "Ohio" ~ "OH",
-    str_to_title(str_trim(state_input)) == "Oklahoma" ~ "OK",
-    str_to_title(str_trim(state_input)) == "Oregon" ~ "OR",
-    str_to_title(str_trim(state_input)) == "Pennsylvania" ~ "PA",
-    str_to_title(str_trim(state_input)) == "Rhode Island" ~ "RI",
-    str_to_title(str_trim(state_input)) == "South Carolina" ~ "SC",
-    str_to_title(str_trim(state_input)) == "South Dakota" ~ "SD",
-    str_to_title(str_trim(state_input)) == "Tennessee" ~ "TN",
-    str_to_title(str_trim(state_input)) == "Texas" ~ "TX",
-    str_to_title(str_trim(state_input)) == "Utah" ~ "UT",
-    str_to_title(str_trim(state_input)) == "Vermont" ~ "VT",
-    str_to_title(str_trim(state_input)) == "Virginia" ~ "VA",
-    str_to_title(str_trim(state_input)) == "Washington" ~ "WA",
-    str_to_title(str_trim(state_input)) == "West Virginia" ~ "WV",
-    str_to_title(str_trim(state_input)) == "Wisconsin" ~ "WI",
-    str_to_title(str_trim(state_input)) == "Wyoming" ~ "WY",
-    str_to_title(str_trim(state_input)) == "District Of Columbia" ~ "DC",
-    # If no match, return as uppercase (assume it's an abbreviation)
-    TRUE ~ str_to_upper(str_trim(state_input))
-  )
+  case_when(is.na(state_input) ~ NA_character_, str_detect(str_to_upper(str_trim(state_input)), "^[A-Z]{2}$") ~ str_to_upper(str_trim(state_input)),
+            str_to_title(str_trim(state_input)) == "Alabama" ~ "AL", str_to_title(str_trim(state_input)) == "Alaska" ~ "AK",
+            str_to_title(str_trim(state_input)) == "Arizona" ~ "AZ", str_to_title(str_trim(state_input)) == "Arkansas" ~ "AR",
+            str_to_title(str_trim(state_input)) == "California" ~ "CA", str_to_title(str_trim(state_input)) == "Colorado" ~ "CO",
+            str_to_title(str_trim(state_input)) == "Connecticut" ~ "CT", str_to_title(str_trim(state_input)) == "Delaware" ~ "DE",
+            str_to_title(str_trim(state_input)) == "Florida" ~ "FL", str_to_title(str_trim(state_input)) == "Georgia" ~ "GA",
+            str_to_title(str_trim(state_input)) == "Hawaii" ~ "HI", str_to_title(str_trim(state_input)) == "Idaho" ~ "ID",
+            str_to_title(str_trim(state_input)) == "Illinois" ~ "IL", str_to_title(str_trim(state_input)) == "Indiana" ~ "IN",
+            str_to_title(str_trim(state_input)) == "Iowa" ~ "IA", str_to_title(str_trim(state_input)) == "Kansas" ~ "KS",
+            str_to_title(str_trim(state_input)) == "Kentucky" ~ "KY", str_to_title(str_trim(state_input)) == "Louisiana" ~ "LA",
+            str_to_title(str_trim(state_input)) == "Maine" ~ "ME", str_to_title(str_trim(state_input)) == "Maryland" ~ "MD",
+            str_to_title(str_trim(state_input)) == "Massachusetts" ~ "MA", str_to_title(str_trim(state_input)) == "Michigan" ~ "MI",
+            str_to_title(str_trim(state_input)) == "Minnesota" ~ "MN", str_to_title(str_trim(state_input)) == "Mississippi" ~ "MS",
+            str_to_title(str_trim(state_input)) == "Missouri" ~ "MO", str_to_title(str_trim(state_input)) == "Montana" ~ "MT",
+            str_to_title(str_trim(state_input)) == "Nebraska" ~ "NE", str_to_title(str_trim(state_input)) == "Nevada" ~ "NV",
+            str_to_title(str_trim(state_input)) == "New Hampshire" ~ "NH", str_to_title(str_trim(state_input)) == "New Jersey" ~ "NJ",
+            str_to_title(str_trim(state_input)) == "New Mexico" ~ "NM", str_to_title(str_trim(state_input)) == "New York" ~ "NY",
+            str_to_title(str_trim(state_input)) == "North Carolina" ~ "NC", str_to_title(str_trim(state_input)) == "North Dakota" ~ "ND",
+            str_to_title(str_trim(state_input)) == "Ohio" ~ "OH", str_to_title(str_trim(state_input)) == "Oklahoma" ~ "OK",
+            str_to_title(str_trim(state_input)) == "Oregon" ~ "OR", str_to_title(str_trim(state_input)) == "Pennsylvania" ~ "PA",
+            str_to_title(str_trim(state_input)) == "Rhode Island" ~ "RI", str_to_title(str_trim(state_input)) == "South Carolina" ~ "SC",
+            str_to_title(str_trim(state_input)) == "South Dakota" ~ "SD", str_to_title(str_trim(state_input)) == "Tennessee" ~ "TN",
+            str_to_title(str_trim(state_input)) == "Texas" ~ "TX", str_to_title(str_trim(state_input)) == "Utah" ~ "UT",
+            str_to_title(str_trim(state_input)) == "Vermont" ~ "VT", str_to_title(str_trim(state_input)) == "Virginia" ~ "VA",
+            str_to_title(str_trim(state_input)) == "Washington" ~ "WA", str_to_title(str_trim(state_input)) == "West Virginia" ~ "WV",
+            str_to_title(str_trim(state_input)) == "Wisconsin" ~ "WI", str_to_title(str_trim(state_input)) == "Wyoming" ~ "WY",
+            str_to_title(str_trim(state_input)) == "District Of Columbia" ~ "DC", TRUE ~ str_to_upper(str_trim(state_input)))
 }
 
-# Function to create project category keywords
 create_project_category_keywords <- function(...) {
-  # Combine all arguments into a single string, removing NAs and empty strings
-  args <- list(...)
-  valid_args <- args[!is.na(args) & args != ""]
-  
-  if (length(valid_args) == 0) {
-    return(NA_character_)
-  }
-  
-  # Join with " | " separator and clean up
-  paste(valid_args, collapse = " | ") %>%
-    str_squish() %>%
-    str_trim()
+  args <- list(...); valid_args <- args[!is.na(args) & args != ""]
+  if (length(valid_args) == 0) return(NA_character_)
+  paste(valid_args, collapse = " | ") %>% str_squish() %>% str_trim()
 }
 
-# Vectorized version of create_project_category_keywords
 create_project_category_keywords_vectorized <- function(...) {
-  # Get all arguments as a list
-  args <- list(...)
-  
-  # Get the length of the first non-null argument to determine vector length
-  n <- length(args[[1]])
-  
-  # Create result vector
-  result <- rep(NA_character_, n)
-  
-  # Process each row
+  args <- list(...); n <- length(args[[1]]); result <- rep(NA_character_, n)
   for (i in 1:n) {
-    # Extract values for this row
     row_values <- map_chr(args, ~ifelse(is.na(.x[i]) | .x[i] == "", NA_character_, .x[i]))
-    
-    # Remove NAs and empty strings
     valid_values <- row_values[!is.na(row_values) & row_values != ""]
-    
-    # Combine if we have valid values
-    if (length(valid_values) > 0) {
-      result[i] <- paste(valid_values, collapse = " | ")
-    }
+    if (length(valid_values) > 0) result[i] <- paste(valid_values, collapse = " | ")
   }
-  
   return(result)
 }
 
-# Function to create supply chain stage lookup - FIXED VERSION
 create_supply_chain_stage_lookup <- function(categories_stage, ...) {
-  # Create a lookup table from the categories_stage dataframe
-  lookup_cols <- c(...)
-  
-  # Create a key from the lookup columns AND include Supply_Chain_Stage
-  key_cols <- categories_stage %>% 
-    select(all_of(lookup_cols), Supply_Chain_Stage) %>%
-    unite("lookup_key", all_of(lookup_cols), sep = " | ", remove = FALSE)
-  
-  # Return the lookup table with the key and supply chain stage
-  key_cols %>%
-    select(lookup_key, Supply_Chain_Stage) %>%
-    distinct()
+  lookup_cols <- c(...); key_cols <- categories_stage %>% select(all_of(lookup_cols), Supply_Chain_Stage) %>% unite("lookup_key", all_of(lookup_cols), sep = " | ", remove = FALSE)
+  key_cols %>% select(lookup_key, Supply_Chain_Stage) %>% distinct()
 }
 
-# Function to get supply chain stage for a facility
 get_supply_chain_stage <- function(lookup_table, facility_key) {
   match_result <- lookup_table$Supply_Chain_Stage[lookup_table$lookup_key == facility_key]
-  if (length(match_result) > 0) {
-    return(match_result[1])
-  } else {
-    return(NA_character_)
-  }
+  if (length(match_result) > 0) return(match_result[1]) else return(NA_character_)
 }
 
-# Function to combine Wellesley source links
 combine_wellesley_sources <- function(df) {
-  # Get all source columns
   source_cols <- names(df)[str_detect(names(df), "^Source\\([a-z]\\)$")]
-  
-  # Combine all non-NA source links
   df$combined_sources <- apply(df[source_cols], 1, function(row) {
     valid_sources <- row[!is.na(row) & row != ""]
-    if (length(valid_sources) > 0) {
-      paste(valid_sources, collapse = " | ")
-    } else {
-      NA_character_
-    }
+    if (length(valid_sources) > 0) paste(valid_sources, collapse = " | ") else NA_character_
   })
-  
   return(df)
 }
 
-# Function to standardize facility status across datasets - VECTORIZED VERSION
 standardize_facility_status <- function(status_values, dataset_name) {
-  # Handle vectors by using vectorized operations
-  result <- rep("Status Unknown", length(status_values))
-  
-  # Create logical vectors for non-NA and non-empty values
-  valid_indices <- !is.na(status_values) & status_values != ""
-  
+  result <- rep("Status Unknown", length(status_values)); valid_indices <- !is.na(status_values) & status_values != ""
   if (any(valid_indices)) {
-    # Convert to lowercase for easier matching
     status_lower <- str_to_lower(str_trim(status_values[valid_indices]))
-    
-    # Standardize based on dataset and status value
-    if (dataset_name == "CIM") {
-      result[valid_indices] <- case_when(
-        status_lower == "announced" ~ "Planned/Announced",
-        status_lower == "under construction" ~ "Under Construction",
-        status_lower == "operating" ~ "Operational",
-        status_lower == "retired" ~ "Paused, Closed/Retired, or Cancelled",
-        status_lower == "canceled prior to operation" ~ "Paused, Closed/Retired, or Cancelled",
-        TRUE ~ "Status Unknown"
-      )
-    } else if (dataset_name == "Atlas EV") {
-      result[valid_indices] <- case_when(
-        status_lower == "planned" ~ "Planned/Announced",
-        status_lower == "under construction" ~ "Under Construction",
-        status_lower == "operational" ~ "Operational",
-        status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled",
-        TRUE ~ "Status Unknown"
-      )
-    } else if (dataset_name == "Clean Economy Tracker") {
-      result[valid_indices] <- case_when(
-        status_lower == "planned" ~ "Planned/Announced",
-        status_lower == "under construction" ~ "Under Construction",
-        status_lower == "operational" ~ "Operational",
-        status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled",
-        TRUE ~ "Status Unknown"
-      )
-    } else if (dataset_name == "Wellesley") {
-      result[valid_indices] <- case_when(
-        status_lower == "planned" ~ "Planned/Announced",
-        status_lower == "under construction" ~ "Under Construction",
-        status_lower == "pilot" ~ "Pilot",
-        status_lower == "operating partially; under construction" ~ "Operating Partially; Under Construction",
-        status_lower == "operating" ~ "Operational",
-        status_lower == "cancelled" ~ "Paused, Closed/Retired, or Cancelled",
-        status_lower == "paused" ~ "Paused, Closed/Retired, or Cancelled",
-        status_lower == "closed" ~ "Paused, Closed/Retired, or Cancelled",
-        status_lower == "sold" ~ "Status Unknown",  # Not clear what this means
-        TRUE ~ "Status Unknown"
-      )
-    }
+    if (dataset_name == "CIM") result[valid_indices] <- case_when(status_lower == "announced" ~ "Planned/Announced", status_lower == "under construction" ~ "Under Construction", status_lower == "operating" ~ "Operational", status_lower == "retired" ~ "Paused, Closed/Retired, or Cancelled", status_lower == "canceled prior to operation" ~ "Paused, Closed/Retired, or Cancelled", TRUE ~ "Status Unknown")
+    else if (dataset_name == "Atlas EV") result[valid_indices] <- case_when(status_lower == "planned" ~ "Planned/Announced", status_lower == "under construction" ~ "Under Construction", status_lower == "operational" ~ "Operational", status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled", TRUE ~ "Status Unknown")
+    else if (dataset_name == "Clean Economy Tracker") result[valid_indices] <- case_when(status_lower == "planned" ~ "Planned/Announced", status_lower == "under construction" ~ "Under Construction", status_lower == "operational" ~ "Operational", status_lower == "canceled" ~ "Paused, Closed/Retired, or Cancelled", TRUE ~ "Status Unknown")
+    else if (dataset_name == "Wellesley") result[valid_indices] <- case_when(status_lower == "planned" ~ "Planned/Announced", status_lower == "under construction" ~ "Under Construction", status_lower == "pilot" ~ "Pilot", status_lower == "operating partially; under construction" ~ "Operating Partially; Under Construction", status_lower == "operating" ~ "Operational", status_lower == "cancelled" ~ "Paused, Closed/Retired, or Cancelled", status_lower == "paused" ~ "Paused, Closed/Retired, or Cancelled", status_lower == "closed" ~ "Paused, Closed/Retired, or Cancelled", status_lower == "sold" ~ "Status Unknown", TRUE ~ "Status Unknown")
   }
-  
   return(result)
 }
 
 # PART 4: CREATE SUPPLY CHAIN STAGE LOOKUP TABLES
-
-# Create lookup tables for each dataset
+cat("\nCreating supply chain stage lookup tables...\n")
 cim_stage_lookup <- create_supply_chain_stage_lookup(CIM_FACILITY_CATEGORIES_STAGE, "Decarb_Sector", "Technology", "Subcategory")
 wellesley_stage_lookup <- create_supply_chain_stage_lookup(WELLESLEY_CATEGORIES_STAGE, "Sector", "Mfg Activity", "Mfg Product")
 atlas_stage_lookup <- create_supply_chain_stage_lookup(ATLAS_EV_CATEGORIES_STAGE, "Manufacturing Focus", "Component Category")
 cet_stage_lookup <- create_supply_chain_stage_lookup(CLEAN_ECONOMY_CATEGORIES_STAGE, "Manufacturing Sector", "Tech Category", "Tech Sub-category")
 
 # PART 5: PROCESS EACH DATASET WITH CATEGORY KEYWORDS AND SUPPLY CHAIN STAGE
-
-# Process CIM data
+cat("\nProcessing CIM data...\n")
 cim_processed <- CIM_FACILITY_DATA_CONSOLIDATED %>%
-  mutate(
-    master_id = paste0("CIM_", row_number()),
-    data_source = "CIM",
-    investment_tracker_website = "https://www.cleaninvestmentmonitor.org/",
-    investment_tracker_last_updated = "Q2 2025 for manufacturing/minerals data; Q1 2025 for other sectors",
-    coordinates_available = !is.na(Latitude) & !is.na(Longitude),
-    standardized_latitude = standardize_latitude(Latitude),
-    standardized_longitude = standardize_longitude(Longitude),
-    latitude_if_available = ifelse(coordinates_available, Latitude, NA),
-    longitude_if_available = ifelse(coordinates_available, Longitude, NA),
-    address_available = !is.na(Address) & Address != "",
-    address_if_available = ifelse(address_available, Address, NA),
-    city_available = FALSE,  # CIM doesn't have city data
-    city_if_available = NA_character_,  # CIM doesn't have city data
-    # Create combined address_or_city column
-    address_or_city_if_available = case_when(
-      address_available ~ address_if_available,
-      city_available ~ city_if_available,
-      TRUE ~ NA_character_
-    ),
-    state_standardized = standardize_state(State),
-    # Source links - CIM doesn't have source links
-    source_links_available = FALSE,
-    source_links_if_available = NA_character_,
-    # Facility status - standardize CIM facility status
-    facility_status_standardized = standardize_facility_status(Current_Facility_Status, "CIM"),
-    # Process Jobs data into a single, streamlined column
-    jobs_info_if_available = case_when(
-      !is.na(Reported_Operational_Jobs) & !is.na(Reported_Construction_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs, ", Construction: ", Reported_Construction_Jobs),
-      !is.na(Reported_Operational_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs),
-      !is.na(Reported_Construction_Jobs) ~ paste0("Construction: ", Reported_Construction_Jobs),
-      TRUE ~ NA_character_
-    ),
-    # Announcement date information
-    announcement_date_available = !is.na(Announcement_Date),
-    announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
-    company_project_keywords = paste(
-      ifelse(is.na(Company), "", Company),
-      sep = ""
-    ) %>% str_squish(),
-    # Create project category keywords
-    project_category_keywords = create_project_category_keywords_vectorized(
-      Decarb_Sector, Technology, Subcategory
-    ),
-    # Create lookup key for supply chain stage
-    stage_lookup_key = create_project_category_keywords_vectorized(
-      Decarb_Sector, Technology, Subcategory
-    ),
-    # CAPEX information
-    capex_info_available = !is.na(Estimated_Total_Facility_CAPEX) & Estimated_Total_Facility_CAPEX > 0,
-    capex_amount_estimated = ifelse(capex_info_available, Estimated_Total_Facility_CAPEX, NA_real_)
-  ) %>%
-  # Add supply chain stage
-  rowwise() %>%
-  mutate(
-    supply_chain_stage = get_supply_chain_stage(cim_stage_lookup, stage_lookup_key)
-  ) %>%
-  ungroup() %>%
-  select(-stage_lookup_key)
+  mutate(master_id = paste0("CIM_", row_number()), data_source = "CIM", investment_tracker_website = "https://www.cleaninvestmentmonitor.org/", investment_tracker_last_updated = "Q2 2025 for manufacturing/minerals data; Q1 2025 for other sectors",
+         coordinates_available = LatLon_Valid == TRUE, 
+         standardized_latitude = ifelse(coordinates_available, standardize_latitude(Latitude), NA_real_),
+         standardized_longitude = ifelse(coordinates_available, standardize_longitude(Longitude), NA_real_),
+         latitude_if_available = ifelse(coordinates_available, Latitude, NA_real_),
+         longitude_if_available = ifelse(coordinates_available, Longitude, NA_real_),
+         address_available = !is.na(Address) & Address != "", address_if_available = ifelse(address_available, Address, NA),
+         city_available = FALSE, city_if_available = NA_character_,
+         address_or_city_if_available = case_when(address_available ~ address_if_available, city_available ~ city_if_available, TRUE ~ NA_character_),
+         state_standardized = standardize_state(State), source_links_available = FALSE, source_links_if_available = NA_character_,
+         facility_status_standardized = standardize_facility_status(Current_Facility_Status, "CIM"),
+         jobs_info_if_available = case_when(!is.na(Reported_Operational_Jobs) & !is.na(Reported_Construction_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs, ", Construction: ", Reported_Construction_Jobs), !is.na(Reported_Operational_Jobs) ~ paste0("Operations: ", Reported_Operational_Jobs), !is.na(Reported_Construction_Jobs) ~ paste0("Construction: ", Reported_Construction_Jobs), TRUE ~ NA_character_),
+         announcement_date_available = !is.na(Announcement_Date), announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
+         company_project_keywords = paste(ifelse(is.na(Company), "", Company), sep = "") %>% str_squish(),
+         project_category_keywords = create_project_category_keywords_vectorized(Decarb_Sector, Technology, Subcategory),
+         stage_lookup_key = create_project_category_keywords_vectorized(Decarb_Sector, Technology, Subcategory),
+         capex_info_available = !is.na(Estimated_Total_Facility_CAPEX) & Estimated_Total_Facility_CAPEX > 0,
+         capex_amount_estimated = ifelse(capex_info_available, Estimated_Total_Facility_CAPEX, NA_real_)) %>%
+  rowwise() %>% mutate(supply_chain_stage = get_supply_chain_stage(cim_stage_lookup, stage_lookup_key)) %>% ungroup() %>% select(-stage_lookup_key)
 
-# Process Atlas EV data
+cat("Processing Atlas EV data...\n")
 atlas_processed <- ATLAS_EV_DATA %>%
-  mutate(
-    master_id = paste0("ATLAS_", row_number()),
-    data_source = "Atlas EV",
-    investment_tracker_website = "https://evjobs.bgafoundation.org/",
-    investment_tracker_last_updated = "July 15, 2025",
-    coordinates_available = FALSE,  # Atlas doesn't have coordinates
-    standardized_latitude = NA_real_,
-    standardized_longitude = NA_real_,
-    latitude_if_available = NA_real_,
-    longitude_if_available = NA_real_,
-    address_available = FALSE,  # Atlas doesn't have address
-    address_if_available = NA_character_,
-    city_available = !is.na(City) & City != "",
-    city_if_available = ifelse(city_available, City, NA),
-    # Create combined address_or_city column
-    address_or_city_if_available = case_when(
-      address_available ~ address_if_available,
-      city_available ~ city_if_available,
-      TRUE ~ NA_character_
-    ),
-    state_standardized = standardize_state(State),
-    # Source links - Atlas EV has Source column
-    source_links_available = !is.na(Source) & Source != "",
-    source_links_if_available = ifelse(source_links_available, Source, NA),
-    # Facility status - standardize Atlas EV facility status
-    facility_status_standardized = standardize_facility_status(`EV/Battery Production`, "Atlas EV"),
-    # Process Jobs data
-    jobs_info_if_available = as.character(`Announced EV Jobs`),
-    # Announcement date information
-    announcement_date_available = !is.na(Announcement_Date),
-    announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
-    company_project_keywords = paste(
-      ifelse(is.na(Company), "", Company),
-      ifelse(is.na(`Parent Company`), "", `Parent Company`),
-      ifelse(is.na(`Facility Name`), "", `Facility Name`),
-      sep = " | "
-    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
-    # Create project category keywords
-    project_category_keywords = create_project_category_keywords_vectorized(
-      `Manufacturing Focus`, `Component Category`
-    ),
-    # Create lookup key for supply chain stage
-    stage_lookup_key = create_project_category_keywords_vectorized(
-      `Manufacturing Focus`, `Component Category`
-    ),
-    # CAPEX information
-    capex_info_available = !is.na(`Announced EV Investment`) & `Announced EV Investment` > 0,
-    capex_amount_estimated = ifelse(capex_info_available, `Announced EV Investment`, NA_real_)
-  ) %>%
-  # Add supply chain stage
-  rowwise() %>%
-  mutate(
-    supply_chain_stage = get_supply_chain_stage(atlas_stage_lookup, stage_lookup_key)
-  ) %>%
-  ungroup() %>%
-  select(-stage_lookup_key)
+  mutate(master_id = paste0("ATLAS_", row_number()), data_source = "Atlas EV", investment_tracker_website = "https://evjobs.bgafoundation.org/", investment_tracker_last_updated = "July 15, 2025",
+         coordinates_available = FALSE, standardized_latitude = NA_real_, standardized_longitude = NA_real_, latitude_if_available = NA_real_, longitude_if_available = NA_real_,
+         address_available = FALSE, address_if_available = NA_character_, city_available = !is.na(City) & City != "", city_if_available = ifelse(city_available, City, NA),
+         address_or_city_if_available = case_when(address_available ~ address_if_available, city_available ~ city_if_available, TRUE ~ NA_character_),
+         state_standardized = standardize_state(State), source_links_available = !is.na(Source) & Source != "", source_links_if_available = ifelse(source_links_available, Source, NA),
+         facility_status_standardized = standardize_facility_status(`EV/Battery Production`, "Atlas EV"), jobs_info_if_available = as.character(`Announced EV Jobs`),
+         announcement_date_available = !is.na(Announcement_Date), announcement_date = ifelse(announcement_date_available, as.character(Announcement_Date), NA_character_),
+         company_project_keywords = paste(ifelse(is.na(Company), "", Company), ifelse(is.na(`Parent Company`), "", `Parent Company`), ifelse(is.na(`Facility Name`), "", `Facility Name`), sep = " | ") %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+         project_category_keywords = create_project_category_keywords_vectorized(`Manufacturing Focus`, `Component Category`),
+         stage_lookup_key = create_project_category_keywords_vectorized(`Manufacturing Focus`, `Component Category`),
+         capex_info_available = !is.na(`Announced EV Investment`) & `Announced EV Investment` > 0,
+         capex_amount_estimated = ifelse(capex_info_available, `Announced EV Investment`, NA_real_)) %>%
+  rowwise() %>% mutate(supply_chain_stage = get_supply_chain_stage(atlas_stage_lookup, stage_lookup_key)) %>% ungroup() %>% select(-stage_lookup_key)
 
-# Process Clean Economy Tracker data
+cat("Processing Clean Economy Tracker data...\n")
 cet_processed <- CLEAN_ECONOMY_TRACKER %>%
-  mutate(
-    master_id = paste0("CET_", row_number()),
-    data_source = "Clean Economy Tracker",
-    investment_tracker_website = "https://cleaneconomytracker.org/",
-    investment_tracker_last_updated = "July 15, 2025",
-    coordinates_available = FALSE,  # CET doesn't have coordinates
-    standardized_latitude = NA_real_,
-    standardized_longitude = NA_real_,
-    latitude_if_available = NA_real_,
-    longitude_if_available = NA_real_,
-    address_available = FALSE,  # CET doesn't have address
-    address_if_available = NA_character_,
-    city_available = FALSE,  # CET doesn't have city
-    city_if_available = NA_character_,
-    # Create combined address_or_city column
-    address_or_city_if_available = case_when(
-      address_available ~ address_if_available,
-      city_available ~ city_if_available,
-      TRUE ~ NA_character_
-    ),
-    state_standardized = standardize_state(State),
-    # Source links - CET has Source column
-    source_links_available = !is.na(Source) & Source != "",
-    source_links_if_available = ifelse(source_links_available, Source, NA),
-    # Facility status - standardize CET facility status
-    facility_status_standardized = standardize_facility_status(`Operating Status`, "Clean Economy Tracker"),
-    # Process Jobs data
-    jobs_info_if_available = as.character(Jobs),
-    # Announcement date information
-    announcement_date_available = !is.na(Date),
-    announcement_date = ifelse(announcement_date_available, as.character(as.Date(Date)), NA_character_),
-    company_project_keywords = paste(
-      ifelse(is.na(Company), "", Company),
-      ifelse(is.na(`Parent Company`), "", `Parent Company`),
-      ifelse(is.na(`Facility Name`), "", `Facility Name`),
-      sep = " | "
-    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
-    # Create project category keywords
-    project_category_keywords = create_project_category_keywords_vectorized(
-      `Manufacturing Sector`, `Tech Category`, `Tech Sub-category`
-    ),
-    # Create lookup key for supply chain stage
-    stage_lookup_key = create_project_category_keywords_vectorized(
-      `Manufacturing Sector`, `Tech Category`, `Tech Sub-category`
-    ),
-    # CAPEX information
-    capex_info_available = !is.na(Investment) & Investment > 0,
-    capex_amount_estimated = ifelse(capex_info_available, Investment, NA_real_)
-  ) %>%
-  # Add supply chain stage
-  rowwise() %>%
-  mutate(
-    supply_chain_stage = get_supply_chain_stage(cet_stage_lookup, stage_lookup_key)
-  ) %>%
-  ungroup() %>%
-  select(-stage_lookup_key)
+  mutate(master_id = paste0("CET_", row_number()), data_source = "Clean Economy Tracker", investment_tracker_website = "https://cleaneconomytracker.org/", investment_tracker_last_updated = "July 15, 2025",
+         coordinates_available = FALSE, standardized_latitude = NA_real_, standardized_longitude = NA_real_, latitude_if_available = NA_real_, longitude_if_available = NA_real_,
+         address_available = FALSE, address_if_available = NA_character_, city_available = FALSE, city_if_available = NA_character_,
+         address_or_city_if_available = case_when(address_available ~ address_if_available, city_available ~ city_if_available, TRUE ~ NA_character_),
+         state_standardized = standardize_state(State), source_links_available = !is.na(Source) & Source != "", source_links_if_available = ifelse(source_links_available, Source, NA),
+         facility_status_standardized = standardize_facility_status(`Operating Status`, "Clean Economy Tracker"), jobs_info_if_available = as.character(Jobs),
+         announcement_date_available = !is.na(Date), announcement_date = ifelse(announcement_date_available, as.character(as.Date(Date)), NA_character_),
+         company_project_keywords = paste(ifelse(is.na(Company), "", Company), ifelse(is.na(`Parent Company`), "", `Parent Company`), ifelse(is.na(`Facility Name`), "", `Facility Name`), sep = " | ") %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+         project_category_keywords = create_project_category_keywords_vectorized(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`),
+         stage_lookup_key = create_project_category_keywords_vectorized(`Manufacturing Sector`, `Tech Category`, `Tech Sub-category`),
+         capex_info_available = !is.na(Investment) & Investment > 0, capex_amount_estimated = ifelse(capex_info_available, Investment, NA_real_)) %>%
+  rowwise() %>% mutate(supply_chain_stage = get_supply_chain_stage(cet_stage_lookup, stage_lookup_key)) %>% ungroup() %>% select(-stage_lookup_key)
 
-# Process Wellesley data
-# First combine the Wellesley source links
-wellesley_with_sources <- combine_wellesley_sources(WELLESLEY_JUNE_2025)
-
+cat("Processing Wellesley data...\n")
+wellesley_with_sources <- combine_wellesley_sources(WELLESLEY_JULY_2025)
 wel_processed <- wellesley_with_sources %>%
-  mutate(
-    master_id = paste0("WELLESLEY_", row_number()),
-    data_source = "Wellesley",
-    investment_tracker_website = "https://www.the-big-green-machine.com/",
-    investment_tracker_last_updated = "June 21, 2025",
-    coordinates_available = !is.na(Latitude) & !is.na(Longitude),
-    standardized_latitude = standardize_latitude(Latitude),
-    standardized_longitude = standardize_longitude(Longitude),
-    latitude_if_available = ifelse(coordinates_available, Latitude, NA),
-    longitude_if_available = ifelse(coordinates_available, Longitude, NA),
-    address_available = FALSE,  # Wellesley doesn't have full address
-    address_if_available = NA_character_,
-    city_available = !is.na(City) & City != "",
-    city_if_available = ifelse(city_available, City, NA),
-    # Create combined address_or_city column
-    address_or_city_if_available = case_when(
-      address_available ~ address_if_available,
-      city_available ~ city_if_available,
-      TRUE ~ NA_character_
-    ),
-    state_standardized = standardize_state(State),
-    # Source links - Wellesley has multiple source columns
-    source_links_available = !is.na(combined_sources) & combined_sources != "",
-    source_links_if_available = ifelse(source_links_available, combined_sources, NA),
-    # Facility status - standardize Wellesley facility status
-    facility_status_standardized = standardize_facility_status(`Operating Status`, "Wellesley"),
-    # Process Jobs data
-    jobs_info_if_available = as.character(coalesce(
-      suppressWarnings(as.numeric(na_if(`Current jobs`, "?"))),
-      suppressWarnings(as.numeric(na_if(`Target jobs`, "?")))
-    )),
-    # Announcement date information
-    announcement_date_available = !is.na(`Project Announcement Date`),
-    announcement_date = ifelse(announcement_date_available, as.character(`Project Announcement Date`), NA_character_),
-    company_project_keywords = paste(
-      ifelse(is.na(Name), "", Name),
-      ifelse(is.na(Company), "", Company),
-      sep = " | "
-    ) %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
-    # Create project category keywords
-    project_category_keywords = create_project_category_keywords_vectorized(
-      Sector, `Mfg Activity`, `Mfg Product`
-    ),
-    # Create lookup key for supply chain stage
-    stage_lookup_key = create_project_category_keywords_vectorized(
-      Sector, `Mfg Activity`, `Mfg Product`
-    ),
-    # CAPEX information
-    capex_info_available = !is.na(CAPEX_ESTIMATED) & CAPEX_ESTIMATED > 0,
-    capex_amount_estimated = ifelse(capex_info_available, CAPEX_ESTIMATED, NA_real_)
-  ) %>%
-  # Add supply chain stage
-  rowwise() %>%
-  mutate(
-    supply_chain_stage = get_supply_chain_stage(wellesley_stage_lookup, stage_lookup_key)
-  ) %>%
-  ungroup() %>%
-  select(-stage_lookup_key, -combined_sources)
+  mutate(master_id = paste0("WELLESLEY_", row_number()), data_source = "Wellesley", investment_tracker_website = "https://www.the-big-green-machine.com/", investment_tracker_last_updated = "July 21, 2025",
+         coordinates_available = !is.na(Latitude) & !is.na(Longitude), standardized_latitude = standardize_latitude(Latitude), standardized_longitude = standardize_longitude(Longitude),
+         latitude_if_available = ifelse(coordinates_available, Latitude, NA), longitude_if_available = ifelse(coordinates_available, Longitude, NA),
+         address_available = FALSE, address_if_available = NA_character_, city_available = !is.na(City) & City != "", city_if_available = ifelse(city_available, City, NA),
+         address_or_city_if_available = case_when(address_available ~ address_if_available, city_available ~ city_if_available, TRUE ~ NA_character_),
+         state_standardized = standardize_state(State), source_links_available = !is.na(combined_sources) & combined_sources != "", source_links_if_available = ifelse(source_links_available, combined_sources, NA),
+         facility_status_standardized = standardize_facility_status(`Operating Status`, "Wellesley"),
+         jobs_info_if_available = as.character(coalesce(suppressWarnings(as.numeric(na_if(`Current jobs`, "?"))), suppressWarnings(as.numeric(na_if(`Target jobs`, "?"))))),
+         announcement_date_available = !is.na(`Project Announcement Date`), announcement_date = ifelse(announcement_date_available, as.character(`Project Announcement Date`), NA_character_),
+         company_project_keywords = paste(ifelse(is.na(Name), "", Name), ifelse(is.na(Company), "", Company), sep = " | ") %>% str_remove("^\\s*\\|\\s*|\\s*\\|\\s*$") %>% str_squish(),
+         project_category_keywords = create_project_category_keywords_vectorized(Sector, `Mfg Activity`, `Mfg Product`),
+         stage_lookup_key = create_project_category_keywords_vectorized(Sector, `Mfg Activity`, `Mfg Product`),
+         capex_info_available = !is.na(CAPEX_ESTIMATED) & CAPEX_ESTIMATED > 0, capex_amount_estimated = ifelse(capex_info_available, CAPEX_ESTIMATED, NA_real_)) %>%
+  rowwise() %>% mutate(supply_chain_stage = get_supply_chain_stage(wellesley_stage_lookup, stage_lookup_key)) %>% ungroup() %>% select(-stage_lookup_key, -combined_sources)
 
 # PART 6: CREATE MASTER ALL_FACILITIES MATRIX
-
-# Select common columns from all processed datasets
+cat("\nCombining all facilities...\n")
 all_facilities <- bind_rows(
-  cim_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
-                           coordinates_available, standardized_latitude, standardized_longitude,
-                           latitude_if_available, longitude_if_available, 
-                           address_or_city_if_available,
-                           state_standardized, source_links_available, source_links_if_available,
-                           facility_status_standardized, jobs_info_if_available,
-                           company_project_keywords, project_category_keywords, supply_chain_stage,
-                           announcement_date_available, announcement_date,
-                           capex_info_available, capex_amount_estimated),
-  atlas_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
-                             coordinates_available, standardized_latitude, standardized_longitude,
-                             latitude_if_available, longitude_if_available, 
-                             address_or_city_if_available,
-                             state_standardized, source_links_available, source_links_if_available,
-                             facility_status_standardized, jobs_info_if_available,
-                             company_project_keywords, project_category_keywords, supply_chain_stage,
-                             announcement_date_available, announcement_date,
-                             capex_info_available, capex_amount_estimated),
-  cet_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
-                           coordinates_available, standardized_latitude, standardized_longitude,
-                           latitude_if_available, longitude_if_available, 
-                           address_or_city_if_available,
-                           state_standardized, source_links_available, source_links_if_available,
-                           facility_status_standardized, jobs_info_if_available,
-                           company_project_keywords, project_category_keywords, supply_chain_stage,
-                           announcement_date_available, announcement_date,
-                           capex_info_available, capex_amount_estimated),
-  wel_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
-                           coordinates_available, standardized_latitude, standardized_longitude,
-                           latitude_if_available, longitude_if_available, 
-                           address_or_city_if_available,
-                           state_standardized, source_links_available, source_links_if_available,
-                           facility_status_standardized, jobs_info_if_available,
-                           company_project_keywords, project_category_keywords, supply_chain_stage,
-                           announcement_date_available, announcement_date,
-                           capex_info_available, capex_amount_estimated)
-) %>%
-  # Rename columns to match specifications
-  rename(
-    state = state_standardized
-  ) %>%
-  # Reorder columns
-  select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated,
-         coordinates_available, standardized_latitude, standardized_longitude,
-         latitude_if_available, longitude_if_available, 
-         address_or_city_if_available,
-         state, source_links_available, source_links_if_available,
-         facility_status_standardized, jobs_info_if_available,
-         company_project_keywords, project_category_keywords, supply_chain_stage,
-         announcement_date_available, announcement_date,
-         capex_info_available, capex_amount_estimated)
+  cim_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated, coordinates_available, standardized_latitude, standardized_longitude, latitude_if_available, longitude_if_available, address_or_city_if_available, state_standardized, source_links_available, source_links_if_available, facility_status_standardized, jobs_info_if_available, company_project_keywords, project_category_keywords, supply_chain_stage, announcement_date_available, announcement_date, capex_info_available, capex_amount_estimated),
+  atlas_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated, coordinates_available, standardized_latitude, standardized_longitude, latitude_if_available, longitude_if_available, address_or_city_if_available, state_standardized, source_links_available, source_links_if_available, facility_status_standardized, jobs_info_if_available, company_project_keywords, project_category_keywords, supply_chain_stage, announcement_date_available, announcement_date, capex_info_available, capex_amount_estimated),
+  cet_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated, coordinates_available, standardized_latitude, standardized_longitude, latitude_if_available, longitude_if_available, address_or_city_if_available, state_standardized, source_links_available, source_links_if_available, facility_status_standardized, jobs_info_if_available, company_project_keywords, project_category_keywords, supply_chain_stage, announcement_date_available, announcement_date, capex_info_available, capex_amount_estimated),
+  wel_processed %>% select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated, coordinates_available, standardized_latitude, standardized_longitude, latitude_if_available, longitude_if_available, address_or_city_if_available, state_standardized, source_links_available, source_links_if_available, facility_status_standardized, jobs_info_if_available, company_project_keywords, project_category_keywords, supply_chain_stage, announcement_date_available, announcement_date, capex_info_available, capex_amount_estimated)
+) %>% rename(state = state_standardized) %>%
+  select(master_id, data_source, investment_tracker_website, investment_tracker_last_updated, coordinates_available, standardized_latitude, standardized_longitude, latitude_if_available, longitude_if_available, address_or_city_if_available, state, source_links_available, source_links_if_available, facility_status_standardized, jobs_info_if_available, company_project_keywords, project_category_keywords, supply_chain_stage, announcement_date_available, announcement_date, capex_info_available, capex_amount_estimated)
 
-# PART 7: PREPARE DATA FOR FACILITY MATCHING
-
-# Prepare the data with normalized fields
-facilities_for_matching <- all_facilities %>%
-  filter(!is.na(company_project_keywords) & company_project_keywords != "") %>%
-  mutate(
-    # Normalize company names for matching using the fixed function
-    company_normalized = normalize_company_name(company_project_keywords),
-    # Extract first company name (before | separator if exists)
-    company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(),
-    company_primary_normalized = normalize_company_name(company_primary),
-    # Create a row ID for tracking
-    row_id = row_number()
-  ) %>%
-  filter(company_normalized != "" | company_primary_normalized != "") %>%
-  # Only keep facilities that have some identifying information
-  filter(coordinates_available == TRUE | !is.na(address_or_city_if_available) | !is.na(state))
-
-#CREATE STRATA DATASET
-#First, let's create a matrix of unique combinations of "project_category_keywords" and "supply_chain_stage" and "data_source"
-strata_matrix <- facilities_for_matching %>%
-  select(project_category_keywords, supply_chain_stage, data_source) %>%
-  distinct() %>%
-  arrange(data_source, project_category_keywords, supply_chain_stage)
-
-
-#write_csv(strata_matrix, "strata_matrix.csv")
-
-
-#CONSOLIDATE FINAL DATASET
-# This section joins the consolidated category back to the master dataset,
-# adds timeline information, and creates a combined source/category keyword field.
-# The final result is a single, comprehensive 'all_facilities' dataframe, overwriting the previous version.
-
+# ADD CAPEX CATEGORY COLUMN
+cat("\nAdding CAPEX category column...\n")
 all_facilities <- all_facilities %>%
-  # Join the consolidated category from strata_matrix
-  left_join(
-    select(strata_matrix, project_category_keywords, supply_chain_stage, data_source),
-    by = c("project_category_keywords", "supply_chain_stage", "data_source")
-  ) %>%
-  # Add announcement timeline info and source-specific category keywords
   mutate(
-    announcement_year = ifelse(announcement_date_available, year(announcement_date), NA_integer_),
-    announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date), "-Q", quarter(announcement_date)), NA_character_),
-    source_project_category_keywords = paste(data_source, project_category_keywords, sep = " | ")
+    capex_category = case_when(
+      !capex_info_available | is.na(capex_amount_estimated) ~ "unknown",
+      capex_amount_estimated < 100e6 ~ "<100M",
+      capex_amount_estimated >= 100e6 & capex_amount_estimated < 1e9 ~ "100M-1B",
+      capex_amount_estimated >= 1e9 ~ ">1B",
+      TRUE ~ "unknown"
+    )
   )
 
-# PART 11: VERIFY CAPEX INFORMATION AND FINAL DATASET
+# Verify CAPEX categories
+capex_category_summary <- all_facilities %>%
+  group_by(capex_category) %>%
+  summarise(
+    count = n(),
+    total_capex_b = sum(capex_amount_estimated, na.rm = TRUE) / 1e9,
+    .groups = "drop"
+  )
+cat("CAPEX category distribution:\n")
+print(capex_category_summary)
 
-# Check CAPEX data availability by data source
-capex_summary <- all_facilities %>%
-  group_by(data_source) %>%
+# GEOCODING SECTION
+cat("\n================================================================================\n")
+cat("GEOCODING FACILITIES FOR COUNTY, CBSA, AND CSA\n")
+cat("================================================================================\n\n")
+
+# Function to geocode facilities with coordinates
+geocode_with_coordinates <- function(facilities_sf, counties_sf, cbsa_sf, csa_sf) {
+  # Join with counties
+  facilities_counties <- st_join(facilities_sf, counties_sf[, c("GEOID", "NAME", "geometry")], join = st_within)
+  facilities_counties <- facilities_counties %>% rename(county_fips = GEOID, county_name = NAME)
+  
+  # Join with CBSAs
+  facilities_cbsa <- st_join(facilities_counties, cbsa_sf[, c("GEOID", "NAME", "geometry")], join = st_within)
+  facilities_cbsa <- facilities_cbsa %>% rename(cbsa_code = GEOID, cbsa_name = NAME)
+  
+  # Join with CSAs
+  facilities_csa <- st_join(facilities_cbsa, csa_sf[, c("GEOID", "NAME", "geometry")], join = st_within)
+  facilities_csa <- facilities_csa %>% rename(csa_code = GEOID, csa_name = NAME)
+  
+  # Convert back to dataframe
+  result <- facilities_csa %>% st_drop_geometry()
+  return(result)
+}
+
+# Function to parse various address formats
+parse_address_for_geocoding <- function(address_string) {
+  if (is.na(address_string) || address_string == "") return(NULL)
+  
+  # Clean up common issues
+  address_clean <- address_string %>%
+    str_replace_all("\\s+", " ") %>%
+    str_trim() %>%
+    str_replace_all("\\.$", "") %>%
+    str_replace_all(",+", ",")
+  
+  # Try to extract components (very basic parsing)
+  # This would need to be much more sophisticated for production use
+  parts <- str_split(address_clean, ",")[[1]] %>% str_trim()
+  
+  # Return cleaned address for geocoding attempt
+  return(address_clean)
+}
+
+# First, geocode facilities with coordinates
+cat("Step 1: Geocoding facilities with coordinates...\n")
+facilities_with_coords <- all_facilities %>% filter(coordinates_available == TRUE)
+cat("Facilities with coordinates:", nrow(facilities_with_coords), "\n")
+
+if (nrow(facilities_with_coords) > 0) {
+  # Download geographic data
+  cat("Downloading county boundaries...\n")
+  counties_sf <- counties(cb = TRUE, year = 2020)
+  cat("Downloading CBSA boundaries...\n")
+  cbsa_sf <- core_based_statistical_areas(cb = TRUE, year = 2020)
+  cat("Downloading CSA boundaries...\n")
+  csa_sf <- combined_statistical_areas(cb = TRUE, year = 2020)
+  
+  # Convert facilities to sf object
+  facilities_sf <- facilities_with_coords %>%
+    filter(!is.na(latitude_if_available) & !is.na(longitude_if_available)) %>%
+    st_as_sf(coords = c("longitude_if_available", "latitude_if_available"), crs = 4269, remove = FALSE)
+  
+  # Process geocoding without parallel processing to avoid errors
+  cat("Processing geocoding...\n")
+  
+  # Process in chunks to show progress
+  n_chunks <- 40
+  chunk_size <- ceiling(nrow(facilities_sf) / n_chunks)
+  geocoded_results <- list()
+  
+  pb <- txtProgressBar(min = 0, max = n_chunks, style = 3)
+  
+  for (i in 1:n_chunks) {
+    start_idx <- (i - 1) * chunk_size + 1
+    end_idx <- min(i * chunk_size, nrow(facilities_sf))
+    
+    if (start_idx <= nrow(facilities_sf)) {
+      chunk <- facilities_sf[start_idx:end_idx, ]
+      result <- geocode_with_coordinates(chunk, counties_sf, cbsa_sf, csa_sf)
+      geocoded_results[[i]] <- result
+    }
+    
+    setTxtProgressBar(pb, i)
+  }
+  
+  close(pb)
+  
+  # Combine results
+  geocoded_data <- bind_rows(geocoded_results)
+  
+  # Merge back with original data
+  all_facilities <- all_facilities %>%
+    left_join(geocoded_data %>% 
+                select(master_id, county_fips, county_name, cbsa_code, cbsa_name, csa_code, csa_name),
+              by = "master_id")
+  
+  cat("\nGeocoding with coordinates complete.\n")
+}
+
+# Step 2: Try to geocode facilities without coordinates using addresses
+cat("\nStep 2: Attempting to geocode facilities without coordinates using addresses...\n")
+facilities_no_coords <- all_facilities %>% 
+  filter(coordinates_available == FALSE & !is.na(address_or_city_if_available) & !is.na(state))
+cat("Facilities without coordinates but with address info:", nrow(facilities_no_coords), "\n")
+
+if (nrow(facilities_no_coords) > 0) {
+  # This is where you would implement actual address geocoding
+  # For now, we'll just mark these as attempted but unsuccessful
+  cat("Note: Full address geocoding would require additional geocoding service (e.g., Census geocoder, Google Maps API)\n")
+  cat("Marking these facilities as geocoding attempted...\n")
+  
+  # For demonstration, just mark as attempted
+  all_facilities <- all_facilities %>%
+    mutate(
+      geocoding_attempted_address = master_id %in% facilities_no_coords$master_id
+    )
+}
+
+# Step 3: OPPORTUNITY ZONE GEOCODING
+cat("\n================================================================================\n")
+cat("OPPORTUNITY ZONE GEOCODING\n")
+cat("================================================================================\n\n")
+
+# Function to query ArcGIS feature service for opportunity zones
+get_opportunity_zones <- function() {
+  cat("Downloading opportunity zone boundaries from ArcGIS...\n")
+  
+  # Build query URL
+  base_url <- "https://services5.arcgis.com/JIM0C93ugEcJ7iyY/ArcGIS/rest/services/oz_shapefile_final_version/FeatureServer/0/query"
+  
+  # Parameters for the query
+  params <- list(
+    where = "1=1",  # Get all features
+    outFields = "*",
+    f = "geojson",
+    returnGeometry = "true"
+  )
+  
+  # Make the request
+  response <- GET(base_url, query = params)
+  
+  if (status_code(response) == 200) {
+    # Parse the GeoJSON response
+    oz_data <- st_read(content(response, as = "text", encoding = "UTF-8"), quiet = TRUE)
+    
+    # Filter to only opportunity zones (oz_lgbl == '1' or similar)
+    oz_data <- oz_data %>%
+      filter(oz_lgbl %in% c("1", "TRUE", "true", "Yes", "Y"))
+    
+    cat("Downloaded", nrow(oz_data), "opportunity zones\n")
+    return(oz_data)
+  } else {
+    cat("Error downloading opportunity zones. Status code:", status_code(response), "\n")
+    return(NULL)
+  }
+}
+
+# Check if facilities are in opportunity zones
+cat("Checking facilities for opportunity zone locations...\n")
+
+# Download opportunity zones
+oz_boundaries <- get_opportunity_zones()
+
+if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0) {
+  # Transform to same CRS if needed
+  oz_boundaries <- st_transform(oz_boundaries, crs = st_crs(facilities_sf))
+  
+  # Process OZ matching in chunks
+  n_chunks <- 40
+  chunk_size <- ceiling(nrow(facilities_sf) / n_chunks)
+  oz_results <- list()
+  
+  cat("Checking opportunity zone overlap...\n")
+  pb <- txtProgressBar(min = 0, max = n_chunks, style = 3)
+  
+  for (i in 1:n_chunks) {
+    start_idx <- (i - 1) * chunk_size + 1
+    end_idx <- min(i * chunk_size, nrow(facilities_sf))
+    
+    if (start_idx <= nrow(facilities_sf)) {
+      chunk <- facilities_sf[start_idx:end_idx, ]
+      
+      # Check if facilities are within opportunity zones
+      oz_overlap <- st_join(chunk, oz_boundaries[, c("GEOID", "oz_lgbl", "geometry")], 
+                            join = st_within, left = TRUE)
+      
+      # Extract results
+      result <- oz_overlap %>%
+        st_drop_geometry() %>%
+        select(master_id, oz_census_tract = GEOID) %>%
+        mutate(in_opportunity_zone = !is.na(oz_census_tract))
+      
+      oz_results[[i]] <- result
+    }
+    
+    setTxtProgressBar(pb, i)
+  }
+  
+  close(pb)
+  
+  # Combine results
+  oz_data_combined <- bind_rows(oz_results)
+  
+  # Merge OZ results back to all_facilities
+  all_facilities <- all_facilities %>%
+    left_join(oz_data_combined %>% select(master_id, in_opportunity_zone, oz_census_tract),
+              by = "master_id")
+  
+  # For facilities without coordinates, set OZ status to NA
+  all_facilities <- all_facilities %>%
+    mutate(
+      in_opportunity_zone = ifelse(coordinates_available, in_opportunity_zone, NA),
+      oz_census_tract = ifelse(coordinates_available, oz_census_tract, NA_character_)
+    )
+  
+  cat("\nOpportunity zone geocoding complete.\n")
+  
+} else {
+  # If OZ download failed or no facilities with coordinates
+  all_facilities <- all_facilities %>%
+    mutate(
+      in_opportunity_zone = NA,
+      oz_census_tract = NA_character_
+    )
+  cat("Opportunity zone geocoding skipped (no data or no facilities with coordinates)\n")
+}
+
+# Step 4: Mark geocoding success
+all_facilities <- all_facilities %>%
+  mutate(
+    geocoding_success = !is.na(county_fips) | !is.na(cbsa_code) | !is.na(csa_code),
+    geocoding_attempted_address = ifelse(is.na(geocoding_attempted_address), FALSE, geocoding_attempted_address)
+  )
+
+# Report geocoding results
+geocoding_summary <- all_facilities %>%
   summarise(
     total_facilities = n(),
-    facilities_with_capex = sum(capex_info_available, na.rm = TRUE),
-    percent_with_capex = round(facilities_with_capex / total_facilities * 100, 1),
-    total_capex_million = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
-    median_capex_million = round(median(capex_amount_estimated, na.rm = TRUE) / 1e6, 1),
+    with_coordinates = sum(coordinates_available),
+    geocoding_successful = sum(geocoding_success),
+    geocoding_failed = sum(!geocoding_success),
+    with_county = sum(!is.na(county_name)),
+    with_cbsa = sum(!is.na(cbsa_name)),
+    with_csa = sum(!is.na(csa_name)),
+    in_opportunity_zone = sum(in_opportunity_zone == TRUE, na.rm = TRUE),
+    oz_status_unknown = sum(is.na(in_opportunity_zone))
+  )
+
+cat("\nGeocoding Summary:\n")
+print(geocoding_summary)
+
+# Opportunity zone summary by data source
+oz_summary_by_source <- all_facilities %>%
+  group_by(data_source) %>%
+  summarise(
+    total = n(),
+    with_coords = sum(coordinates_available),
+    in_oz = sum(in_opportunity_zone == TRUE, na.rm = TRUE),
+    pct_in_oz = round(in_oz / with_coords * 100, 1),
     .groups = "drop"
   )
 
-print("CAPEX Summary by Data Source:")
-print(capex_summary)
+cat("\nOpportunity Zone Summary by Data Source:\n")
+print(oz_summary_by_source)
 
-# Final verification
-print(paste("Total facilities in final dataset:", nrow(all_facilities)))
-print(paste("Facilities with CAPEX info:", sum(all_facilities$capex_info_available, na.rm = TRUE)))
-print(paste("Percent with CAPEX info:", round(sum(all_facilities$capex_info_available, na.rm = TRUE) / nrow(all_facilities) * 100, 1), "%"))
+# Save all_facilities after geocoding
+write_csv(all_facilities, file.path(output_folder, "all_facilities_geocoded.csv"))
 
-# Final glimpse to verify structure
-glimpse(all_facilities)
+# Continue with the rest of the script...
+# [Rest of the script continues unchanged from here]
 
-#Add month and quarter columns needed for matching
-#Check to see if announcement_month, announcement_quarter, and announcement_year are in all_facilities
-#If they are, check to make sure they are in the right format, eg: "January 2025"; "2025-Q1"; "2025"
-#If they are not, create from announcement_date 
+# PART 7: PREPARE DATA FOR FACILITY MATCHING
+cat("\nPreparing data for facility matching...\n")
+facilities_for_matching <- all_facilities %>%
+  filter(!is.na(company_project_keywords) & company_project_keywords != "") %>%
+  mutate(company_normalized = normalize_company_name(company_project_keywords), company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(), company_primary_normalized = normalize_company_name(company_primary), row_id = row_number()) %>%
+  filter(company_normalized != "" | company_primary_normalized != "") %>%
+  filter(coordinates_available == TRUE | !is.na(address_or_city_if_available) | !is.na(state))
+
+strata_matrix <- facilities_for_matching %>% select(project_category_keywords, supply_chain_stage, data_source) %>% distinct() %>% arrange(data_source, project_category_keywords, supply_chain_stage)
+
+all_facilities <- all_facilities %>%
+  left_join(select(strata_matrix, project_category_keywords, supply_chain_stage, data_source), by = c("project_category_keywords", "supply_chain_stage", "data_source")) %>%
+  mutate(announcement_year = ifelse(announcement_date_available, year(announcement_date), NA_integer_), announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date), "-Q", quarter(announcement_date)), NA_character_), source_project_category_keywords = paste(data_source, project_category_keywords, sep = " | "))
+
+# PART 11: VERIFY CAPEX INFORMATION AND FINAL DATASET
+capex_summary <- all_facilities %>% group_by(data_source) %>% summarise(total_facilities = n(), facilities_with_capex = sum(capex_info_available, na.rm = TRUE), percent_with_capex = round(facilities_with_capex / total_facilities * 100, 1), total_capex_million = round(sum(capex_amount_estimated, na.rm = TRUE) / 1e6, 1), median_capex_million = round(median(capex_amount_estimated, na.rm = TRUE) / 1e6, 1), .groups = "drop")
+cat("Total facilities:", nrow(all_facilities), "| With CAPEX:", sum(all_facilities$capex_info_available, na.rm = TRUE), "(", round(sum(all_facilities$capex_info_available, na.rm = TRUE) / nrow(all_facilities) * 100, 1), "%)\n")
+
 if (!("announcement_month" %in% names(all_facilities))) {
-  all_facilities <- all_facilities %>%
-    mutate(
-      # Convert announcement_date from character to Date first
-      announcement_date_as_date = as.Date(announcement_date),
-      announcement_month = ifelse(announcement_date_available, format(announcement_date_as_date, "%B %Y"), NA_character_),
-      announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date_as_date), "-Q", quarter(announcement_date_as_date)), NA_character_),
-      announcement_year = ifelse(announcement_date_available, year(announcement_date_as_date), NA_integer_)
-    ) %>%
-    select(-announcement_date_as_date)  # Remove the temporary column
+  all_facilities <- all_facilities %>% mutate(announcement_date_as_date = as.Date(announcement_date), announcement_month = ifelse(announcement_date_available, format(announcement_date_as_date, "%B %Y"), NA_character_), announcement_quarter = ifelse(announcement_date_available, paste0(year(announcement_date_as_date), "-Q", quarter(announcement_date_as_date)), NA_character_), announcement_year = ifelse(announcement_date_available, year(announcement_date_as_date), NA_integer_)) %>% select(-announcement_date_as_date)
 }
 
+# Save intermediate results
+write_csv(all_facilities, file.path(output_folder, "all_facilities_complete.csv"))
+write_csv(capex_summary, file.path(output_folder, "capex_summary.csv"))
 
 # Part II: Identify Duplicate Facilities ---------------
-
 cat("\n================================================================================\n")
 cat("PART II: FACILITY DUPLICATE DETECTION\n")
 cat("================================================================================\n\n")
 
-# --- 1. Loading libraries and setting parameters ---
 cat("--- 1. Loading libraries and setting parameters ---\n")
+suppressPackageStartupMessages({library(dplyr); library(stringdist); library(geosphere); library(purrr); library(igraph); library(lubridate); library(tidyr); library(stringr)})
 
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(stringdist)
-  library(geosphere)
-  library(purrr)
-  library(igraph)
-  library(lubridate)
-  library(tidyr)
-  library(stringr)
-})
-
-# Define matching parameters focused on duplicate detection
-params <- list(
-  # Distance thresholds (km)
-  max_distance_same_facility = 5,      # Within 5km = likely same facility
-  max_distance_maybe_same = 25,        # Within 25km = possibly same facility
-  max_distance_consider = 100,         # Beyond 100km = unlikely same facility
-  
-  # Name similarity thresholds
-  name_similarity_high = 0.85,         # High confidence same company
-  name_similarity_medium = 0.70,       # Medium confidence
-  name_similarity_low = 0.60,          # Minimum to consider
-  
-  # Date thresholds (days)
-  max_date_diff_same_announcement = 90,    # Within 3 months = likely same announcement
-  max_date_diff_related = 365,             # Within 1 year = possibly related
-  
-  # Category similarity threshold
-  category_similarity_threshold = 0.70,
-  
-  # Scoring weights for duplicate detection
-  weight_name = 0.35,
-  weight_location = 0.25,
-  weight_date = 0.20,
-  weight_category = 0.15,
-  weight_capex = 0.05,
-  
-  # Duplicate confidence thresholds
-  duplicate_confidence_high = 0.85,
-  duplicate_confidence_medium = 0.70,
-  duplicate_confidence_low = 0.60,
-  
-  # Memory management
-  chunk_size = 100,
-  max_pairs_per_chunk = 50000
-)
-
+params <- list(max_distance_same_facility = 5, max_distance_maybe_same = 25, max_distance_consider = 100, name_similarity_high = 0.85, name_similarity_medium = 0.70, name_similarity_low = 0.60, max_date_diff_same_announcement = 90, max_date_diff_related = 365, category_similarity_threshold = 0.70, weight_name = 0.35, weight_location = 0.25, weight_date = 0.20, weight_category = 0.15, weight_capex = 0.05, duplicate_confidence_high = 0.85, duplicate_confidence_medium = 0.70, duplicate_confidence_low = 0.60, chunk_size = 100, max_pairs_per_chunk = 50000)
 cat("Parameters loaded.\n\n")
 
-# --- 2. Data preparation and quality checks ---
 cat("--- 2. Data preparation and quality checks ---\n")
+data_quality <- all_facilities %>% group_by(data_source) %>% summarise(total_records = n(), has_coordinates = sum(coordinates_available, na.rm = TRUE), has_company = sum(!is.na(company_project_keywords) & company_project_keywords != ""), has_date = sum(!is.na(announcement_date)), has_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0), .groups = "drop") %>% mutate(pct_coordinates = round(has_coordinates / total_records * 100, 1), pct_with_date = round(has_date / total_records * 100, 1))
+cat("Data quality check complete.\n\n")
 
-# Check data quality
-data_quality <- all_facilities %>%
-  group_by(data_source) %>%
-  summarise(
-    total_records = n(),
-    has_coordinates = sum(coordinates_available, na.rm = TRUE),
-    has_company = sum(!is.na(company_project_keywords) & company_project_keywords != ""),
-    has_date = sum(!is.na(announcement_date)),
-    has_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    pct_coordinates = round(has_coordinates / total_records * 100, 1),
-    pct_with_date = round(has_date / total_records * 100, 1)
-  )
-
-cat("Data quality summary:\n")
-print(data_quality %>% select(data_source, total_records, pct_coordinates, pct_with_date))
-cat("\n")
-
-# --- 3. Prepare data for matching ---
 cat("--- 3. Preparing data for matching ---\n")
-
-# Simplified matching dataframe
-match_df <- all_facilities %>%
-  mutate(
-    # Normalize company name for matching
-    company_normalized = normalize_company_name(company_project_keywords),
-    # Clean category for comparison
-    category_clean = str_to_lower(str_replace_all(project_category_keywords, " \\| ", " ")),
-    # Parse date
-    announcement_date_parsed = as.Date(announcement_date),
-    # Create simple location identifier
-    location_key = paste(state, round(latitude_if_available, 2), round(longitude_if_available, 2), sep = "_")
-  ) %>%
-  # Keep only records with minimum required info
-  filter(
-    !is.na(state) & 
-      !is.na(company_normalized) & 
-      company_normalized != ""
-  ) %>%
-  select(
-    master_id, 
-    data_source,
-    company_project_keywords,
-    company_normalized,
-    category_clean,
-    state,
-    coordinates_available,
-    latitude_if_available,
-    longitude_if_available,
-    location_key,
-    announcement_date_parsed,
-    announcement_month,
-    announcement_quarter,
-    announcement_year,
-    capex_amount_estimated,
-    facility_status_standardized
-  )
-
+match_df <- all_facilities %>% mutate(company_normalized = normalize_company_name(company_project_keywords), category_clean = str_to_lower(str_replace_all(project_category_keywords, " \\| ", " ")), announcement_date_parsed = as.Date(announcement_date), location_key = paste(state, round(latitude_if_available, 2), round(longitude_if_available, 2), sep = "_")) %>% filter(!is.na(state) & !is.na(company_normalized) & company_normalized != "") %>% select(master_id, data_source, company_project_keywords, company_normalized, category_clean, state, coordinates_available, latitude_if_available, longitude_if_available, location_key, announcement_date_parsed, announcement_month, announcement_quarter, announcement_year, capex_amount_estimated, facility_status_standardized)
 cat("Prepared", nrow(match_df), "facilities for matching\n\n")
 
-# --- 4. Generate candidate pairs ---
 cat("--- 4. Generating candidate pairs using blocking strategy ---\n")
+sources <- unique(match_df$data_source); source_pairs <- combn(sources, 2, simplify = FALSE)
 
-# Get unique data sources
-sources <- unique(match_df$data_source)
-source_pairs <- combn(sources, 2, simplify = FALSE)
-
-# Function to process pairs between two sources
 process_source_pair <- function(pair, match_data, params) {
-  source1 <- pair[1]
-  source2 <- pair[2]
-  
-  cat(sprintf("  Processing: %s <-> %s\n", source1, source2))
-  
-  df1 <- filter(match_data, data_source == source1)
-  df2 <- filter(match_data, data_source == source2)
-  
-  # Find common states for blocking
+  source1 <- pair[1]; source2 <- pair[2]; cat(sprintf("  Processing: %s <-> %s\n", source1, source2))
+  df1 <- filter(match_data, data_source == source1); df2 <- filter(match_data, data_source == source2)
   common_states <- intersect(unique(df1$state), unique(df2$state))
-  
-  if (length(common_states) == 0) {
-    cat("    No common states found\n")
-    return(NULL)
-  }
-  
-  # Process each state block
+  if (length(common_states) == 0) { cat("    No common states found\n"); return(NULL) }
   candidates <- map_dfr(common_states, function(st) {
-    block_df1 <- filter(df1, state == st)
-    block_df2 <- filter(df2, state == st)
-    
-    # Create all pairs within state
-    pairs <- expand_grid(
-      id1 = block_df1$master_id,
-      id2 = block_df2$master_id
-    ) %>%
-      left_join(block_df1 %>% select(-data_source), by = c("id1" = "master_id"), suffix = c("", "_1")) %>%
-      left_join(block_df2 %>% select(-data_source), by = c("id2" = "master_id"), suffix = c("_1", "_2"))
-    
-    # Calculate name similarity and filter early
-    pairs <- pairs %>%
-      mutate(
-        name_similarity = stringsim(company_normalized_1, company_normalized_2, method = "jw")
-      ) %>%
-      # Keep only pairs with reasonable name similarity OR close proximity
-      filter(
-        name_similarity >= params$name_similarity_low |
-          (coordinates_available_1 & coordinates_available_2)  # Will check distance next
-      )
-    
-    # Calculate distance for those with coordinates
-    if (nrow(pairs) > 0) {
-      pairs <- pairs %>%
-        mutate(
-          distance_km = if_else(
-            coordinates_available_1 & coordinates_available_2,
-            distHaversine(
-              cbind(longitude_if_available_1, latitude_if_available_1),
-              cbind(longitude_if_available_2, latitude_if_available_2)
-            ) / 1000,
-            NA_real_
-          )
-        ) %>%
-        # Final filter: good name match OR close distance
-        filter(
-          name_similarity >= params$name_similarity_low |
-            (!is.na(distance_km) & distance_km <= params$max_distance_consider)
-        )
-    }
-    
+    block_df1 <- filter(df1, state == st); block_df2 <- filter(df2, state == st)
+    pairs <- expand_grid(id1 = block_df1$master_id, id2 = block_df2$master_id) %>% left_join(block_df1 %>% select(-data_source), by = c("id1" = "master_id"), suffix = c("", "_1")) %>% left_join(block_df2 %>% select(-data_source), by = c("id2" = "master_id"), suffix = c("_1", "_2"))
+    pairs <- pairs %>% mutate(name_similarity = stringsim(company_normalized_1, company_normalized_2, method = "jw")) %>% filter(name_similarity >= params$name_similarity_low | (coordinates_available_1 & coordinates_available_2))
+    if (nrow(pairs) > 0) pairs <- pairs %>% mutate(distance_km = if_else(coordinates_available_1 & coordinates_available_2, distHaversine(cbind(longitude_if_available_1, latitude_if_available_1), cbind(longitude_if_available_2, latitude_if_available_2)) / 1000, NA_real_)) %>% filter(name_similarity >= params$name_similarity_low | (!is.na(distance_km) & distance_km <= params$max_distance_consider))
     return(pairs)
   })
-  
-  if (nrow(candidates) > 0) {
-    candidates$source_1 <- source1
-    candidates$source_2 <- source2
-  }
-  
-  cat(sprintf("    Found %d candidate pairs\n", nrow(candidates)))
-  return(candidates)
+  if (nrow(candidates) > 0) { candidates$source_1 <- source1; candidates$source_2 <- source2 }
+  cat(sprintf("    Found %d candidate pairs\n", nrow(candidates))); return(candidates)
 }
 
-# Process all source pairs
 all_candidates <- map_dfr(source_pairs, ~process_source_pair(.x, match_df, params))
-
-# Add IDs and remove any accidental duplicates
-if (nrow(all_candidates) > 0) {
-  all_candidates <- all_candidates %>%
-    mutate(pair_id = row_number()) %>%
-    distinct(id1, id2, .keep_all = TRUE)
-}
-
+if (nrow(all_candidates) > 0) all_candidates <- all_candidates %>% mutate(pair_id = row_number()) %>% distinct(id1, id2, .keep_all = TRUE)
 cat(sprintf("\nTotal candidate pairs to evaluate: %d\n\n", nrow(all_candidates)))
 
-# --- 5. Score candidate pairs for duplicate likelihood ---
 cat("--- 5. Scoring pairs for duplicate likelihood ---\n")
-
 scored_pairs <- all_candidates %>%
-  mutate(
-    # Name/company similarity score (already calculated)
-    name_score = name_similarity,
-    
-    # Location score based on distance
-    location_score = case_when(
-      # No coordinates available
-      !coordinates_available_1 | !coordinates_available_2 ~ 0.5,
-      # Very close = likely same facility
-      distance_km <= params$max_distance_same_facility ~ 1.0,
-      # Nearby = possibly same facility  
-      distance_km <= params$max_distance_maybe_same ~ 0.7,
-      # Same region
-      distance_km <= params$max_distance_consider ~ 0.3,
-      # Too far
-      TRUE ~ 0
-    ),
-    
-    # Date similarity score
-    date_diff_days = abs(as.numeric(announcement_date_parsed_1 - announcement_date_parsed_2)),
-    date_score = case_when(
-      is.na(announcement_date_parsed_1) | is.na(announcement_date_parsed_2) ~ 0.5,
-      date_diff_days <= params$max_date_diff_same_announcement ~ 1.0,
-      announcement_quarter_1 == announcement_quarter_2 ~ 0.8,
-      date_diff_days <= params$max_date_diff_related ~ 0.6,
-      announcement_year_1 == announcement_year_2 ~ 0.4,
-      TRUE ~ 0.2
-    ),
-    
-    # Category similarity
-    category_score = stringsim(category_clean_1, category_clean_2, method = "jw"),
-    
-    # CAPEX similarity
-    capex_score = case_when(
-      is.na(capex_amount_estimated_1) | is.na(capex_amount_estimated_2) ~ 0.5,
-      capex_amount_estimated_1 == 0 | capex_amount_estimated_2 == 0 ~ 0.5,
-      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
-        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.1 ~ 1.0,
-      abs(capex_amount_estimated_1 - capex_amount_estimated_2) / 
-        pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.25 ~ 0.7,
-      TRUE ~ 0.3
-    ),
-    
-    # Calculate weighted composite score
-    composite_score = (
-      name_score * params$weight_name +
-        location_score * params$weight_location +
-        date_score * params$weight_date +
-        category_score * params$weight_category +
-        capex_score * params$weight_capex
-    ),
-    
-    # Determine duplicate likelihood
-    match_likelihood = case_when(
-      composite_score >= params$duplicate_confidence_high ~ "High",
-      composite_score >= params$duplicate_confidence_medium ~ "Medium", 
-      composite_score >= params$duplicate_confidence_low ~ "Low",
-      TRUE ~ "Very Low"
-    ),
-    
-    # Binary duplicate flag (for high confidence only)
-    is_likely_duplicate = match_likelihood == "High",
-    
-    # Add match characteristics
-    match_characteristics = case_when(
-      name_score >= 0.9 & location_score >= 0.9 ~ "Same company, same location",
-      name_score >= 0.9 & location_score >= 0.7 ~ "Same company, nearby location",
-      name_score >= 0.7 & location_score >= 0.9 ~ "Similar company, same location",
-      name_score >= 0.7 & date_score >= 0.8 ~ "Similar company, similar timing",
-      TRUE ~ "Other similarity pattern"
-    )
-  ) %>%
-  # Keep only meaningful matches
-  filter(composite_score >= 0.5) %>%
-  arrange(desc(composite_score))
-
+  mutate(name_score = name_similarity,
+         location_score = case_when(!coordinates_available_1 | !coordinates_available_2 ~ 0.5, distance_km <= params$max_distance_same_facility ~ 1.0, distance_km <= params$max_distance_maybe_same ~ 0.7, distance_km <= params$max_distance_consider ~ 0.3, TRUE ~ 0),
+         date_diff_days = abs(as.numeric(announcement_date_parsed_1 - announcement_date_parsed_2)),
+         date_score = case_when(is.na(announcement_date_parsed_1) | is.na(announcement_date_parsed_2) ~ 0.5, date_diff_days <= params$max_date_diff_same_announcement ~ 1.0, announcement_quarter_1 == announcement_quarter_2 ~ 0.8, date_diff_days <= params$max_date_diff_related ~ 0.6, announcement_year_1 == announcement_year_2 ~ 0.4, TRUE ~ 0.2),
+         category_score = stringsim(category_clean_1, category_clean_2, method = "jw"),
+         capex_score = case_when(is.na(capex_amount_estimated_1) | is.na(capex_amount_estimated_2) ~ 0.5, capex_amount_estimated_1 == 0 | capex_amount_estimated_2 == 0 ~ 0.5, abs(capex_amount_estimated_1 - capex_amount_estimated_2) / pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.1 ~ 1.0, abs(capex_amount_estimated_1 - capex_amount_estimated_2) / pmax(capex_amount_estimated_1, capex_amount_estimated_2) <= 0.25 ~ 0.7, TRUE ~ 0.3),
+         composite_score = (name_score * params$weight_name + location_score * params$weight_location + date_score * params$weight_date + category_score * params$weight_category + capex_score * params$weight_capex),
+         match_likelihood = case_when(composite_score >= params$duplicate_confidence_high ~ "High", composite_score >= params$duplicate_confidence_medium ~ "Medium", composite_score >= params$duplicate_confidence_low ~ "Low", TRUE ~ "Very Low"),
+         is_likely_duplicate = match_likelihood == "High",
+         match_characteristics = case_when(name_score >= 0.9 & location_score >= 0.9 ~ "Same company, same location", name_score >= 0.9 & location_score >= 0.7 ~ "Same company, nearby location", name_score >= 0.7 & location_score >= 0.9 ~ "Similar company, same location", name_score >= 0.7 & date_score >= 0.8 ~ "Similar company, similar timing", TRUE ~ "Other similarity pattern")) %>%
+  filter(composite_score >= 0.5) %>% arrange(desc(composite_score))
 cat(sprintf("Scored %d potential matches\n", nrow(scored_pairs)))
 
-# Show distribution of duplicate likelihood
-dup_dist <- scored_pairs %>%
-  count(match_likelihood, match_characteristics) %>%
-  arrange(match_likelihood, desc(n))
+dup_dist <- scored_pairs %>% count(match_likelihood, match_characteristics) %>% arrange(match_likelihood, desc(n))
+cat("\nDuplicate likelihood distribution complete.\n")
 
-cat("\nDuplicate likelihood distribution:\n")
-print(dup_dist)
-
-# --- 6. Create duplicate groups using graph clustering ---
 cat("\n--- 6. Creating duplicate groups ---\n")
-
-# Create graph from high-confidence duplicates only
-high_conf_duplicates <- scored_pairs %>%
-  filter(is_likely_duplicate)
-
+high_conf_duplicates <- scored_pairs %>% filter(is_likely_duplicate)
 if (nrow(high_conf_duplicates) > 0) {
-  # Build graph
-  g <- graph_from_data_frame(
-    high_conf_duplicates %>% select(id1, id2, weight = composite_score),
-    directed = FALSE
-  )
-  
-  # Find connected components
-  components <- components(g)
-  
-  # Create group assignments
-  facility_groups <- data.frame(
-    master_id = names(components$membership),
-    duplicate_group_id = components$membership,
-    stringsAsFactors = FALSE
-  )
-  
-  # Add groups back to main data
-  all_facilities_with_groups <- all_facilities %>%
-    left_join(facility_groups, by = "master_id") %>%
-    mutate(
-      has_duplicate_group = !is.na(duplicate_group_id)
-    )
-  
-  # Summarize duplicate groups
-  duplicate_group_summary <- all_facilities_with_groups %>%
-    filter(has_duplicate_group) %>%
-    group_by(duplicate_group_id) %>%
-    summarise(
-      n_records = n(),
-      data_sources = paste(sort(unique(data_source)), collapse = ", "),
-      states = paste(sort(unique(state)), collapse = ", "),
-      companies = paste(unique(str_extract(company_project_keywords, "^[^|]+")), collapse = " | "),
-      date_range = {
-        dates <- announcement_date[!is.na(announcement_date)]
-        if(length(dates) > 0) {
-          paste(min(dates), "to", max(dates))
-        } else {
-          "No dates"
-        }
-      },
-      total_capex_m = sum(capex_amount_estimated, na.rm = TRUE) / 1e6,
-      .groups = "drop"
-    ) %>%
-    filter(n_records > 1) %>%  # Only groups with actual duplicates
-    arrange(desc(n_records))
-  
+  g <- graph_from_data_frame(high_conf_duplicates %>% select(id1, id2, weight = composite_score), directed = FALSE)
+  components <- components(g); facility_groups <- data.frame(master_id = names(components$membership), duplicate_group_id = components$membership, stringsAsFactors = FALSE)
+  all_facilities_with_groups <- all_facilities %>% left_join(facility_groups, by = "master_id") %>% mutate(has_duplicate_group = !is.na(duplicate_group_id))
+  duplicate_group_summary <- all_facilities_with_groups %>% filter(has_duplicate_group) %>% group_by(duplicate_group_id) %>% summarise(n_records = n(), data_sources = paste(sort(unique(data_source)), collapse = ", "), states = paste(sort(unique(state)), collapse = ", "), companies = paste(unique(str_extract(company_project_keywords, "^[^|]+")), collapse = " | "), date_range = {dates <- announcement_date[!is.na(announcement_date)]; if(length(dates) > 0) paste(min(dates), "to", max(dates)) else "No dates"}, total_capex_m = sum(capex_amount_estimated, na.rm = TRUE) / 1e6, .groups = "drop") %>% filter(n_records > 1) %>% arrange(desc(n_records))
   cat(sprintf("Found %d duplicate groups containing 2+ records\n", nrow(duplicate_group_summary)))
-  
 } else {
-  all_facilities_with_groups <- all_facilities %>%
-    mutate(
-      duplicate_group_id = NA_integer_,
-      has_duplicate_group = FALSE
-    )
+  all_facilities_with_groups <- all_facilities %>% mutate(duplicate_group_id = NA_integer_, has_duplicate_group = FALSE)
   duplicate_group_summary <- data.frame()
 }
 
-# --- 7. Create summary report ---
 cat("\n--- 7. Creating duplicate detection summary ---\n")
+matches_for_review <- scored_pairs %>% filter(match_likelihood %in% c("High", "Medium")) %>% left_join(all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords), by = c("id1" = "master_id")) %>% left_join(all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords), by = c("id2" = "master_id"), suffix = c("_1", "_2")) %>% mutate(capex_m_1 = round(capex_amount_estimated_1 / 1e6, 1), capex_m_2 = round(capex_amount_estimated_2 / 1e6, 1)) %>% select(match_likelihood, composite_score, match_characteristics, id1, source_1, company_1 = company_project_keywords_1, state_1, status_1 = facility_status_standardized_1, capex_m_1, date_1 = announcement_date_parsed_1, id2, source_2, company_2 = company_project_keywords_2, state_2, status_2 = facility_status_standardized_2, capex_m_2, date_2 = announcement_date_parsed_2, name_score, location_score, distance_km, date_score, category_score, category_1 = project_category_keywords_1, category_2 = project_category_keywords_2) %>% arrange(desc(composite_score))
 
-# Create detailed match review table
-matches_for_review <- scored_pairs %>%
-  filter(match_likelihood %in% c("High", "Medium")) %>%
-  left_join(
-    all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords),
-    by = c("id1" = "master_id")
-  ) %>%
-  left_join(
-    all_facilities %>% select(master_id, facility_status_standardized, project_category_keywords),
-    by = c("id2" = "master_id"),
-    suffix = c("_1", "_2")
-  ) %>%
-  mutate(
-    capex_m_1 = round(capex_amount_estimated_1 / 1e6, 1),
-    capex_m_2 = round(capex_amount_estimated_2 / 1e6, 1)
-  ) %>%
-  select(
-    match_likelihood,
-    composite_score,
-    match_characteristics,
-    # Facility 1
-    id1,
-    source_1,
-    company_1 = company_project_keywords_1,
-    state_1,
-    status_1 = facility_status_standardized_1,
-    capex_m_1,
-    date_1 = announcement_date_parsed_1,
-    # Facility 2  
-    id2,
-    source_2,
-    company_2 = company_project_keywords_2,
-    state_2,
-    status_2 = facility_status_standardized_2,
-    capex_m_2,
-    date_2 = announcement_date_parsed_2,
-    # Match details
-    name_score,
-    location_score,
-    distance_km,
-    date_score,
-    category_score,
-    category_1 = project_category_keywords_1,
-    category_2 = project_category_keywords_2
-  ) %>%
-  arrange(desc(composite_score))
-
-# --- 8. Final summary statistics ---
 cat("\n================================================================================\n")
 cat("DUPLICATE DETECTION SUMMARY\n")
 cat("================================================================================\n\n")
+cat(sprintf("Total facilities analyzed: %d\n", nrow(all_facilities)))
+cat(sprintf("Total pairs evaluated: %d\n", nrow(all_candidates)))
+cat(sprintf("Potential duplicates found: %d\n", nrow(scored_pairs)))
+cat(sprintf("High confidence duplicates: %d\n", sum(scored_pairs$match_likelihood == "High")))
 
-# Overall statistics
-cat("Overall Statistics:\n")
-cat(sprintf("- Total facilities analyzed: %d\n", nrow(all_facilities)))
-cat(sprintf("- Total pairs evaluated: %d\n", nrow(all_candidates)))
-cat(sprintf("- Potential duplicates found: %d\n", nrow(scored_pairs)))
-cat(sprintf("- High confidence duplicates: %d\n", sum(scored_pairs$match_likelihood == "High")))
-
-# Duplicate statistics by data source pair
-cat("\n\nDuplicates by data source combination:\n")
-source_pair_summary <- scored_pairs %>%
-  filter(match_likelihood %in% c("High", "Medium")) %>%
-  mutate(source_pair = paste(pmin(source_1, source_2), pmax(source_1, source_2), sep = " <-> ")) %>%
-  group_by(source_pair, match_likelihood) %>%
-  summarise(n_matches = n(), .groups = "drop") %>%
-  pivot_wider(names_from = match_likelihood, values_from = n_matches, values_fill = 0) %>%
-  mutate(Total = High + Medium) %>%
-  arrange(desc(Total))
-
-print(source_pair_summary)
-
-# Sample high confidence duplicates
-cat("\n\nSample high confidence duplicates:\n")
-if (nrow(filter(matches_for_review, match_likelihood == "High")) > 0) {
-  sample_duplicates <- matches_for_review %>%
-    filter(match_likelihood == "High") %>%
-    select(company_1, state_1, source_1, company_2, state_2, source_2, distance_km, composite_score) %>%
-    head(10)
-  print(sample_duplicates)
-}
-
-# Duplicate group statistics
-if (nrow(duplicate_group_summary) > 0) {
-  cat("\n\nLargest duplicate groups:\n")
-  print(head(duplicate_group_summary, 10))
-  
-  cat(sprintf("\n\nTotal records that are likely duplicates: %d (%.1f%%)\n", 
-              sum(all_facilities_with_groups$has_duplicate_group),
-              sum(all_facilities_with_groups$has_duplicate_group) / nrow(all_facilities_with_groups) * 100))
-}
-
+high_confidence_investment_database_overlaps <- high_conf_duplicates
 cat("\nDUPLICATE DETECTION COMPLETE\n")
 
-# Save results (uncomment as needed)
-# write_csv(matches_for_review, "duplicate_matches_for_review.csv")
-# write_csv(duplicate_group_summary, "duplicate_groups.csv") 
-# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_flags.csv")
-# write_csv(filter(scored_pairs, match_likelihood == "High"), "high_confidence_duplicates.csv")
-
-cat("\nDUPLICATE DETECTION COMPLETE\n")
-
-# Save results (uncomment as needed)
-# write_csv(matches_for_review, "duplicate_matches_for_review.csv")
-# write_csv(duplicate_group_summary, "duplicate_groups.csv") 
-# write_csv(all_facilities_with_groups, "all_facilities_with_duplicate_flags.csv")
-# write_csv(filter(scored_pairs, match_likelihood == "High"), "high_confidence_duplicates.csv")
-
+# Save duplicate detection results
+write_csv(scored_pairs, file.path(output_folder, "duplicate_pairs_scored.csv"))
+write_csv(high_confidence_investment_database_overlaps, file.path(output_folder, "high_confidence_duplicates.csv"))
+if (exists("duplicate_group_summary") && nrow(duplicate_group_summary) > 0) {
+  write_csv(duplicate_group_summary, file.path(output_folder, "duplicate_groups.csv"))
+}
 
 # PART III: Summary Stats by Source, Pre-GJF---------
-
 cat("\n================================================================================\n")
 cat("PART III: DESCRIPTIVE STATISTICS BY DATA SOURCE\n")
 cat("================================================================================\n\n")
 
-# First, let's create a more robust summary statistics function
 create_category_summary <- function(data) {
-  
-  # Step 1: Create base summary by category
-  category_summary <- data %>%
-    filter(!is.na(data_source) & 
-             !is.na(supply_chain_stage) & 
-             !is.na(project_category_keywords)) %>%
-    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
-    summarise(
-      n_facilities = n(),
-      
-      # Date statistics
-      first_announcement_year = {
-        valid_years <- announcement_year[!is.na(announcement_year)]
-        if(length(valid_years) > 0) min(valid_years) else NA_integer_
-      },
-      
-      last_announcement_year = {
-        valid_years <- announcement_year[!is.na(announcement_year)]
-        if(length(valid_years) > 0) max(valid_years) else NA_integer_
-      },
-      
-      n_with_dates = sum(!is.na(announcement_year)),
-      
-      # CAPEX statistics
-      total_announced_capex_m = {
-        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
-        if(length(valid_capex) > 0) sum(valid_capex) / 1e6 else NA_real_
-      },
-      
-      avg_capex_per_facility_m = {
-        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
-        if(length(valid_capex) > 0) mean(valid_capex) / 1e6 else NA_real_
-      },
-      
-      median_capex_m = {
-        valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]
-        if(length(valid_capex) > 0) median(valid_capex) / 1e6 else NA_real_
-      },
-      
-      n_with_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0),
-      
-      # State distribution (all states, not just top 3)
-      states_list = {
-        valid_states <- state[!is.na(state)]
-        if(length(valid_states) > 0) {
-          paste(sort(unique(valid_states)), collapse = ", ")
-        } else {
-          NA_character_
-        }
-      },
-      
-      n_states = n_distinct(state[!is.na(state)]),
-      
-      .groups = "drop"
-    )
-  
-  # Step 2: Calculate state-level CAPEX separately for top states
-  state_capex <- data %>%
-    filter(!is.na(data_source) & 
-             !is.na(supply_chain_stage) & 
-             !is.na(project_category_keywords) &
-             !is.na(state) &
-             !is.na(capex_amount_estimated) & 
-             capex_amount_estimated > 0) %>%
-    group_by(data_source, supply_chain_stage, project_category_keywords, state) %>%
-    summarise(
-      state_total_capex = sum(capex_amount_estimated, na.rm = TRUE),
-      state_facility_count = n(),
-      .groups = "drop"
-    ) %>%
-    # Rank states within each category
-    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
-    arrange(desc(state_total_capex)) %>%
-    mutate(state_rank = row_number()) %>%
-    ungroup()
-  
-  # Step 3: Extract top 3 states by CAPEX
-  top_states <- state_capex %>%
-    filter(state_rank <= 3) %>%
-    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
-    summarise(
-      highest_capex_state = ifelse(any(state_rank == 1), state[state_rank == 1][1], NA_character_),
-      highest_capex_amount_m = ifelse(any(state_rank == 1), round(state_total_capex[state_rank == 1][1] / 1e6, 2), NA_real_),
-      
-      second_highest_capex_state = ifelse(any(state_rank == 2), state[state_rank == 2][1], NA_character_),
-      second_highest_capex_amount_m = ifelse(any(state_rank == 2), round(state_total_capex[state_rank == 2][1] / 1e6, 2), NA_real_),
-      
-      third_highest_capex_state = ifelse(any(state_rank == 3), state[state_rank == 3][1], NA_character_),
-      third_highest_capex_amount_m = ifelse(any(state_rank == 3), round(state_total_capex[state_rank == 3][1] / 1e6, 2), NA_real_),
-      
-      .groups = "drop"
-    )
-  
-  # Step 4: Calculate facility status distribution
-  status_summary <- data %>%
-    filter(!is.na(data_source) & 
-             !is.na(supply_chain_stage) & 
-             !is.na(project_category_keywords)) %>%
-    group_by(data_source, supply_chain_stage, project_category_keywords) %>%
-    summarise(
-      n_operational = sum(facility_status_standardized == "Operational", na.rm = TRUE),
-      n_under_construction = sum(facility_status_standardized == "Under Construction", na.rm = TRUE),
-      n_planned = sum(facility_status_standardized == "Planned/Announced", na.rm = TRUE),
-      n_cancelled = sum(facility_status_standardized == "Paused, Closed/Retired, or Cancelled", na.rm = TRUE),
-      n_status_unknown = sum(facility_status_standardized == "Status Unknown" | is.na(facility_status_standardized)),
-      .groups = "drop"
-    )
-  
-  # Step 5: Join all summaries together
-  final_summary <- category_summary %>%
-    left_join(top_states, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>%
-    left_join(status_summary, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>%
-    # Add percentage calculations
-    mutate(
-      pct_with_capex = round(n_with_capex / n_facilities * 100, 1),
-      pct_with_dates = round(n_with_dates / n_facilities * 100, 1),
-      pct_operational = round(n_operational / n_facilities * 100, 1),
-      
-      # Create a category ID for easier reference
-      category_id = paste(data_source, supply_chain_stage, sep = "_")
-    ) %>%
-    # Reorder columns for clarity
-    select(
-      category_id, data_source, supply_chain_stage, project_category_keywords,
-      n_facilities, n_states, states_list,
-      
-      # Date info
-      first_announcement_year, last_announcement_year, n_with_dates, pct_with_dates,
-      
-      # CAPEX info
-      total_announced_capex_m, avg_capex_per_facility_m, median_capex_m, 
-      n_with_capex, pct_with_capex,
-      
-      # Top states by CAPEX
-      highest_capex_state, highest_capex_amount_m,
-      second_highest_capex_state, second_highest_capex_amount_m,
-      third_highest_capex_state, third_highest_capex_amount_m,
-      
-      # Status distribution
-      n_operational, n_under_construction, n_planned, n_cancelled, n_status_unknown,
-      pct_operational
-    )
-  
+  cat("Creating category summaries...\n")
+  category_summary <- data %>% filter(!is.na(data_source) & !is.na(supply_chain_stage) & !is.na(project_category_keywords)) %>% group_by(data_source, supply_chain_stage, project_category_keywords) %>% summarise(n_facilities = n(), first_announcement_year = {valid_years <- announcement_year[!is.na(announcement_year)]; if(length(valid_years) > 0) min(valid_years) else NA_integer_}, last_announcement_year = {valid_years <- announcement_year[!is.na(announcement_year)]; if(length(valid_years) > 0) max(valid_years) else NA_integer_}, n_with_dates = sum(!is.na(announcement_year)), total_announced_capex_m = {valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]; if(length(valid_capex) > 0) sum(valid_capex) / 1e6 else NA_real_}, avg_capex_per_facility_m = {valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]; if(length(valid_capex) > 0) mean(valid_capex) / 1e6 else NA_real_}, median_capex_m = {valid_capex <- capex_amount_estimated[!is.na(capex_amount_estimated) & capex_amount_estimated > 0]; if(length(valid_capex) > 0) median(valid_capex) / 1e6 else NA_real_}, n_with_capex = sum(!is.na(capex_amount_estimated) & capex_amount_estimated > 0), states_list = {valid_states <- state[!is.na(state)]; if(length(valid_states) > 0) paste(sort(unique(valid_states)), collapse = ", ") else NA_character_}, n_states = n_distinct(state[!is.na(state)]), .groups = "drop")
+  state_capex <- data %>% filter(!is.na(data_source) & !is.na(supply_chain_stage) & !is.na(project_category_keywords) & !is.na(state) & !is.na(capex_amount_estimated) & capex_amount_estimated > 0) %>% group_by(data_source, supply_chain_stage, project_category_keywords, state) %>% summarise(state_total_capex = sum(capex_amount_estimated, na.rm = TRUE), state_facility_count = n(), .groups = "drop") %>% group_by(data_source, supply_chain_stage, project_category_keywords) %>% arrange(desc(state_total_capex)) %>% mutate(state_rank = row_number()) %>% ungroup()
+  top_states <- state_capex %>% filter(state_rank <= 3) %>% group_by(data_source, supply_chain_stage, project_category_keywords) %>% summarise(highest_capex_state = ifelse(any(state_rank == 1), state[state_rank == 1][1], NA_character_), highest_capex_amount_m = ifelse(any(state_rank == 1), round(state_total_capex[state_rank == 1][1] / 1e6, 2), NA_real_), second_highest_capex_state = ifelse(any(state_rank == 2), state[state_rank == 2][1], NA_character_), second_highest_capex_amount_m = ifelse(any(state_rank == 2), round(state_total_capex[state_rank == 2][1] / 1e6, 2), NA_real_), third_highest_capex_state = ifelse(any(state_rank == 3), state[state_rank == 3][1], NA_character_), third_highest_capex_amount_m = ifelse(any(state_rank == 3), round(state_total_capex[state_rank == 3][1] / 1e6, 2), NA_real_), .groups = "drop")
+  status_summary <- data %>% filter(!is.na(data_source) & !is.na(supply_chain_stage) & !is.na(project_category_keywords)) %>% group_by(data_source, supply_chain_stage, project_category_keywords) %>% summarise(n_operational = sum(facility_status_standardized == "Operational", na.rm = TRUE), n_under_construction = sum(facility_status_standardized == "Under Construction", na.rm = TRUE), n_planned = sum(facility_status_standardized == "Planned/Announced", na.rm = TRUE), n_cancelled = sum(facility_status_standardized == "Paused, Closed/Retired, or Cancelled", na.rm = TRUE), n_status_unknown = sum(facility_status_standardized == "Status Unknown" | is.na(facility_status_standardized)), .groups = "drop")
+  final_summary <- category_summary %>% left_join(top_states, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>% left_join(status_summary, by = c("data_source", "supply_chain_stage", "project_category_keywords")) %>% mutate(pct_with_capex = round(n_with_capex / n_facilities * 100, 1), pct_with_dates = round(n_with_dates / n_facilities * 100, 1), pct_operational = round(n_operational / n_facilities * 100, 1), category_id = paste(data_source, supply_chain_stage, sep = "_")) %>% select(category_id, data_source, supply_chain_stage, project_category_keywords, n_facilities, n_states, states_list, first_announcement_year, last_announcement_year, n_with_dates, pct_with_dates, total_announced_capex_m, avg_capex_per_facility_m, median_capex_m, n_with_capex, pct_with_capex, highest_capex_state, highest_capex_amount_m, second_highest_capex_state, second_highest_capex_amount_m, third_highest_capex_state, third_highest_capex_amount_m, n_operational, n_under_construction, n_planned, n_cancelled, n_status_unknown, pct_operational)
   return(final_summary)
 }
 
-# Apply the function to create comprehensive summary
 summary_stats_by_source <- create_category_summary(all_facilities)
-
-# Display summary
 cat("Summary statistics created with", nrow(summary_stats_by_source), "unique category combinations\n\n")
 
-# Show sample of results
-cat("Sample of summary statistics:\n")
-print(summary_stats_by_source %>% 
-        select(data_source, supply_chain_stage, n_facilities, 
-               total_announced_capex_m, highest_capex_state) %>% 
-        head(10))
+source_level_summary <- all_facilities %>% group_by(data_source) %>% summarise(total_facilities = n(), total_capex_b = sum(capex_amount_estimated, na.rm = TRUE) / 1e9, n_categories = n_distinct(paste(supply_chain_stage, project_category_keywords)), n_states = n_distinct(state[!is.na(state)]), avg_capex_per_facility_m = mean(capex_amount_estimated[!is.na(capex_amount_estimated)]) / 1e6, .groups = "drop") %>% mutate(total_capex_b = round(total_capex_b, 2), avg_capex_per_facility_m = round(avg_capex_per_facility_m, 2))
+cat("High-level summary by data source created.\n")
 
-# Additional validation checks
-cat("\n\nValidation Checks:\n")
-
-# Check for categories with high facility counts but no CAPEX data
-no_capex_categories <- summary_stats_by_source %>%
-  filter(n_facilities > 10 & n_with_capex == 0) %>%
-  select(data_source, project_category_keywords, n_facilities)
-
-if(nrow(no_capex_categories) > 0) {
-  cat("\nCategories with >10 facilities but no CAPEX data:\n")
-  print(no_capex_categories)
-}
-
-# Check for categories where top states don't match facility distribution
-state_mismatch <- summary_stats_by_source %>%
-  filter(n_states > 3 & is.na(third_highest_capex_state)) %>%
-  select(data_source, project_category_keywords, n_states, n_with_capex)
-
-if(nrow(state_mismatch) > 0) {
-  cat("\nCategories with many states but incomplete top 3 CAPEX states:\n")
-  print(state_mismatch)
-}
-
-# Create a high-level summary by data source
-source_level_summary <- all_facilities %>%
-  group_by(data_source) %>%
-  summarise(
-    total_facilities = n(),
-    total_capex_b = sum(capex_amount_estimated, na.rm = TRUE) / 1e9,
-    n_categories = n_distinct(paste(supply_chain_stage, project_category_keywords)),
-    n_states = n_distinct(state[!is.na(state)]),
-    avg_capex_per_facility_m = mean(capex_amount_estimated[!is.na(capex_amount_estimated)]) / 1e6,
-    .groups = "drop"
-  ) %>%
-  mutate(total_capex_b = round(total_capex_b, 2),
-         avg_capex_per_facility_m = round(avg_capex_per_facility_m, 2))
-
-cat("\n\nHigh-level summary by data source:\n")
-glimpse(source_level_summary)
+# Save summary statistics
+write_csv(summary_stats_by_source, file.path(output_folder, "summary_stats_by_source.csv"))
+write_csv(source_level_summary, file.path(output_folder, "source_level_summary.csv"))
 
 #Part IV: Good Jobs First---------------
-# Complete GJF Data Processing Pipeline
-# This script combines data loading, cleaning, and geographic enrichment
+cat("\n================================================================================\n")
+cat("PART IV: GOOD JOBS FIRST DATA PROCESSING\n")
+cat("================================================================================\n\n")
 
-# Complete GJF Data Processing Pipeline
-# This script combines data loading, cleaning, and geographic enrichment
-
-# Load required libraries
-library(tidyverse)
-library(readr)
-library(tigris)
-library(sf)
-
-# Set options
-options(tigris_use_cache = TRUE)
-options(tigris_class = "sf")
-
-# ============================================================================
-# MAIN PROCESSING FUNCTION
-# ============================================================================
+library(tidyverse); library(readr); library(tigris); library(sf)
+options(tigris_use_cache = TRUE); options(tigris_class = "sf")
 
 process_gjf_data_complete <- function(march_2025_file, new_data_folder, use_tigris = TRUE) {
-  
-  # ---------------------------------------------------------------------------
-  # STEP 1: LOAD AND COMBINE DATA
-  # ---------------------------------------------------------------------------
   cat("STEP 1: LOADING AND COMBINING DATA\n")
   cat("==================================\n")
-  
-  # Read March 2025 dataset
   cat("Reading March 2025 GJF complete dataset...\n")
-  GJF_MARCH_2025 <- read_csv(march_2025_file, 
-                             show_col_types = FALSE,
-                             guess_max = 10000)  # Look at more rows for type guessing
   
-  # Standardize column names
+  # Copy source file
+  if (file.exists(march_2025_file)) {
+    file.copy(march_2025_file, file.path(output_folder, paste0("source_", basename(march_2025_file))))
+  }
+  
+  GJF_MARCH_2025 <- read_csv(march_2025_file, show_col_types = FALSE, guess_max = 10000)
   names(GJF_MARCH_2025) <- gsub("\\.", " ", names(GJF_MARCH_2025))
-  
-  # Convert to character for merging
-  GJF_MARCH_2025_char <- GJF_MARCH_2025 %>%
-    mutate(across(everything(), as.character))
-  
+  GJF_MARCH_2025_char <- GJF_MARCH_2025 %>% mutate(across(everything(), as.character))
   cat("March 2025 data:", nrow(GJF_MARCH_2025), "rows,", ncol(GJF_MARCH_2025), "columns\n\n")
   
-  # Read new CSV files
-  csv_files <- list.files(new_data_folder, 
-                          pattern = "\\.csv$", 
-                          full.names = TRUE, 
-                          ignore.case = TRUE)
-  
+  csv_files <- list.files(new_data_folder, pattern = "\\.csv$", full.names = TRUE, ignore.case = TRUE)
   cat("Found", length(csv_files), "CSV files in new folder\n")
   cat("Reading and processing new CSV files...\n")
+  pb <- txtProgressBar(min = 0, max = length(csv_files), style = 3)
+  all_gjf_data <- map_dfr(seq_along(csv_files), ~ {
+    setTxtProgressBar(pb, .x)
+    read_csv(csv_files[.x], col_types = cols(.default = "c"), show_col_types = FALSE) %>% filter(rowSums(is.na(.) | . == "") < ncol(.))
+  }) %>% distinct()
+  close(pb)
+  cat("\nNew data:", nrow(all_gjf_data), "rows,", ncol(all_gjf_data), "columns\n\n")
   
-  all_gjf_data <- map_dfr(csv_files, ~ {
-    read_csv(.x, 
-             col_types = cols(.default = "c"),
-             show_col_types = FALSE) %>%
-      filter(rowSums(is.na(.) | . == "") < ncol(.))
-  }) %>%
-    distinct()
-  
-  cat("New data:", nrow(all_gjf_data), "rows,", ncol(all_gjf_data), "columns\n\n")
-  
-  # Find common columns
   cat("Finding common columns...\n")
   common_cols <- intersect(names(GJF_MARCH_2025_char), names(all_gjf_data))
   cat("Common columns found:", length(common_cols), "\n\n")
   
-  # Select common columns and combine
-  GJF_MARCH_2025_common <- GJF_MARCH_2025_char %>%
-    select(all_of(common_cols)) %>%
-    mutate(data_source = "March 2025")
+  GJF_MARCH_2025_common <- GJF_MARCH_2025_char %>% select(all_of(common_cols)) %>% mutate(data_source = "March 2025")
+  all_gjf_data_common <- all_gjf_data %>% select(all_of(common_cols)) %>% mutate(data_source = "New July 2025")
   
-  all_gjf_data_common <- all_gjf_data %>%
-    select(all_of(common_cols)) %>%
-    mutate(data_source = "New July 2025")
-  
-  # Combine datasets
   cat("Combining datasets...\n")
   combined_GJF_data <- bind_rows(GJF_MARCH_2025_common, all_gjf_data_common)
+  GJF_SUBSIDY_DATA <- combined_GJF_data %>% group_by(across(-data_source)) %>% filter(n() == 1 | data_source == "New July 2025") %>% ungroup() %>% select(-data_source)
   
-  # Remove duplicates (keep July 2025 version)
-  GJF_SUBSIDY_DATA <- combined_GJF_data %>%
-    group_by(across(-data_source)) %>%
-    filter(n() == 1 | data_source == "New July 2025") %>%
-    ungroup() %>%
-    select(-data_source)
-  
-  # ---------------------------------------------------------------------------
-  # STEP 2: ADD DERIVED COLUMNS
-  # ---------------------------------------------------------------------------
   cat("\nSTEP 2: ADDING DERIVED COLUMNS\n")
   cat("==============================\n")
-  
-  # Add state abbreviation
-  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-    mutate(state = case_when(
-      str_detect(Location, "Alabama") ~ "AL",
-      str_detect(Location, "Alaska") ~ "AK",
-      str_detect(Location, "Arizona") ~ "AZ",
-      str_detect(Location, "Arkansas") ~ "AR",
-      str_detect(Location, "California") ~ "CA",
-      str_detect(Location, "Colorado") ~ "CO",
-      str_detect(Location, "Connecticut") ~ "CT",
-      str_detect(Location, "Delaware") ~ "DE",
-      str_detect(Location, "District of Columbia") ~ "DC",
-      str_detect(Location, "Florida") ~ "FL",
-      str_detect(Location, "Georgia") ~ "GA",
-      str_detect(Location, "Hawaii") ~ "HI",
-      str_detect(Location, "Idaho") ~ "ID",
-      str_detect(Location, "Illinois") ~ "IL",
-      str_detect(Location, "Indiana") ~ "IN",
-      str_detect(Location, "Iowa") ~ "IA",
-      str_detect(Location, "Kansas") ~ "KS",
-      str_detect(Location, "Kentucky") ~ "KY",
-      str_detect(Location, "Louisiana") ~ "LA",
-      str_detect(Location, "Maine") ~ "ME",
-      str_detect(Location, "Maryland") ~ "MD",
-      str_detect(Location, "Massachusetts") ~ "MA",
-      str_detect(Location, "Michigan") ~ "MI",
-      str_detect(Location, "Minnesota") ~ "MN",
-      str_detect(Location, "Mississippi") ~ "MS",
-      str_detect(Location, "Missouri") ~ "MO",
-      str_detect(Location, "Montana") ~ "MT",
-      str_detect(Location, "Nebraska") ~ "NE",
-      str_detect(Location, "Nevada") ~ "NV",
-      str_detect(Location, "New Hampshire") ~ "NH",
-      str_detect(Location, "New Jersey") ~ "NJ",
-      str_detect(Location, "New Mexico") ~ "NM",
-      str_detect(Location, "New York") ~ "NY",
-      str_detect(Location, "North Carolina") ~ "NC",
-      str_detect(Location, "North Dakota") ~ "ND",
-      str_detect(Location, "Ohio") ~ "OH",
-      str_detect(Location, "Oklahoma") ~ "OK",
-      str_detect(Location, "Oregon") ~ "OR",
-      str_detect(Location, "Pennsylvania") ~ "PA",
-      str_detect(Location, "Rhode Island") ~ "RI",
-      str_detect(Location, "South Carolina") ~ "SC",
-      str_detect(Location, "South Dakota") ~ "SD",
-      str_detect(Location, "Tennessee") ~ "TN",
-      str_detect(Location, "Texas") ~ "TX",
-      str_detect(Location, "Utah") ~ "UT",
-      str_detect(Location, "Vermont") ~ "VT",
-      str_detect(Location, "Virginia") ~ "VA",
-      str_detect(Location, "Washington") ~ "WA",
-      str_detect(Location, "West Virginia") ~ "WV",
-      str_detect(Location, "Wisconsin") ~ "WI",
-      str_detect(Location, "Wyoming") ~ "WY",
-      TRUE ~ NA_character_
-    ))
-  
-  # Add company_parent column - combine Company and Parent Company
-  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-    mutate(
-      # Create combined Company | Parent Company field
-      company_parent = case_when(
-        # Both Company and Parent Company exist
-        !is.na(Company) & !is.na(`Parent Company`) ~ 
-          paste0(str_trim(Company), " | ", str_trim(`Parent Company`)),
-        # Only Company exists
-        !is.na(Company) & is.na(`Parent Company`) ~ str_trim(Company),
-        # Only Parent Company exists (rare case)
-        is.na(Company) & !is.na(`Parent Company`) ~ str_trim(`Parent Company`),
-        # Neither exists
-        TRUE ~ NA_character_
-      )
-    )
-  
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% mutate(state = case_when(str_detect(Location, "Alabama") ~ "AL", str_detect(Location, "Alaska") ~ "AK", str_detect(Location, "Arizona") ~ "AZ", str_detect(Location, "Arkansas") ~ "AR", str_detect(Location, "California") ~ "CA", str_detect(Location, "Colorado") ~ "CO", str_detect(Location, "Connecticut") ~ "CT", str_detect(Location, "Delaware") ~ "DE", str_detect(Location, "District of Columbia") ~ "DC", str_detect(Location, "Florida") ~ "FL", str_detect(Location, "Georgia") ~ "GA", str_detect(Location, "Hawaii") ~ "HI", str_detect(Location, "Idaho") ~ "ID", str_detect(Location, "Illinois") ~ "IL", str_detect(Location, "Indiana") ~ "IN", str_detect(Location, "Iowa") ~ "IA", str_detect(Location, "Kansas") ~ "KS", str_detect(Location, "Kentucky") ~ "KY", str_detect(Location, "Louisiana") ~ "LA", str_detect(Location, "Maine") ~ "ME", str_detect(Location, "Maryland") ~ "MD", str_detect(Location, "Massachusetts") ~ "MA", str_detect(Location, "Michigan") ~ "MI", str_detect(Location, "Minnesota") ~ "MN", str_detect(Location, "Mississippi") ~ "MS", str_detect(Location, "Missouri") ~ "MO", str_detect(Location, "Montana") ~ "MT", str_detect(Location, "Nebraska") ~ "NE", str_detect(Location, "Nevada") ~ "NV", str_detect(Location, "New Hampshire") ~ "NH", str_detect(Location, "New Jersey") ~ "NJ", str_detect(Location, "New Mexico") ~ "NM", str_detect(Location, "New York") ~ "NY", str_detect(Location, "North Carolina") ~ "NC", str_detect(Location, "North Dakota") ~ "ND", str_detect(Location, "Ohio") ~ "OH", str_detect(Location, "Oklahoma") ~ "OK", str_detect(Location, "Oregon") ~ "OR", str_detect(Location, "Pennsylvania") ~ "PA", str_detect(Location, "Rhode Island") ~ "RI", str_detect(Location, "South Carolina") ~ "SC", str_detect(Location, "South Dakota") ~ "SD", str_detect(Location, "Tennessee") ~ "TN", str_detect(Location, "Texas") ~ "TX", str_detect(Location, "Utah") ~ "UT", str_detect(Location, "Vermont") ~ "VT", str_detect(Location, "Virginia") ~ "VA", str_detect(Location, "Washington") ~ "WA", str_detect(Location, "West Virginia") ~ "WV", str_detect(Location, "Wisconsin") ~ "WI", str_detect(Location, "Wyoming") ~ "WY", TRUE ~ NA_character_))
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% mutate(company_parent = case_when(!is.na(Company) & !is.na(`Parent Company`) ~ paste0(str_trim(Company), " | ", str_trim(`Parent Company`)), !is.na(Company) & is.na(`Parent Company`) ~ str_trim(Company), is.na(Company) & !is.na(`Parent Company`) ~ str_trim(`Parent Company`), TRUE ~ NA_character_))
   cat("Added state abbreviations and Company; Parent column\n")
   
-  # ---------------------------------------------------------------------------
-  # STEP 3: CLEAN ZIP CODES
-  # ---------------------------------------------------------------------------
   cat("\nSTEP 3: CLEANING ZIP CODES\n")
   cat("==========================\n")
+  dash_count <- sum(str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE); total_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip))
+  cat("Total ZIP codes:", total_zips, "| ZIP codes with dashes:", dash_count, "\n")
   
-  # Report initial state
-  dash_count <- sum(str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE)
-  total_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip))
-  cat("Total ZIP codes:", total_zips, "\n")
-  cat("ZIP codes with dashes:", dash_count, "\n")
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% mutate(Zip_numeric = case_when(is.na(Zip) ~ NA_character_, str_detect(Zip, "[-—–]") ~ str_trim(str_extract(Zip, "^[^-—–]+")), TRUE ~ str_extract(Zip, "^\\d{1,9}")), Zip_numeric = str_replace_all(Zip_numeric, "[^0-9]", ""), Zip_clean = case_when(is.na(Zip_numeric) ~ NA_character_, nchar(Zip_numeric) >= 5 ~ substr(Zip_numeric, 1, 5), nchar(Zip_numeric) > 0 ~ str_pad(Zip_numeric, 5, "left", "0"), TRUE ~ NA_character_), Zip_clean = case_when(str_detect(Zip_clean, "^\\d{5}$") ~ Zip_clean, TRUE ~ NA_character_)) %>% select(-Zip_numeric)
   
-  # Clean ZIP codes with more robust pattern matching
-  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-    mutate(
-      # First, extract numeric portion before any dash/hyphen
-      Zip_numeric = case_when(
-        is.na(Zip) ~ NA_character_,
-        # Handle various dash types and extract first part
-        str_detect(Zip, "[-—–]") ~ str_trim(str_extract(Zip, "^[^-—–]+")),
-        # For non-dash ZIPs, extract first 5-9 digits
-        TRUE ~ str_extract(Zip, "^\\d{1,9}")
-      ),
-      # Clean up any remaining non-numeric characters
-      Zip_numeric = str_replace_all(Zip_numeric, "[^0-9]", ""),
-      # Handle ZIP+4 format (keep only first 5 digits)
-      Zip_clean = case_when(
-        is.na(Zip_numeric) ~ NA_character_,
-        nchar(Zip_numeric) >= 5 ~ substr(Zip_numeric, 1, 5),
-        nchar(Zip_numeric) > 0 ~ str_pad(Zip_numeric, 5, "left", "0"),
-        TRUE ~ NA_character_
-      ),
-      # Final validation
-      Zip_clean = case_when(
-        str_detect(Zip_clean, "^\\d{5}$") ~ Zip_clean,
-        TRUE ~ NA_character_
-      )
-    ) %>%
-    select(-Zip_numeric)
-  
-  # Report cleaning results
-  cleaned_dash <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
-                        str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE)
-  valid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean))
-  invalid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip) & is.na(GJF_SUBSIDY_DATA$Zip_clean))
-  
-  cat("Successfully cleaned", cleaned_dash, "ZIP codes with dashes\n")
-  cat("Total valid ZIP codes after cleaning:", valid_zips, "\n")
-  cat("Invalid ZIP codes that couldn't be cleaned:", invalid_zips, "\n\n")
-  
-  # ---------------------------------------------------------------------------
-  # STEP 4: FILL MISSING CITY/COUNTY (if requested)
-  # ---------------------------------------------------------------------------
+  cleaned_dash <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & str_detect(GJF_SUBSIDY_DATA$Zip, "[-—–]"), na.rm = TRUE); valid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean)); invalid_zips <- sum(!is.na(GJF_SUBSIDY_DATA$Zip) & is.na(GJF_SUBSIDY_DATA$Zip_clean))
+  cat("Successfully cleaned", cleaned_dash, "ZIP codes with dashes | Valid ZIPs:", valid_zips, "| Invalid ZIPs:", invalid_zips, "\n\n")
   
   if (use_tigris) {
     cat("\nSTEP 4: FILLING MISSING CITY/COUNTY DATA\n")
     cat("=========================================\n")
-    
-    # Identify rows needing lookup
-    rows_needing_lookup <- GJF_SUBSIDY_DATA %>%
-      filter(!is.na(Zip_clean) & !is.na(state) & (is.na(City) | is.na(County)))
-    
+    rows_needing_lookup <- GJF_SUBSIDY_DATA %>% filter(!is.na(Zip_clean) & !is.na(state) & (is.na(City) | is.na(County)))
     cat("Rows with ZIP but missing city/county:", nrow(rows_needing_lookup), "\n")
     
     if (nrow(rows_needing_lookup) > 0) {
-      # Get unique ZIP-state combinations
-      zips_to_lookup <- rows_needing_lookup %>%
-        distinct(Zip_clean, state) %>%
-        arrange(state, Zip_clean)
-      
+      zips_to_lookup <- rows_needing_lookup %>% distinct(Zip_clean, state) %>% arrange(state, Zip_clean)
       cat("Unique ZIP-state combinations to lookup:", nrow(zips_to_lookup), "\n")
-      
-      # Try simplified tigris approach
       cat("\nAttempting geographic lookup...\n")
       cat("NOTE: This may take several minutes and requires internet connection\n\n")
       
-      zip_crosswalk <- tibble()
-      states_to_process <- unique(zips_to_lookup$state)
-      successful_lookups <- 0
+      zip_crosswalk <- tibble(); states_to_process <- unique(zips_to_lookup$state); successful_lookups <- 0
       
-      # Try a simpler approach - just get ZCTA data for all states at once
       tryCatch({
         cat("Downloading ZIP code data...\n")
-        # Get all ZCTAs for the US
         all_zctas <- zctas(cb = TRUE, year = 2020, progress_bar = FALSE)
-        
-        # Filter to our needed ZIPs
-        needed_zips <- unique(zips_to_lookup$Zip_clean)
-        zctas_filtered <- all_zctas %>%
-          filter(ZCTA5CE20 %in% needed_zips)
-        
+        needed_zips <- unique(zips_to_lookup$Zip_clean); zctas_filtered <- all_zctas %>% filter(ZCTA5CE20 %in% needed_zips)
         cat("Found", nrow(zctas_filtered), "matching ZCTAs\n")
         
-        # For each state, try to get county/place data
         pb <- txtProgressBar(min = 0, max = length(states_to_process), style = 3)
-        
         for (i in seq_along(states_to_process)) {
-          st <- states_to_process[i]
-          setTxtProgressBar(pb, i)
-          
-          state_zips <- zips_to_lookup %>%
-            filter(state == st) %>%
-            pull(Zip_clean)
-          
-          state_zctas <- zctas_filtered %>%
-            filter(ZCTA5CE20 %in% state_zips)
+          st <- states_to_process[i]; setTxtProgressBar(pb, i)
+          state_zips <- zips_to_lookup %>% filter(state == st) %>% pull(Zip_clean)
+          state_zctas <- zctas_filtered %>% filter(ZCTA5CE20 %in% state_zips)
           
           if (nrow(state_zctas) > 0) {
             tryCatch({
-              # Get county data
               counties <- counties(state = st, cb = TRUE, year = 2020, progress_bar = FALSE)
-              
-              # Simple spatial join for counties
-              zcta_county <- st_join(
-                st_point_on_surface(state_zctas),
-                counties,
-                join = st_within
-              ) %>%
-                st_drop_geometry() %>%
-                select(ZCTA5CE20, NAME) %>%
-                rename(Zip_clean = ZCTA5CE20, County_from_zip = NAME) %>%
-                filter(!is.na(County_from_zip))
-              
-              if (nrow(zcta_county) > 0) {
-                zcta_county$City_from_zip <- NA_character_
-                zcta_county$state <- st
-                zip_crosswalk <- bind_rows(zip_crosswalk, zcta_county)
-                successful_lookups <- successful_lookups + nrow(zcta_county)
-              }
-              
-            }, error = function(e) {
-              # Silent fail for individual states
-            })
+              zcta_county <- st_join(st_point_on_surface(state_zctas), counties, join = st_within) %>% st_drop_geometry() %>% select(ZCTA5CE20, NAME) %>% rename(Zip_clean = ZCTA5CE20, County_from_zip = NAME) %>% filter(!is.na(County_from_zip))
+              if (nrow(zcta_county) > 0) { zcta_county$City_from_zip <- NA_character_; zcta_county$state <- st; zip_crosswalk <- bind_rows(zip_crosswalk, zcta_county); successful_lookups <- successful_lookups + nrow(zcta_county) }
+            }, error = function(e) {})
           }
         }
-        
         close(pb)
-        
-      }, error = function(e) {
-        cat("\nERROR: Could not download geographic data\n")
-        cat("Error message:", e$message, "\n")
-      })
+      }, error = function(e) { cat("\nERROR: Could not download geographic data\n"); cat("Error message:", e$message, "\n") })
       
       cat("\n\nSuccessfully looked up", successful_lookups, "ZIP codes\n")
       
-      # Apply the crosswalk if we have any data
       if (nrow(zip_crosswalk) > 0) {
-        rows_before <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
-                             (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
-        
-        GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-          left_join(
-            zip_crosswalk %>% select(Zip_clean, City_from_zip, County_from_zip),
-            by = "Zip_clean"
-          ) %>%
-          mutate(
-            City = coalesce(City, City_from_zip),
-            County = coalesce(County, County_from_zip)
-          ) %>%
-          select(-City_from_zip, -County_from_zip)
-        
-        rows_after <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & 
-                            (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
-        
+        rows_before <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
+        GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% left_join(zip_crosswalk %>% select(Zip_clean, City_from_zip, County_from_zip), by = "Zip_clean") %>% mutate(City = coalesce(City, City_from_zip), County = coalesce(County, County_from_zip)) %>% select(-City_from_zip, -County_from_zip)
+        rows_after <- sum(!is.na(GJF_SUBSIDY_DATA$Zip_clean) & (is.na(GJF_SUBSIDY_DATA$City) | is.na(GJF_SUBSIDY_DATA$County)))
         cat("Rows filled:", rows_before - rows_after, "\n")
-      } else {
-        cat("WARNING: No geographic lookups succeeded\n")
-      }
+      } else { cat("WARNING: No geographic lookups succeeded\n") }
     }
-  } else {
-    cat("\nSTEP 4: SKIPPING GEOGRAPHIC LOOKUP (use_tigris = FALSE)\n")
-  }
+  } else { cat("\nSTEP 4: SKIPPING GEOGRAPHIC LOOKUP (use_tigris = FALSE)\n") }
   
-  # ---------------------------------------------------------------------------
-  # STEP 5: FINALIZE AND CONVERT DATA TYPES
-  # ---------------------------------------------------------------------------
   cat("\nSTEP 5: FINALIZING DATA\n")
   cat("=======================\n")
-  
-  # Replace original Zip with cleaned version
-  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-    mutate(Zip = Zip_clean) %>%
-    select(-Zip_clean)
-  
-  # Convert numeric columns to proper types
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% mutate(Zip = Zip_clean) %>% select(-Zip_clean)
   cat("Converting numeric columns to appropriate types...\n")
+  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>% mutate(Year = as.integer(Year), `Subsidy Value` = as.numeric(str_replace_all(`Subsidy Value`, "[^0-9.-]", "")), `Number of Jobs or Training Slots` = as.integer(`Number of Jobs or Training Slots`), `Wage Data` = as.numeric(str_replace_all(`Wage Data`, "[^0-9.-]", "")), `Investment Data` = as.numeric(str_replace_all(`Investment Data`, "[^0-9.-]", "")), `Value of Exempted Property` = as.numeric(str_replace_all(`Value of Exempted Property`, "[^0-9.-]", "")), `Loan Value` = as.numeric(str_replace_all(`Loan Value`, "[^0-9.-]", "")))
   
-  GJF_SUBSIDY_DATA <- GJF_SUBSIDY_DATA %>%
-    mutate(
-      # Year as integer
-      Year = as.integer(Year),
-      
-      # Clean and convert subsidy values
-      `Subsidy Value` = as.numeric(str_replace_all(`Subsidy Value`, "[^0-9.-]", "")),
-      
-      # Clean and convert other numeric fields
-      `Number of Jobs or Training Slots` = as.integer(`Number of Jobs or Training Slots`),
-      `Wage Data` = as.numeric(str_replace_all(`Wage Data`, "[^0-9.-]", "")),
-      `Investment Data` = as.numeric(str_replace_all(`Investment Data`, "[^0-9.-]", "")),
-      `Value of Exempted Property` = as.numeric(str_replace_all(`Value of Exempted Property`, "[^0-9.-]", "")),
-      `Loan Value` = as.numeric(str_replace_all(`Loan Value`, "[^0-9.-]", ""))
-    )
-  
-  # ---------------------------------------------------------------------------
-  # FINAL SUMMARY
-  # ---------------------------------------------------------------------------
   cat("\n=== FINAL SUMMARY ===\n")
   cat("Total rows:", format(nrow(GJF_SUBSIDY_DATA), big.mark = ","), "\n")
   cat("Rows with valid ZIP:", format(sum(!is.na(GJF_SUBSIDY_DATA$Zip)), big.mark = ","), "\n")
   cat("Rows with City:", format(sum(!is.na(GJF_SUBSIDY_DATA$City)), big.mark = ","), "\n")
   cat("Rows with County:", format(sum(!is.na(GJF_SUBSIDY_DATA$County)), big.mark = ","), "\n")
-  cat("Rows with all three (ZIP, City, County):", 
-      format(sum(!is.na(GJF_SUBSIDY_DATA$Zip) & 
-                   !is.na(GJF_SUBSIDY_DATA$City) & 
-                   !is.na(GJF_SUBSIDY_DATA$County)), big.mark = ","), "\n")
-  cat("Total subsidy value: $", 
-      format(sum(GJF_SUBSIDY_DATA$`Subsidy Value`, na.rm = TRUE), 
-             big.mark = ",", scientific = FALSE), "\n")
-  
+  cat("Rows with all three (ZIP, City, County):", format(sum(!is.na(GJF_SUBSIDY_DATA$Zip) & !is.na(GJF_SUBSIDY_DATA$City) & !is.na(GJF_SUBSIDY_DATA$County)), big.mark = ","), "\n")
+  cat("Total subsidy value: $", format(sum(GJF_SUBSIDY_DATA$`Subsidy Value`, na.rm = TRUE), big.mark = ",", scientific = FALSE), "\n")
   return(GJF_SUBSIDY_DATA)
 }
 
-# EXECUTE THE GJF DATA PROCESSING
-# Update these file paths to match your actual file locations
 GJF_SUBSIDY_DATA <- process_gjf_data_complete(
   march_2025_file = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Good Jobs First/gjf_complete.csv",
   new_data_folder = "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Good Jobs First/Good Jobs First Downloads 22 July 2025",
-  use_tigris = TRUE  # Set to TRUE if you want geographic lookups (requires internet)
+  use_tigris = TRUE
 )
 
-# PART V: FACILITY-SUBSIDY MATCHING (IMPROVED VERSION)
-# Enhanced matching with better filtering and validation
+# Save GJF data
+write_csv(GJF_SUBSIDY_DATA, file.path(output_folder, "gjf_subsidy_data_processed.csv"))
 
+# PART V: FACILITY-SUBSIDY MATCHING (IMPROVED VERSION)
 cat("\n================================================================================\n")
 cat("PART V: FACILITY-SUBSIDY MATCHING (IMPROVED)\n")
 cat("================================================================================\n\n")
 
-# --- 1. First, analyze the existing matches to identify issues ---
 cat("--- 1. Analyzing existing matches to identify patterns ---\n")
-
-# Load the existing matches if available
 if (exists("facility_subsidy_matches") && nrow(facility_subsidy_matches) > 0) {
-  
-  # Analyze similarity distribution
   cat("\nSimilarity score distribution:\n")
-  similarity_summary <- facility_subsidy_matches %>%
-    summarise(
-      total_matches = n(),
-      min_similarity = min(name_similarity),
-      q1_similarity = quantile(name_similarity, 0.25),
-      median_similarity = median(name_similarity),
-      q3_similarity = quantile(name_similarity, 0.75),
-      max_similarity = max(name_similarity),
-      matches_60_70 = sum(name_similarity >= 0.6 & name_similarity < 0.7),
-      matches_70_80 = sum(name_similarity >= 0.7 & name_similarity < 0.8),
-      matches_80_90 = sum(name_similarity >= 0.8 & name_similarity < 0.9),
-      matches_90_100 = sum(name_similarity >= 0.9)
-    )
+  similarity_summary <- facility_subsidy_matches %>% summarise(total_matches = n(), min_similarity = min(name_similarity), q1_similarity = quantile(name_similarity, 0.25), median_similarity = median(name_similarity), q3_similarity = quantile(name_similarity, 0.75), max_similarity = max(name_similarity), matches_60_70 = sum(name_similarity >= 0.6 & name_similarity < 0.7), matches_70_80 = sum(name_similarity >= 0.7 & name_similarity < 0.8), matches_80_90 = sum(name_similarity >= 0.8 & name_similarity < 0.9), matches_90_100 = sum(name_similarity >= 0.9))
   print(similarity_summary)
-  
-  # Check match types
-  cat("\nMatch type distribution:\n")
-  print(table(facility_subsidy_matches$match_type))
-  
-  # Look for problematic patterns
+  cat("\nMatch type distribution:\n"); print(table(facility_subsidy_matches$match_type))
   cat("\nSample low-similarity matches (0.6-0.7):\n")
-  low_matches <- facility_subsidy_matches %>%
-    filter(name_similarity >= 0.6 & name_similarity < 0.7) %>%
-    select(facility_company, subsidy_company, name_similarity) %>%
-    head(10)
+  low_matches <- facility_subsidy_matches %>% filter(name_similarity >= 0.6 & name_similarity < 0.7) %>% select(facility_company, subsidy_company, name_similarity) %>% head(10)
   print(low_matches)
 }
 
-# --- 2. Enhanced matching parameters ---
 cat("\n--- 2. Setting enhanced matching parameters ---\n")
-
-matching_params <- list(
-  # Stricter name similarity thresholds
-  similarity_threshold_high = 0.85,      # High confidence matches
-  similarity_threshold_medium = 0.75,    # Medium confidence matches
-  similarity_threshold_low = 0.65,       # Low confidence (requiring additional validation)
-  
-  # Temporal constraints
-  max_years_before_announcement = 3,    # Subsidies up to 3 years before facility announcement
-  max_years_after_announcement = 2,      # Subsidies up to 2 years after announcement
-  
-  # Common company name variations to handle
-  company_variations = c(
-    "incorporated|inc" = "inc",
-    "corporation|corp" = "corp",
-    "company|co" = "co",
-    "limited|ltd" = "ltd",
-    "llc|l\\.l\\.c\\." = "llc",
-    "manufacturing|mfg" = "mfg",
-    "technologies|tech" = "tech",
-    "international|intl" = "intl",
-    "associates|assoc" = "assoc"
-  )
-)
-
+matching_params <- list(similarity_threshold_high = 0.85, similarity_threshold_medium = 0.75, similarity_threshold_low = 0.65, max_years_before_announcement = 3, max_years_after_announcement = 2, company_variations = c("incorporated|inc" = "inc", "corporation|corp" = "corp", "company|co" = "co", "limited|ltd" = "ltd", "llc|l\\.l\\.c\\." = "llc", "manufacturing|mfg" = "mfg", "technologies|tech" = "tech", "international|intl" = "intl", "associates|assoc" = "assoc"))
 cat("Parameters set for multi-tier matching\n\n")
 
-# --- 3. Enhanced company name normalization ---
 normalize_company_name_enhanced <- function(name) {
   if (is.na(name) || name == "") return("")
-  
-  # Convert to lowercase
-  name <- str_to_lower(name)
-  
-  # Remove common prefixes/suffixes that don't help matching
-  name <- str_remove_all(name, "\\b(the|a|an)\\s+")
-  
-  # Standardize common variations
-  for (pattern in names(matching_params$company_variations)) {
-    replacement <- matching_params$company_variations[pattern]
-    name <- str_replace_all(name, pattern, replacement)
-  }
-  
-  # Remove punctuation and extra spaces
-  name <- str_replace_all(name, "[^a-z0-9\\s]", " ")
-  name <- str_squish(name)
-  
-  # Remove trailing company identifiers
-  name <- str_remove(name, "\\s+(inc|corp|co|llc|ltd|lp|llp|plc)$")
-  
+  name <- str_to_lower(name); name <- str_remove_all(name, "\\b(the|a|an)\\s+")
+  for (pattern in names(matching_params$company_variations)) { replacement <- matching_params$company_variations[pattern]; name <- str_replace_all(name, pattern, replacement) }
+  name <- str_replace_all(name, "[^a-z0-9\\s]", " "); name <- str_squish(name); name <- str_remove(name, "\\s+(inc|corp|co|llc|ltd|lp|llp|plc)$")
   return(name)
 }
 
-# --- 4. Prepare enhanced facility and subsidy data ---
 cat("--- 3. Preparing enhanced facility and subsidy data ---\n")
-
-facilities_enhanced <- all_facilities %>%
-  filter(!is.na(company_project_keywords) & !is.na(state)) %>%
-  mutate(
-    # Enhanced normalization
-    company_normalized = map_chr(company_project_keywords, normalize_company_name_enhanced),
-    company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(),
-    company_primary_normalized = map_chr(company_primary, normalize_company_name_enhanced),
-    # Parse announcement year for temporal filtering
-    announcement_year = year(as.Date(announcement_date))
-  ) %>%
-  filter(!is.na(company_normalized) & company_normalized != "" & 
-           !is.na(announcement_year)) %>%
-  select(master_id, data_source, state, company_project_keywords, 
-         company_normalized, company_primary_normalized,
-         announcement_date, announcement_year, capex_amount_estimated,
-         project_category_keywords, supply_chain_stage)
-
+facilities_enhanced <- all_facilities %>% filter(!is.na(company_project_keywords) & !is.na(state)) %>% mutate(company_normalized = map_chr(company_project_keywords, normalize_company_name_enhanced), company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(), company_primary_normalized = map_chr(company_primary, normalize_company_name_enhanced), announcement_year = year(as.Date(announcement_date))) %>% filter(!is.na(company_normalized) & company_normalized != "" & !is.na(announcement_year)) %>% select(master_id, data_source, state, company_project_keywords, company_normalized, company_primary_normalized, announcement_date, announcement_year, capex_amount_estimated, project_category_keywords, supply_chain_stage)
 cat("Enhanced facilities prepared:", nrow(facilities_enhanced), "\n")
 
-subsidies_enhanced <- GJF_SUBSIDY_DATA %>%
-  filter(!is.na(company_parent) & !is.na(state) & 
-           !is.na(`Subsidy Value`) & !is.na(Year)) %>%
-  mutate(
-    subsidy_id = row_number(),
-    # Enhanced normalization
-    company_normalized = map_chr(Company, normalize_company_name_enhanced),
-    parent_normalized = map_chr(`Parent Company`, normalize_company_name_enhanced),
-    company_parent_normalized = map_chr(company_parent, normalize_company_name_enhanced),
-    subsidy_year = Year
-  ) %>%
-  select(subsidy_id, state, Company, `Parent Company`, company_parent,
-         company_normalized, parent_normalized, company_parent_normalized,
-         subsidy_year, `Subsidy Value`, `Program Name`, `Type of Subsidy`,
-         City, County)
-
+cat("\nPreparing subsidy data...\n")
+pb <- txtProgressBar(min = 0, max = 3, style = 3)
+setTxtProgressBar(pb, 1)
+subsidies_filtered <- GJF_SUBSIDY_DATA %>% filter(!is.na(company_parent) & !is.na(state) & !is.na(`Subsidy Value`) & !is.na(Year))
+setTxtProgressBar(pb, 2)
+subsidies_enhanced <- subsidies_filtered %>% mutate(subsidy_id = row_number(), company_normalized = map_chr(Company, normalize_company_name_enhanced), parent_normalized = map_chr(`Parent Company`, normalize_company_name_enhanced), company_parent_normalized = map_chr(company_parent, normalize_company_name_enhanced), subsidy_year = Year) %>% select(subsidy_id, state, Company, `Parent Company`, company_parent, company_normalized, parent_normalized, company_parent_normalized, subsidy_year, `Subsidy Value`, `Program Name`, `Type of Subsidy`, City, County)
+setTxtProgressBar(pb, 3)
+close(pb)
 cat("Enhanced subsidies prepared:", nrow(subsidies_enhanced), "\n")
 
-# --- 5. Matching function with temporal and confidence filtering ---
 cat("\n--- 4. Creating enhanced matching function ---\n")
-
 match_state_enhanced <- function(state_code, params, max_facilities = 200) {
-  state_facilities <- filter(facilities_enhanced, state == state_code)
-  state_subsidies <- filter(subsidies_enhanced, state == state_code)
-  
-  if (nrow(state_facilities) == 0 || nrow(state_subsidies) == 0) {
-    return(NULL)
-  }
-  
-  # Sample if too many facilities
-  if (nrow(state_facilities) > max_facilities) {
-    state_facilities <- sample_n(state_facilities, max_facilities)
-  }
-  
-  # Create pairs
-  pairs <- expand_grid(
-    master_id = state_facilities$master_id,
-    subsidy_id = state_subsidies$subsidy_id
-  )
-  
-  # Join data
-  pairs <- pairs %>%
-    left_join(state_facilities, by = "master_id") %>%
-    left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
-  
-  # Calculate similarities and apply filters
-  pairs %>%
-    mutate(
-      # Calculate all similarity scores
-      sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"),
-      sim_fac_parent = stringsim(company_normalized_facility, parent_normalized, method = "jw"),
-      sim_primary_company = stringsim(company_primary_normalized, company_normalized_subsidy, method = "jw"),
-      sim_primary_parent = stringsim(company_primary_normalized, parent_normalized, method = "jw"),
-      
-      # Maximum similarity
-      max_similarity = pmax(sim_fac_company, sim_fac_parent, 
-                            sim_primary_company, sim_primary_parent, na.rm = TRUE),
-      
-      # Temporal alignment
-      year_diff = subsidy_year - announcement_year,
-      temporal_match = year_diff >= -params$max_years_before_announcement & 
-        year_diff <= params$max_years_after_announcement,
-      
-      # Confidence level based on similarity and temporal alignment
-      confidence_level = case_when(
-        max_similarity >= params$similarity_threshold_high & temporal_match ~ "High",
-        max_similarity >= params$similarity_threshold_high & !temporal_match ~ "Medium (time mismatch)",
-        max_similarity >= params$similarity_threshold_medium & temporal_match ~ "Medium",
-        max_similarity >= params$similarity_threshold_low & temporal_match ~ "Low",
-        TRUE ~ "Very Low"
-      ),
-      
-      # Match type
-      best_match_type = case_when(
-        max_similarity == sim_fac_company ~ "Facility company matches subsidy company",
-        max_similarity == sim_fac_parent ~ "Facility company matches subsidy parent",
-        max_similarity == sim_primary_company ~ "Facility primary matches subsidy company",
-        max_similarity == sim_primary_parent ~ "Facility primary matches subsidy parent",
-        TRUE ~ "No match"
-      ),
-      
-      # Additional validation flags
-      exact_name_match = (company_normalized_facility == company_normalized_subsidy) |
-        (company_normalized_facility == parent_normalized),
-      
-      # Check if subsidy is before announcement (common pattern)
-      subsidy_before_announcement = year_diff < 0,
-      
-      # Flag suspicious matches (very different years)
-      suspicious_timing = abs(year_diff) > 5
-    ) %>%
-    # Filter to meaningful matches only
-    filter(
-      max_similarity >= params$similarity_threshold_low &
-        !suspicious_timing
-    ) %>%
-    select(
-      master_id,
-      subsidy_id,
-      facility_data_source = data_source,
-      facility_state = state_facility,
-      facility_company = company_project_keywords,
-      facility_category = project_category_keywords,
-      subsidy_company = Company,
-      subsidy_parent = `Parent Company`,
-      subsidy_year,
-      facility_year = announcement_year,
-      year_diff,
-      subsidy_value = `Subsidy Value`,
-      subsidy_program = `Program Name`,
-      subsidy_type = `Type of Subsidy`,
-      subsidy_city = City,
-      subsidy_county = County,
-      facility_announcement = announcement_date,
-      facility_capex = capex_amount_estimated,
-      name_similarity = max_similarity,
-      confidence_level,
-      match_type = best_match_type,
-      exact_name_match,
-      temporal_match,
-      subsidy_before_announcement
-    )
+  state_facilities <- filter(facilities_enhanced, state == state_code); state_subsidies <- filter(subsidies_enhanced, state == state_code)
+  if (nrow(state_facilities) == 0 || nrow(state_subsidies) == 0) return(NULL)
+  if (nrow(state_facilities) > max_facilities) state_facilities <- sample_n(state_facilities, max_facilities)
+  pairs <- expand_grid(master_id = state_facilities$master_id, subsidy_id = state_subsidies$subsidy_id)
+  pairs <- pairs %>% left_join(state_facilities, by = "master_id") %>% left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
+  pairs %>% mutate(sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"), sim_fac_parent = stringsim(company_normalized_facility, parent_normalized, method = "jw"), sim_primary_company = stringsim(company_primary_normalized, company_normalized_subsidy, method = "jw"), sim_primary_parent = stringsim(company_primary_normalized, parent_normalized, method = "jw"), max_similarity = pmax(sim_fac_company, sim_fac_parent, sim_primary_company, sim_primary_parent, na.rm = TRUE), year_diff = subsidy_year - announcement_year, temporal_match = year_diff >= -params$max_years_before_announcement & year_diff <= params$max_years_after_announcement, confidence_level = case_when(max_similarity >= params$similarity_threshold_high & temporal_match ~ "High", max_similarity >= params$similarity_threshold_high & !temporal_match ~ "Medium (time mismatch)", max_similarity >= params$similarity_threshold_medium & temporal_match ~ "Medium", max_similarity >= params$similarity_threshold_low & temporal_match ~ "Low", TRUE ~ "Very Low"), best_match_type = case_when(max_similarity == sim_fac_company ~ "Facility company matches subsidy company", max_similarity == sim_fac_parent ~ "Facility company matches subsidy parent", max_similarity == sim_primary_company ~ "Facility primary matches subsidy company", max_similarity == sim_primary_parent ~ "Facility primary matches subsidy parent", TRUE ~ "No match"), exact_name_match = (company_normalized_facility == company_normalized_subsidy) | (company_normalized_facility == parent_normalized), subsidy_before_announcement = year_diff < 0, suspicious_timing = abs(year_diff) > 5) %>% filter(max_similarity >= params$similarity_threshold_low & !suspicious_timing) %>% select(master_id, subsidy_id, facility_data_source = data_source, facility_state = state_facility, facility_company = company_project_keywords, facility_category = project_category_keywords, subsidy_company = Company, subsidy_parent = `Parent Company`, subsidy_year, facility_year = announcement_year, year_diff, subsidy_value = `Subsidy Value`, subsidy_program = `Program Name`, subsidy_type = `Type of Subsidy`, subsidy_city = City, subsidy_county = County, facility_announcement = announcement_date, facility_capex = capex_amount_estimated, name_similarity = max_similarity, confidence_level, match_type = best_match_type, exact_name_match, temporal_match, subsidy_before_announcement)
 }
 
-# --- 6. Process states with enhanced matching ---
 cat("\n--- 5. Processing states with enhanced matching ---\n")
-
-# Process all states with both data
-state_coverage <- data.frame(state = unique(c(facilities_enhanced$state, subsidies_enhanced$state))) %>%
-  left_join(
-    facilities_enhanced %>% group_by(state) %>% summarise(n_facilities = n()),
-    by = "state"
-  ) %>%
-  left_join(
-    subsidies_enhanced %>% group_by(state) %>% summarise(n_subsidies = n()),
-    by = "state"
-  ) %>%
-  mutate(
-    n_facilities = replace_na(n_facilities, 0),
-    n_subsidies = replace_na(n_subsidies, 0),
-    has_both = n_facilities > 0 & n_subsidies > 0
-  ) %>%
-  filter(has_both) %>%
-  arrange(state)
-
+state_coverage <- data.frame(state = unique(c(facilities_enhanced$state, subsidies_enhanced$state))) %>% left_join(facilities_enhanced %>% group_by(state) %>% summarise(n_facilities = n()), by = "state") %>% left_join(subsidies_enhanced %>% group_by(state) %>% summarise(n_subsidies = n()), by = "state") %>% mutate(n_facilities = replace_na(n_facilities, 0), n_subsidies = replace_na(n_subsidies, 0), has_both = n_facilities > 0 & n_subsidies > 0) %>% filter(has_both) %>% arrange(state)
 states_to_process <- state_coverage$state
+cat("States to process:", length(states_to_process), "\n")
 
 all_matches_enhanced <- list()
 pb <- txtProgressBar(min = 0, max = length(states_to_process), style = 3)
-
 for (i in seq_along(states_to_process)) {
-  st <- states_to_process[i]
-  setTxtProgressBar(pb, i)
-  
-  tryCatch({
-    matches <- match_state_enhanced(st, matching_params, max_facilities = 200)
-    if (!is.null(matches) && nrow(matches) > 0) {
-      all_matches_enhanced[[st]] <- matches
-    }
-  }, error = function(e) {
-    # Silent error handling
-  })
+  st <- states_to_process[i]; setTxtProgressBar(pb, i)
+  tryCatch({matches <- match_state_enhanced(st, matching_params, max_facilities = 200); if (!is.null(matches) && nrow(matches) > 0) all_matches_enhanced[[st]] <- matches}, error = function(e) {})
 }
 close(pb)
 
-# Combine results
 all_matches_enhanced_df <- bind_rows(all_matches_enhanced)
 cat("\n\nTotal enhanced matches found:", nrow(all_matches_enhanced_df), "\n")
 
-# --- 7. Analyze and summarize enhanced results ---
 cat("\n--- 6. Enhanced matching results ---\n")
-
 if (nrow(all_matches_enhanced_df) > 0) {
+  confidence_summary <- all_matches_enhanced_df %>% group_by(confidence_level) %>% summarise(n_matches = n(), avg_similarity = round(mean(name_similarity), 3), total_subsidy_m = round(sum(subsidy_value) / 1e6, 2), pct_temporal_match = round(mean(temporal_match) * 100, 1), pct_exact_match = round(mean(exact_name_match) * 100, 1), .groups = "drop") %>% arrange(desc(n_matches))
+  cat("\nMatches by confidence level:\n"); print(confidence_summary)
   
-  # Overall summary by confidence level
-  confidence_summary <- all_matches_enhanced_df %>%
-    group_by(confidence_level) %>%
-    summarise(
-      n_matches = n(),
-      avg_similarity = round(mean(name_similarity), 3),
-      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
-      pct_temporal_match = round(mean(temporal_match) * 100, 1),
-      pct_exact_match = round(mean(exact_name_match) * 100, 1),
-      .groups = "drop"
-    ) %>%
-    arrange(desc(n_matches))
-  
-  cat("\nMatches by confidence level:\n")
-  print(confidence_summary)
-  
-  # High confidence matches sample
   cat("\nSample HIGH confidence matches:\n")
-  high_conf_sample <- all_matches_enhanced_df %>%
-    filter(confidence_level == "High") %>%
-    select(facility_company, subsidy_company, facility_state,
-           name_similarity, subsidy_value, year_diff) %>%
-    mutate(subsidy_value_m = round(subsidy_value / 1e6, 2)) %>%
-    select(-subsidy_value) %>%
-    arrange(desc(name_similarity)) %>%
-    head(10)
+  high_conf_sample <- all_matches_enhanced_df %>% filter(confidence_level == "High") %>% select(facility_company, subsidy_company, facility_state, name_similarity, subsidy_value, year_diff) %>% mutate(subsidy_value_m = round(subsidy_value / 1e6, 2)) %>% select(-subsidy_value) %>% arrange(desc(name_similarity)) %>% head(10)
   print(high_conf_sample)
   
-  # Temporal patterns
   cat("\nTemporal patterns (subsidy year - facility year):\n")
-  temporal_summary <- all_matches_enhanced_df %>%
-    filter(confidence_level %in% c("High", "Medium")) %>%
-    group_by(year_diff) %>%
-    summarise(
-      n_matches = n(),
-      avg_similarity = round(mean(name_similarity), 3),
-      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
-      .groups = "drop"
-    ) %>%
-    filter(n_matches >= 10) %>%
-    arrange(year_diff)
+  temporal_summary <- all_matches_enhanced_df %>% filter(confidence_level %in% c("High", "Medium")) %>% group_by(year_diff) %>% summarise(n_matches = n(), avg_similarity = round(mean(name_similarity), 3), total_subsidy_m = round(sum(subsidy_value) / 1e6, 2), .groups = "drop") %>% filter(n_matches >= 10) %>% arrange(year_diff)
   print(temporal_summary)
   
-  # State summary
   cat("\nTop states by high-confidence matches:\n")
-  state_summary <- all_matches_enhanced_df %>%
-    filter(confidence_level == "High") %>%
-    group_by(facility_state) %>%
-    summarise(
-      n_matches = n(),
-      n_facilities = n_distinct(master_id),
-      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
-      .groups = "drop"
-    ) %>%
-    arrange(desc(n_matches)) %>%
-    head(15)
+  state_summary <- all_matches_enhanced_df %>% filter(confidence_level == "High") %>% group_by(facility_state) %>% summarise(n_matches = n(), n_facilities = n_distinct(master_id), total_subsidy_m = round(sum(subsidy_value) / 1e6, 2), .groups = "drop") %>% arrange(desc(n_matches)) %>% head(15)
   print(state_summary)
   
-  # Save enhanced results
   facility_subsidy_matches_enhanced <- all_matches_enhanced_df
-  
-  # Optional: Create high-confidence only dataset
-  high_confidence_matches <- all_matches_enhanced_df %>%
-    filter(confidence_level == "High")
-  
+  high_confidence_matches <- all_matches_enhanced_df %>% filter(confidence_level == "High")
   cat("\n\nHigh confidence matches:", nrow(high_confidence_matches), "\n")
   cat("Medium confidence matches:", sum(str_detect(all_matches_enhanced_df$confidence_level, "Medium")), "\n")
   cat("Low confidence matches:", sum(all_matches_enhanced_df$confidence_level == "Low"), "\n")
 }
 
-#Rename high_confidence_matches as high_confidence_investment_subsidy_matches
 high_confidence_investment_subsidy_matches <- high_confidence_matches
-View(high_confidence_investment_subsidy_matches)
+cat("\nFACILITY-SUBSIDY MATCHING COMPLETE\n")
 
-#Rename high_conf_duplicates to high_confidence_investment_database_overlaps
-high_confidence_investment_database_overlaps <- high_conf_duplicates
-View(high_confidence_investment_database_overlaps)
+# Save matching results
+write_csv(all_matches_enhanced_df, file.path(output_folder, "facility_subsidy_matches_all.csv"))
+write_csv(high_confidence_investment_subsidy_matches, file.path(output_folder, "high_confidence_investment_subsidy_matches.csv"))
+
+# Final summary
+cat("\n================================================================================\n")
+cat("SYNTHESIS COMPLETE\n")
+cat("================================================================================\n")
+cat("Output folder:", output_folder, "\n")
+cat("Files saved:\n")
+list.files(output_folder, pattern = "\\.csv$") %>% print()
+
+# Stop logging
+sink()
+cat("\nConsole output saved to:", file.path(output_folder, "console_output.txt"), "\n")
