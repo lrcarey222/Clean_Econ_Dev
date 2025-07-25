@@ -147,7 +147,7 @@ ggplot(data=ira_chips,aes(y=share_irachips,x=share_gdp,size=`Funding Amount`))+
 
 
 #Federal Tax Credit Incentives State-Level Estimates
-tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/federal_actual_investment_by_category.csv',skip=5)
+tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/federal_actual_investment_by_category.csv',skip=5)
 tax_inv_cat_tot <- tax_inv_cat%>% group_by(Segment,Category) %>%
   summarize_at(vars(Total.Federal.Investment),sum,na.rm=T)
 tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/federal_actual_investment_by_state.csv',skip=5)
@@ -387,7 +387,7 @@ ggplot(data=state_ira) +
   # Load necessary library
 library(readxl)
 
-ira_allstates<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents - US Program/6_Projects/Sprint24/Analysis/IRA Downscaling/IRA Funding to states_ econ tides 2.0/July 16 data/Analysis/allstates_output_formatted.csv')
+ira_allstates<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Sprint24/Analysis/IRA Downscaling/IRA Funding to states_ econ tides 2.0/July 16 data/Analysis/allstates_output_formatted.csv')
 
 #Totals relative to population/gdp
 colnames(ira_allstates)[6]<-"CBO National Estimate ($)"
@@ -482,12 +482,36 @@ state_pol <- xchange_pol_index %>%
 #Economic Development Incentives----------------------------------
 
 #Good Jobs First Data
-gjf<- read.csv("OneDrive - RMI/Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
+gjf<- read.csv(paste0(raw_data,"Good Jobs First/gjf_complete.csv"))
 
-#State Totals -> 2019-2022
+
+#Manufacturing Incentives
+gjf_man <- gjf %>%
+  filter(grepl("Manufacturing|manufacturing",Sector))
+
+gjf_man_20 <- gjf_man %>%
+  filter(Year>2019) %>%
+  group_by(Location) %>%
+  summarize_at(vars(subs_m),sum,na.rm=T) %>%
+  arrange(desc(subs_m)) %>%
+  ungroup() %>%
+  inner_join(state_gdp %>%
+               select(GeoName,X2022), by=c("Location"="GeoName")) %>%
+  mutate(incent_gdp_rank = rank(-subs_m/X2022))
+
+write.csv(gjf_man_20 %>%mutate(subs_m=subs_m*1000000),"Downloads/gjf_man.csv")
+
+gjf_man_ts <- gjf_man %>%
+  group_by(Year) %>%
+  summarize_at(vars(subs_m),sum,na.rm=T) %>%
+  mutate(subs_m=subs_m*1000000) %>%
+  arrange(Year) %>%
+  write.csv("Downloads/gjf_man_ts.csv")
+
+#State Totals -> 2019-
 gjf_statetotal_19<-gjf %>%
   filter(Year>2019) %>%
-  group_by(region,Location) %>%
+  group_by(Location) %>%
   summarize_at(vars(subs_m),sum,na.rm=T) %>%
   arrange(desc(subs_m)) %>%
   ungroup() %>%

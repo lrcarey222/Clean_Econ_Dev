@@ -280,6 +280,28 @@ state_rev<-tax_rev %>%
   summarize_at(vars(`Amount ($2022)`),sum,na.rm=T) %>%
   mutate(amount=round(`Amount ($2022)`/1000000000,3))
 
+
+county_rev<-tax_rev %>%
+  mutate(energy=case_when(
+    grepl("Oil",`Energy type (simplified)`) ~ "Oil",
+    grepl("NG",`Energy type (simplified)`) ~ "Gas",
+    grepl("Gas",`Energy type (simplified)`) ~ "Gas",
+    grepl("Coal",`Energy type (simplified)`) ~ "Coal",
+    grepl("Electric",`Energy type (simplified)`) ~ "Electricity",
+    grepl("Renewable",`Energy type (simplified)`) ~ "Renewable",
+    grepl("Wind",`Energy type (simplified)`) ~ "Wind",
+    grepl("Solar",`Energy type (simplified)`) ~ "Solar",
+    TRUE ~ "Other"
+  )) %>%
+  filter(`Fiscal Year` %in% c("2019","2020","2021")) %>%
+  group_by(FIPS,State,`Umbrella County`,`Fiscal Year`,energy) %>%
+  summarize_at(vars(`Amount ($2022)`),sum,na.rm=T) %>%
+  mutate(amount=round(`Amount ($2022)`/1000,3)) %>%
+  group_by(FIPS,State,`Umbrella County`,energy) %>%
+    summarize(revenue_avg = mean(amount,na.rm=T))  
+
+
+
 plot_taxrev_state<-ggplot(data=state_rev,aes(x=`Fiscal Year`,y=amount,group=energy,fill=energy)) +
   geom_col() +
   facet_wrap(~State, scales="free_y") +  # Adding faceting to create separate plots for each scenario

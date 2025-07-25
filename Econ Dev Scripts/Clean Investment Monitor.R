@@ -20,8 +20,8 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 # Clean investment Monitor Data - Check it's the latest quarter available
-investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/quarterly_actual_investment.csv'
-facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/manufacturing_energy_and_industry_facility_metadata.csv'
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/quarterly_actual_investment.csv'
+facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/manufacturing_energy_and_industry_facility_metadata.csv'
 socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv'
 
 # Read Data
@@ -115,7 +115,7 @@ investment_growth <-investment %>%
   mutate(yoy_growth = (Value / lag(Value, n = 4) - 1) * 100) %>%
   mutate(yoy_growth_moving_avg = rollmean(yoy_growth, 4, align = 'right', na.pad = TRUE)) %>% #4 quarter moving average %>%
   mutate(Sector=paste0(Segment,"-",Technology)) %>%
-  filter(Sector %in% investment_10$Sector) %>%
+  filter(Sector %in% investment_10$Sector|Technology=="Wind") %>%
   arrange(year_quarter) %>%
   mutate(cum_inv = cumsum(Value)) %>% #cumulative investment
   mutate(inv_index_ira = 100*cum_inv/cum_inv[quarter=="2022-Q2"],na.rm=T) %>% #Index to IRA

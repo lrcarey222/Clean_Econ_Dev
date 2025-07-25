@@ -1,9 +1,9 @@
 #Energy Policy Simulator
 
 #Load Master Libraries-------------------------------
-eps_bau_master<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps_bau_master.csv")
+eps_bau_master<-read.csv(paste0(raw_data,"eps_bau.csv"))
 eps_ndc_master<-read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps_ndc_master.csv")
-
+eps_repeal_master<-read.csv(paste0(raw_data,"eps_repeal.csv"))
 
 #Clean Files----------------------------------------
 eps_bau <- eps_bau_master %>%
@@ -42,7 +42,28 @@ eps_ndc <- eps_ndc_master %>%
   left_join(census_divisions,by=c("state"="State.Code")) %>%
   select(Region,Division,State,state,var1,var2,var3,var4,Year,Value,scenario)
 
-eps<-rbind(eps_bau,eps_ndc)
+eps_repeal <- eps_repeal_master %>%
+  separate(Time, into = c("var1", "rest"), sep = "\\[", remove = FALSE) %>%
+  separate(rest, into = c("var2", "var3"), sep = ",", fill = "right") %>%
+  separate(var3, into = c("var3", "var4"), sep = ",", fill = "right") %>%
+  mutate(var2=gsub("\\d{2}T\\d{2}", "", var2),
+         var2 = gsub("\\d|\\]", "", var2),
+         var2 = gsub("\\bes\\b", "", var2),
+         var2=trimws(var2),
+         var3 = gsub("\\]", "", var3),
+         var3=gsub("\\bif\\b", "", var3),        # Remove standalone word "if" (surrounded by spaces or end of string)
+         var3 = trimws(var3)) %>%
+  pivot_longer(cols=X2021:X2050,names_to="Year",values_to="Value") %>%
+  mutate(Year=as.numeric(gsub("X","",Year)),
+         Value=as.numeric(Value),
+         scenario="Repeal") %>%
+  left_join(census_divisions,by=c("state"="State.Code")) %>%
+  select(Region,Division,State,state,var1,var2,var3,var4,Year,Value,scenario)
+
+
+
+eps<-rbind(eps_bau,eps_ndc) %>%
+  rbind(eps_repeal)
 
 write.csv(eps,"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/eps.csv")
 
@@ -198,6 +219,16 @@ bau_ndc_wide <- function(var) {
     select(var2,Year,Value) %>%
     pivot_wider(names_from = var2, values_from = Value) %>%
     write.csv(file.path(output_folder, paste0(var, "_ndc", ".csv")))
+  
+  eps %>%
+    filter(scenario=="Repeal",
+           var1 == var,
+           state == state_abbreviation) %>%
+    mutate(var2=gsub("sector","",var2),
+           var2=str_to_sentence(var2)) %>%
+    select(var2,Year,Value) %>%
+    pivot_wider(names_from = var2, values_from = Value) %>%
+    write.csv(file.path(output_folder, paste0(var, "_ndc", ".csv")))
 }
 
 #Creates one csv file comparing 2024-2050 % change for BAU and NDC
@@ -242,5 +273,18 @@ bau_ndc_wide("Output Process Emissions in CO2e by Industry")
 bau_ndc_perc_diff("Output Process Emissions in CO2e by Industry")
 bau_ndc_abs_diff("Output Electricity Generation by Type")
 
+
+eps_gen<-eps %>%
+  filter(Year %in% c(2024:2031),
+         var1 == "Electricity Generation Capacity",
+         state == "NM") %>%
+  mutate(var2=gsub("sector","",var2),
+         var2=str_to_sentence(var2)) %>%
+  select(scenario,var2,Year,Value) %>%
+  pivot_wider(names_from = Year, values_from = Value) %>%
+  filter(var2 %in% c("Hydro","Onshore wind", "Solar pv","Geothermal")) %>%
+  group_by(scenario) %>%
+  summarize(across(c(`2024`:`2031`),sum,na.rm=T))
+  write.csv("Downloads/NM_IRA_EPS.csv")
 
 

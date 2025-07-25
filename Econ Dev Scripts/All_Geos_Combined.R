@@ -1921,14 +1921,14 @@ download_success <- tryCatch({
   safe_download_subproc(statsamerica_zip_url, temp_zip, mode = "wb")
   TRUE
 }, error = function(e) {
-  debug_log(sprintf("Failed to download StatsAmerica zip file from %s: %s", statsamerica_zip_url, e$message), "ERROR")
+  #debug_log(sprintf("Failed to download StatsAmerica zip file from %s: %s", statsamerica_zip_url, e$message), "ERROR")
   FALSE
 })
 
 index_data <- NULL
 measures_data <- NULL
 if(download_success && file.exists(temp_zip)) {
-  debug_log("Downloaded StatsAmerica zip file.", "DEBUG")
+  #debug_log("Downloaded StatsAmerica zip file.", "DEBUG")
   unzip_dir <- tempdir()
   unzip_success <- tryCatch({
     unzip(temp_zip, exdir = unzip_dir)
@@ -1944,7 +1944,7 @@ if(download_success && file.exists(temp_zip)) {
     
     if(file.exists(index_file)) {
       index_data <- safe_read_csv_subproc(index_file, show_col_types = FALSE)
-      debug_log(sprintf("index_data loaded with %d rows.", nrow(index_data)), "DEBUG")
+      #debug_log(sprintf("index_data loaded with %d rows.", nrow(index_data)), "DEBUG")
       log_glimpse(index_data, "Glimpse of index_data (StatsAmerica)")
     } else {
       debug_log(sprintf("StatsAmerica index file not found after unzipping: %s", index_file), "WARN")
@@ -1955,13 +1955,13 @@ if(download_success && file.exists(temp_zip)) {
       debug_log(sprintf("measures_data loaded with %d rows.", nrow(measures_data)), "DEBUG")
       log_glimpse(measures_data, "Glimpse of measures_data (StatsAmerica)")
     } else {
-      debug_log(sprintf("StatsAmerica measures file not found after unzipping: %s", measures_file), "WARN")
+      #debug_log(sprintf("StatsAmerica measures file not found after unzipping: %s", measures_file), "WARN")
     }
   }
   # Clean up downloaded zip file
   unlink(temp_zip)
 } else if (!download_success) {
-  debug_log("StatsAmerica data skipped due to download failure.", "WARN")
+  #debug_log("StatsAmerica data skipped due to download failure.", "WARN")
 }
 
 innovation_measures <- measures_data %>%
@@ -2551,6 +2551,49 @@ write.csv(index %>%
 all_geo_data<-all_geos %>%
   left_join(index,by=c("geo","geo_name")) %>%
   distinct() 
+
+all_geo_index<-all_geos %>%
+  select(geo,
+         geo_name,
+         invest_index,
+         economic_complexity,
+         incent_gdp,
+         corporate_tax,
+         total_gdp_10yr,
+         total_gdp_1yr,
+         durable_man_5yrgdp,
+         prof_science_tech_5yrgdp,
+         man_pay,
+         man_share,
+         ind_price_cents_kwh,gas_price,
+         PropertyValueUSD,
+         cnbc_rank,
+         state_gdp_5yr,
+         state_gdp_1yr,
+         inv_gdp,
+         socioecon_index,
+         pov_rate,
+         med_house_inc,
+         emp_pop,
+         life_expectancy,
+         vacancy,
+         energy_clim_index,
+         Strategic_Feasibility,
+         climate_policy_index,
+         inv_gdp,
+         `Electricity Consumption Carbon Intensity (CO2eq/kWh)`,
+         `Electricity Consumption Renewable Percentage`,
+         Solar_cost_rank,
+         Wind_cost_rank,
+         Geothermal_cost_rank,
+         inv_gdp,
+         clean_share,
+         growth_19_24_Clean,
+         state_ems_change_1722
+  )
+
+write.csv(all_geo_index %>%
+            inner_join(census_divisions,by=c("geo_name"="State")),"Downloads/all_geo_index.csv")
 
 saveRDS(all_geo_data,file="C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/ChatGPT/map_app/all_geo_data.rds")
 all_geos<-readRDS("C:/Users/LCarey/OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/ChatGPT/map_app/all_geo_data.rds")

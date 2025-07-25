@@ -21,10 +21,10 @@ clean_industry_naics <- read.csv(paste0(raw_data,"clean_industry_naics.csv")) %>
 
 #Employment - Location Quotients, Employment Change------------------------------------------
 
-# ----- Set State Parameter -----
+# Set State Parameter 
 
-state_name <- "New Mexico" #Change to desired state full name
-state_abbr <- "NM"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
+state_name <- "Iowa" #Change to desired state full name
+state_abbr <- "IA"  # Change to desired state, e.g., "SC", "TN", "NY", etc.
 
 state_fips <- c(
   "AL"="01", "AK"="02", "AZ"="04", "AR"="05", "CA"="06", "CO"="08", "CT"="09",
@@ -50,9 +50,9 @@ state_area <- paste0(state_fips[state_abbr], "000")
             "42125",
             "42129"
             )
-# ----- Download QCEW Data for 2023 and 2015 -----
-state_data   <- blsQCEW('Area', year = '2023', quarter = 'a', area = state_area)
-USdata       <- blsQCEW('Area', year = '2023', quarter = 'a', area = 'US000')
+# ----- Download QCEW Data for 2023 and 2015 
+state_data   <- blsQCEW('Area', year = '2024', quarter = 'a', area = state_area)
+USdata       <- blsQCEW('Area', year = '2024', quarter = 'a', area = 'US000')
 state_data15 <- blsQCEW('Area', year = '2015', quarter = 'a', area = state_area)
 USdata15     <- blsQCEW('Area', year = '2015', quarter = 'a', area = 'US000')
 
@@ -282,8 +282,8 @@ feas_state<-feas %>%
 
 
 #Clean investment Monitor Data---------------------------
-investment_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/extended_CIM_data/quarterly_actual_investment.csv')
-facilities_data_path <- paste0(raw_data,'/clean_investment_monitor_q3_2024/manufacturing_energy_and_industry_facility_metadata.csv')
+investment_data_path <- paste0(raw_data,'clean_investment_monitor_q1_2025/quarterly_actual_investment.csv')
+facilities_data_path <- paste0(raw_data,'/clean_investment_monitor_q1_2025/manufacturing_energy_and_industry_facility_metadata.csv')
 socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv'
 
 investment <- read.csv(investment_data_path, skip=5)

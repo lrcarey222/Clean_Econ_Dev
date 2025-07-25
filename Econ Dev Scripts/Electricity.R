@@ -15,8 +15,8 @@ setwd("C:/Users/LCarey/")
 output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 # State Variable - Set this to the abbreviation of the state you want to analyze
-state_abbr <- "MT"  # Replace with any US state abbreviation
-state_name <- "Montana"  # Replace with the full name of any US state
+state_abbr <- "NM"  # Replace with any US state abbreviation
+state_name <- "New Mexico"  # Replace with the full name of any US state
 region_name <- "Great Falls, MT"
 
 
@@ -51,15 +51,13 @@ state_counties<-us_counties %>%
 
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/january_generator2025.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2025.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
 
 #Operating Generation
-op_gen <- read_excel(file_path, sheet = 1,skip=2)
-
-op_gen_ira <- op_gen %>%
+op_gen <- read_excel(file_path, sheet = 1,skip=2)%>%
   mutate(tech = case_when(
     Technology=="Natural Gas Steam Turbine" ~ "Natural Gas",
     Technology=="Natural Gas Fired Combined Cycle" ~ "Natural Gas",
@@ -75,7 +73,9 @@ op_gen_ira <- op_gen %>%
     Technology=="Hydroelectric Pumped Storage" ~ "Hydro",
     Technology=="Geothermal" ~ "Geothermal",
     Technology=="Wood/Wood Waste Biomass"~"Biomass"
-  )) %>%
+  ))
+
+op_gen_ira <- op_gen  %>%
   filter(tech %in% c("Solar",
                      "Geothermal",
                      "Storage",
@@ -89,10 +89,16 @@ abbr_opgen_12_23 <- op_gen %>%
   mutate(Technology = ifelse(grepl("Natural Gas", Technology), "Natural Gas", Technology)) %>%
   filter(Technology != "Flywheels" & Technology != "All Other" & Technology != "Other Gases" & Technology != "Wood/Wood Waste Biomass" & Technology != "Pumped Storage" & Technology != "Wood and Wood Derived Fuels") 
 
-abbr_gen_12_24 <- abbr_opgen_12_23 %>%
+abbr_gen_12_24 <- op_gen %>%
   group_by(`Operating Year`,Technology) %>%
   summarize(capacity=sum(`Nameplate Capacity (MW)`,na.rm=T)) %>%
   pivot_wider(names_from=`Operating Year`,values_from=capacity)
+
+gen_24 <- abbr_gen_12_24 %>%
+  select(Technology,`2024`) %>%
+  mutate(`2024`=ifelse(is.na(`2024`),0,`2024`),
+         share=`2024`/sum(`2024`)*100) %>%
+  arrange(desc(share))
 
 #Region-Level
 counties <- counties(class = "sf")
