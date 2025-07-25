@@ -1,3 +1,5 @@
+setwd("~/Library/CloudStorage/OneDrive-RMI")
+
 #Part I: Synthesize Data----------------------
 
 # Create output folder with timestamp
