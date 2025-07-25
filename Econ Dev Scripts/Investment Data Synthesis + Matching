@@ -2107,6 +2107,7 @@ normalize_company_name_enhanced <- function(name) {
 }
 
 cat("--- 3. Preparing enhanced facility and subsidy data ---\n")
+# UPDATED: Added county_name, cbsa_name, csa_name to the facility data
 facilities_enhanced <- all_facilities %>%
   filter(!is.na(company_project_keywords) & !is.na(state)) %>%
   mutate(
@@ -2117,9 +2118,10 @@ facilities_enhanced <- all_facilities %>%
   ) %>%
   filter(!is.na(company_normalized) & company_normalized != "" & !is.na(announcement_year)) %>%
   select(
-    master_id, data_source, state, company_project_keywords, company_normalized,
-    company_primary_normalized, announcement_date, announcement_year,
-    capex_amount_estimated, project_category_keywords, supply_chain_stage
+    master_id, data_source, state, county_name, cbsa_name, csa_name, # Added facility geographies
+    company_project_keywords, company_normalized, company_primary_normalized,
+    announcement_date, announcement_year, capex_amount_estimated,
+    project_category_keywords, supply_chain_stage
   )
 cat("Enhanced facilities prepared:", nrow(facilities_enhanced), "\n")
 
@@ -2129,6 +2131,7 @@ setTxtProgressBar(pb, 1)
 subsidies_filtered <- GJF_SUBSIDY_DATA %>%
   filter(!is.na(company_parent) & !is.na(state) & !is.na(`Subsidy Value`) & !is.na(Year))
 setTxtProgressBar(pb, 2)
+# UPDATED: Added Zip code to the subsidy data
 subsidies_enhanced <- subsidies_filtered %>%
   mutate(
     subsidy_id = row_number(),
@@ -2138,9 +2141,10 @@ subsidies_enhanced <- subsidies_filtered %>%
     subsidy_year = Year
   ) %>%
   select(
-    subsidy_id, state, Company, `Parent Company`, company_parent, company_normalized,
-    parent_normalized, company_parent_normalized, subsidy_year, `Subsidy Value`,
-    `Program Name`, `Type of Subsidy`, City, County
+    subsidy_id, state, Company, `Parent Company`, company_parent,
+    company_normalized, parent_normalized, company_parent_normalized,
+    subsidy_year, `Subsidy Value`, `Program Name`, `Type of Subsidy`,
+    City, County, Zip # Added subsidy Zip
   )
 setTxtProgressBar(pb, 3)
 close(pb)
@@ -2160,6 +2164,8 @@ match_state_enhanced <- function(state_code, params, max_facilities = 200) {
   pairs <- pairs %>%
     left_join(state_facilities, by = "master_id") %>%
     left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
+  
+  # UPDATED: Added more geographic columns to the final selection
   pairs %>%
     mutate(
       sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"),
@@ -2189,15 +2195,34 @@ match_state_enhanced <- function(state_code, params, max_facilities = 200) {
     ) %>%
     filter(max_similarity >= params$similarity_threshold_low & !suspicious_timing) %>%
     select(
-      master_id, subsidy_id, facility_data_source = data_source, facility_state = state_facility,
-      facility_company = company_project_keywords, facility_category = project_category_keywords,
-      subsidy_company = Company, subsidy_parent = `Parent Company`, subsidy_year,
-      facility_year = announcement_year, year_diff, subsidy_value = `Subsidy Value`,
-      subsidy_program = `Program Name`, subsidy_type = `Type of Subsidy`, subsidy_city = City,
-      subsidy_county = County, facility_announcement = announcement_date,
-      facility_capex = capex_amount_estimated, name_similarity = max_similarity,
-      confidence_level, match_type = best_match_type, exact_name_match,
-      temporal_match, subsidy_before_announcement
+      # Core Match Info
+      master_id, subsidy_id, confidence_level, name_similarity, match_type,
+      # Facility Info
+      facility_data_source = data_source,
+      facility_company = company_project_keywords,
+      facility_announcement = announcement_date,
+      facility_year = announcement_year,
+      facility_capex = capex_amount_estimated,
+      facility_category = project_category_keywords,
+      # Facility Geography
+      facility_state = state_facility,
+      facility_county = county_name,
+      facility_cbsa = cbsa_name,
+      facility_csa = csa_name,
+      # Subsidy Info
+      subsidy_company = Company,
+      subsidy_parent = `Parent Company`,
+      subsidy_year,
+      subsidy_value = `Subsidy Value`,
+      subsidy_program = `Program Name`,
+      subsidy_type = `Type of Subsidy`,
+      # Subsidy Geography
+      subsidy_state = state_subsidy,
+      subsidy_city = City,
+      subsidy_county = County,
+      subsidy_zip = Zip,
+      # Match Diagnostics
+      year_diff, exact_name_match, temporal_match, subsidy_before_announcement
     )
 }
 
