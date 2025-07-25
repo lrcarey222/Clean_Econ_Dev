@@ -1614,9 +1614,9 @@ dup_dist <- scored_pairs %>%
 cat("\nDuplicate likelihood distribution complete.\n")
 
 cat("\n--- 6. Creating duplicate groups ---\n")
-high_conf_duplicates <- scored_pairs %>% filter(is_likely_duplicate)
-if (nrow(high_conf_duplicates) > 0) {
-  g <- graph_from_data_frame(high_conf_duplicates %>% select(id1, id2, weight = composite_score), directed = FALSE)
+high_confidence_investment_database_matches <- scored_pairs %>% filter(is_likely_duplicate)
+if (nrow(high_confidence_investment_database_matches) > 0) {
+  g <- graph_from_data_frame(high_confidence_investment_database_matches %>% select(id1, id2, weight = composite_score), directed = FALSE)
   components <- components(g)
   facility_groups <- data.frame(master_id = names(components$membership), duplicate_group_id = components$membership, stringsAsFactors = FALSE)
   all_facilities_with_groups <- all_facilities %>%
@@ -1671,15 +1671,15 @@ cat(sprintf("Total pairs evaluated: %d\n", nrow(all_candidates)))
 cat(sprintf("Potential duplicates found: %d\n", nrow(scored_pairs)))
 cat(sprintf("High confidence duplicates: %d\n", sum(scored_pairs$match_likelihood == "High")))
 
-high_confidence_investment_database_overlaps <- high_conf_duplicates
+high_confidence_investment_database_overlaps <- high_confidence_investment_database_matches
 cat("\nDUPLICATE DETECTION COMPLETE\n")
 
 # Save duplicate detection results
 if (data_exports) {
-  write_csv(scored_pairs, file.path(output_folder, "duplicate_pairs_scored.csv"))
-  write_csv(high_confidence_investment_database_overlaps, file.path(output_folder, "high_confidence_duplicates.csv"))
+  write_csv(scored_pairs, file.path(output_folder, "investment_database_matches_pairs_scored.csv"))
+  write_csv(high_confidence_investment_database_overlaps, file.path(output_folder, "high_confidence_investment_database_matches.csv"))
   if (exists("duplicate_group_summary") && nrow(duplicate_group_summary) > 0) {
-    write_csv(duplicate_group_summary, file.path(output_folder, "duplicate_groups.csv"))
+    write_csv(duplicate_group_summary, file.path(output_folder, "investment_database_match_groups.csv"))
   }
 }
 
@@ -2048,34 +2048,7 @@ cat("\n=========================================================================
 cat("PART V: FACILITY-SUBSIDY MATCHING (IMPROVED)\n")
 cat("================================================================================\n\n")
 
-cat("--- 1. Analyzing existing matches to identify patterns ---\n")
-if (exists("facility_subsidy_matches") && nrow(facility_subsidy_matches) > 0) {
-  cat("\nSimilarity score distribution:\n")
-  similarity_summary <- facility_subsidy_matches %>%
-    summarise(
-      total_matches = n(),
-      min_similarity = min(name_similarity),
-      q1_similarity = quantile(name_similarity, 0.25),
-      median_similarity = median(name_similarity),
-      q3_similarity = quantile(name_similarity, 0.75),
-      max_similarity = max(name_similarity),
-      matches_60_70 = sum(name_similarity >= 0.6 & name_similarity < 0.7),
-      matches_70_80 = sum(name_similarity >= 0.7 & name_similarity < 0.8),
-      matches_80_90 = sum(name_similarity >= 0.8 & name_similarity < 0.9),
-      matches_90_100 = sum(name_similarity >= 0.9)
-    )
-  print(similarity_summary)
-  cat("\nMatch type distribution:\n")
-  print(table(facility_subsidy_matches$match_type))
-  cat("\nSample low-similarity matches (0.6-0.7):\n")
-  low_matches <- facility_subsidy_matches %>%
-    filter(name_similarity >= 0.6 & name_similarity < 0.7) %>%
-    select(facility_company, subsidy_company, name_similarity) %>%
-    head(10)
-  print(low_matches)
-}
-
-cat("\n--- 2. Setting enhanced matching parameters ---\n")
+cat("--- 1. Setting enhanced matching parameters ---\n")
 matching_params <- list(
   similarity_threshold_high = 0.85,
   similarity_threshold_medium = 0.75,
@@ -2106,7 +2079,7 @@ normalize_company_name_enhanced <- function(name) {
   return(name)
 }
 
-cat("--- 3. Preparing enhanced facility and subsidy data ---\n")
+cat("--- 2. Preparing enhanced facility and subsidy data ---\n")
 # UPDATED: Added county_name, cbsa_name, csa_name to the facility data
 facilities_enhanced <- all_facilities %>%
   filter(!is.na(company_project_keywords) & !is.na(state)) %>%
@@ -2150,23 +2123,38 @@ setTxtProgressBar(pb, 3)
 close(pb)
 cat("Enhanced subsidies prepared:", nrow(subsidies_enhanced), "\n")
 
-cat("\n--- 4. Creating enhanced matching function ---\n")
+cat("\n--- 3. Creating enhanced matching function with debugging ---\n")
 match_state_enhanced <- function(state_code, params, max_facilities = 200) {
+  cat(paste0("\n--- Processing State: ", state_code, " ---\n"))
+  
   state_facilities <- filter(facilities_enhanced, state == state_code)
   state_subsidies <- filter(subsidies_enhanced, state == state_code)
+  
   if (nrow(state_facilities) == 0 || nrow(state_subsidies) == 0) {
+    cat("  No facilities or subsidies found. Skipping.\n")
     return(NULL)
   }
+  
+  # Downsample if necessary to keep pair count manageable
   if (nrow(state_facilities) > max_facilities) {
+    cat(paste0("  Downsampling facilities from ", nrow(state_facilities), " to ", max_facilities, "\n"))
     state_facilities <- sample_n(state_facilities, max_facilities)
   }
+  
+  cat(paste0("  Facilities: ", nrow(state_facilities), " | Subsidies: ", nrow(state_subsidies), "\n"))
+  
+  # Create all possible pairs
   pairs <- expand_grid(master_id = state_facilities$master_id, subsidy_id = state_subsidies$subsidy_id)
+  cat(paste0("  Generated ", nrow(pairs), " candidate pairs.\n"))
+  
+  # Join facility and subsidy data to the pairs
+  # Using suffixes to prevent column name collisions
   pairs <- pairs %>%
     left_join(state_facilities, by = "master_id") %>%
     left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
   
-  # UPDATED: Added more geographic columns to the final selection
-  pairs %>%
+  # Calculate similarity scores and filter
+  matches <- pairs %>%
     mutate(
       sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"),
       sim_fac_parent = stringsim(company_normalized_facility, parent_normalized, method = "jw"),
@@ -2175,6 +2163,26 @@ match_state_enhanced <- function(state_code, params, max_facilities = 200) {
       max_similarity = pmax(sim_fac_company, sim_fac_parent, sim_primary_company, sim_primary_parent, na.rm = TRUE),
       year_diff = subsidy_year - announcement_year,
       temporal_match = year_diff >= -params$max_years_before_announcement & year_diff <= params$max_years_after_announcement,
+      suspicious_timing = abs(year_diff) > 5
+    )
+  
+  # Debugging: Check similarity scores before filtering
+  sim_summary <- summary(matches$max_similarity)
+  cat("  Similarity Score Summary (before filtering):\n")
+  print(sim_summary)
+  
+  matches_filtered <- matches %>%
+    filter(max_similarity >= params$similarity_threshold_low & !suspicious_timing)
+  
+  cat(paste0("  Found ", nrow(matches_filtered), " potential matches after filtering.\n"))
+  
+  if (nrow(matches_filtered) == 0) {
+    return(NULL)
+  }
+  
+  # Final selection and classification
+  final_matches <- matches_filtered %>%
+    mutate(
       confidence_level = case_when(
         max_similarity >= params$similarity_threshold_high & temporal_match ~ "High",
         max_similarity >= params$similarity_threshold_high & !temporal_match ~ "Medium (time mismatch)",
@@ -2190,13 +2198,11 @@ match_state_enhanced <- function(state_code, params, max_facilities = 200) {
         TRUE ~ "No match"
       ),
       exact_name_match = (company_normalized_facility == company_normalized_subsidy) | (company_normalized_facility == parent_normalized),
-      subsidy_before_announcement = year_diff < 0,
-      suspicious_timing = abs(year_diff) > 5
+      subsidy_before_announcement = year_diff < 0
     ) %>%
-    filter(max_similarity >= params$similarity_threshold_low & !suspicious_timing) %>%
     select(
       # Core Match Info
-      master_id, subsidy_id, confidence_level, name_similarity, match_type,
+      master_id, subsidy_id, confidence_level, name_similarity = max_similarity, match_type = best_match_type,
       # Facility Info
       facility_data_source = data_source,
       facility_company = company_project_keywords,
@@ -2224,9 +2230,11 @@ match_state_enhanced <- function(state_code, params, max_facilities = 200) {
       # Match Diagnostics
       year_diff, exact_name_match, temporal_match, subsidy_before_announcement
     )
+  
+  return(final_matches)
 }
 
-cat("\n--- 5. Processing states with enhanced matching ---\n")
+cat("\n--- 4. Processing states with enhanced matching ---\n")
 state_coverage <- data.frame(state = unique(c(facilities_enhanced$state, subsidies_enhanced$state))) %>%
   left_join(facilities_enhanced %>% group_by(state) %>% summarise(n_facilities = n()), by = "state") %>%
   left_join(subsidies_enhanced %>% group_by(state) %>% summarise(n_subsidies = n()), by = "state") %>%
@@ -2241,10 +2249,8 @@ states_to_process <- state_coverage$state
 cat("States to process:", length(states_to_process), "\n")
 
 all_matches_enhanced <- list()
-pb <- txtProgressBar(min = 0, max = length(states_to_process), style = 3)
-for (i in seq_along(states_to_process)) {
-  st <- states_to_process[i]
-  setTxtProgressBar(pb, i)
+# Using a standard for loop for clearer debugging output
+for (st in states_to_process) {
   tryCatch(
     {
       matches <- match_state_enhanced(st, matching_params, max_facilities = 200)
@@ -2252,15 +2258,16 @@ for (i in seq_along(states_to_process)) {
         all_matches_enhanced[[st]] <- matches
       }
     },
-    error = function(e) {}
+    error = function(e) {
+      cat(paste0("  ERROR processing state ", st, ": ", e$message, "\n"))
+    }
   )
 }
-close(pb)
 
 all_matches_enhanced_df <- bind_rows(all_matches_enhanced)
 cat("\n\nTotal enhanced matches found:", nrow(all_matches_enhanced_df), "\n")
 
-cat("\n--- 6. Enhanced matching results ---\n")
+cat("\n--- 5. Enhanced matching results ---\n")
 if (nrow(all_matches_enhanced_df) > 0) {
   confidence_summary <- all_matches_enhanced_df %>%
     group_by(confidence_level) %>%
@@ -2314,11 +2321,13 @@ if (nrow(all_matches_enhanced_df) > 0) {
     head(15)
   print(state_summary)
   
-  facility_subsidy_matches_enhanced <- all_matches_enhanced_df
   high_confidence_matches <- all_matches_enhanced_df %>% filter(confidence_level == "High")
   cat("\n\nHigh confidence matches:", nrow(high_confidence_matches), "\n")
   cat("Medium confidence matches:", sum(str_detect(all_matches_enhanced_df$confidence_level, "Medium")), "\n")
   cat("Low confidence matches:", sum(all_matches_enhanced_df$confidence_level == "Low"), "\n")
+} else {
+  cat("No matches found meeting the criteria.\n")
+  high_confidence_matches <- tibble() # Create an empty tibble if no matches
 }
 
 high_confidence_investment_subsidy_matches <- high_confidence_matches
