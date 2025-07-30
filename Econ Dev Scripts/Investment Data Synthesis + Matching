@@ -1252,29 +1252,61 @@ get_opportunity_zones <- function() {
   # Build query URL
   base_url <- "https://services5.arcgis.com/JIM0C93ugEcJ7iyY/ArcGIS/rest/services/oz_shapefile_final_version/FeatureServer/0/query"
   
-  # Parameters for the query
-  params <- list(
-    where = "1=1", # Get all features
-    outFields = "*",
-    f = "geojson",
-    returnGeometry = "true"
-  )
+  # Initialize empty list to store all features
+  all_features <- list()
+  offset <- 0
+  record_count <- 2000  # Max records per request
   
-  # Make the request
-  response <- GET(base_url, query = params)
+  repeat {
+    # Parameters for the query with pagination
+    params <- list(
+      where = "oz_lgbl = 'OZ eligible'",  # Only get eligible OZs
+      outFields = "*",
+      f = "geojson",
+      returnGeometry = "true",
+      resultOffset = offset,
+      resultRecordCount = record_count
+    )
+    
+    # Make the request
+    response <- GET(base_url, query = params)
+    
+    if (status_code(response) == 200) {
+      # Parse the GeoJSON response
+      oz_batch <- st_read(content(response, as = "text", encoding = "UTF-8"), quiet = TRUE)
+      
+      if (nrow(oz_batch) == 0) {
+        break  # No more records
+      }
+      
+      all_features[[length(all_features) + 1]] <- oz_batch
+      cat(sprintf("  Downloaded %d features (batch %d)\n", nrow(oz_batch), length(all_features)))
+      
+      # Check if we got fewer records than requested (indicating last batch)
+      if (nrow(oz_batch) < record_count) {
+        break
+      }
+      
+      offset <- offset + record_count
+    } else {
+      cat("Error downloading opportunity zones. Status code:", status_code(response), "\n")
+      return(NULL)
+    }
+  }
   
-  if (status_code(response) == 200) {
-    # Parse the GeoJSON response
-    oz_data <- st_read(content(response, as = "text", encoding = "UTF-8"), quiet = TRUE)
+  # Combine all features
+  if (length(all_features) > 0) {
+    oz_data <- do.call(rbind, all_features)
+    cat(sprintf("Total opportunity zones downloaded: %d\n", nrow(oz_data)))
     
-    # Filter to only opportunity zones (oz_lgbl == '1' or similar)
-    oz_data <- oz_data %>%
-      filter(oz_lgbl %in% c("1", "TRUE", "true", "Yes", "Y"))
+    # Verify we have the expected fields
+    if ("GEOID" %in% names(oz_data)) {
+      cat("GEOID field confirmed present\n")
+    }
     
-    cat("Downloaded", nrow(oz_data), "opportunity zones\n")
     return(oz_data)
   } else {
-    cat("Error downloading opportunity zones. Status code:", status_code(response), "\n")
+    cat("No opportunity zones found\n")
     return(NULL)
   }
 }
@@ -1285,7 +1317,9 @@ cat("Checking facilities for opportunity zone locations...\n")
 # Download opportunity zones
 oz_boundaries <- get_opportunity_zones()
 
-if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0) {
+# Replace the section starting with "if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0)" with:
+
+if (!is.null(oz_boundaries) && nrow(oz_boundaries) > 0 && nrow(facilities_with_coords) > 0) {
   # Transform to same CRS if needed
   oz_boundaries <- st_transform(oz_boundaries, crs = st_crs(facilities_sf))
   
@@ -1305,15 +1339,23 @@ if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0) {
       chunk <- facilities_sf[start_idx:end_idx, ]
       
       # Check if facilities are within opportunity zones
-      oz_overlap <- st_join(chunk, oz_boundaries[, c("GEOID", "oz_lgbl", "geometry")],
-                            join = st_within, left = TRUE
-      )
+      # Only select GEOID if it exists in oz_boundaries
+      select_cols <- "geometry"
+      if ("GEOID" %in% names(oz_boundaries)) {
+        select_cols <- c("GEOID", "geometry")
+      }
+      
+      oz_overlap <- st_join(chunk, oz_boundaries[, select_cols],
+                            join = st_within, left = TRUE)
       
       # Extract results
       result <- oz_overlap %>%
         st_drop_geometry() %>%
-        select(master_id, oz_census_tract = GEOID) %>%
-        mutate(in_opportunity_zone = !is.na(oz_census_tract))
+        select(master_id) %>%
+        mutate(
+          oz_census_tract = if ("GEOID" %in% names(oz_overlap)) oz_overlap$GEOID else NA_character_,
+          in_opportunity_zone = !is.na(oz_census_tract)
+        )
       
       oz_results[[i]] <- result
     }
@@ -1329,14 +1371,13 @@ if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0) {
   # Merge OZ results back to all_facilities
   all_facilities <- all_facilities %>%
     left_join(oz_data_combined %>% select(master_id, in_opportunity_zone, oz_census_tract),
-              by = "master_id"
-    )
+              by = "master_id")
   
-  # For facilities without coordinates, set OZ status to NA
+  # For facilities without coordinates, set OZ status to NA (they won't have been joined)
   all_facilities <- all_facilities %>%
     mutate(
-      in_opportunity_zone = ifelse(coordinates_available, in_opportunity_zone, NA),
-      oz_census_tract = ifelse(coordinates_available, oz_census_tract, NA_character_)
+      in_opportunity_zone = ifelse(is.na(in_opportunity_zone), NA, in_opportunity_zone),
+      oz_census_tract = ifelse(is.na(oz_census_tract), NA_character_, oz_census_tract)
     )
   
   cat("\nOpportunity zone geocoding complete.\n")
@@ -1349,6 +1390,7 @@ if (!is.null(oz_boundaries) && nrow(facilities_with_coords) > 0) {
     )
   cat("Opportunity zone geocoding skipped (no data or no facilities with coordinates)\n")
 }
+
 
 # Step 4: Mark geocoding success
 all_facilities <- all_facilities %>%
@@ -2382,6 +2424,230 @@ if (data_exports) {
   write_csv(high_confidence_investment_subsidy_matches, file.path(output_folder, "high_confidence_investment_subsidy_matches.csv"))
 }
 
+# PART VI: SUBSIDY MATCHING FOR TOP CAPEX INVESTMENTS
+cat("\n================================================================================\n")
+cat("PART VI: SUBSIDY MATCHING FOR TOP CAPEX INVESTMENTS PER CATEGORY\n")
+cat("================================================================================\n\n")
+
+cat("--- 1. Preparing top CAPEX facilities for matching ---\n")
+# Get top 10 highest CAPEX per category (using the data frame created earlier)
+top_capex_facilities <- highest_capex_per_category %>%
+  head(10)
+
+cat("Selected top", nrow(top_capex_facilities), "highest CAPEX investments for focused matching\n")
+cat("Total CAPEX represented: $", format(sum(top_capex_facilities$capex_amount_estimated)/1e9, big.mark = ",", digits = 2), "billion\n\n")
+
+# Prepare these facilities for matching using the same enhanced preparation
+top_capex_enhanced <- top_capex_facilities %>%
+  filter(!is.na(company_project_keywords) & !is.na(state)) %>%
+  mutate(
+    company_normalized = map_chr(company_project_keywords, normalize_company_name_enhanced),
+    company_primary = str_extract(company_project_keywords, "^[^|]+") %>% str_trim(),
+    company_primary_normalized = map_chr(company_primary, normalize_company_name_enhanced),
+    announcement_year = year(as.Date(announcement_date))
+  ) %>%
+  filter(!is.na(company_normalized) & company_normalized != "" & !is.na(announcement_year)) %>%
+  select(
+    master_id, data_source, state, county_name, cbsa_name, csa_name,
+    company_project_keywords, company_normalized, company_primary_normalized,
+    announcement_date, announcement_year, capex_amount_estimated,
+    project_category_keywords, supply_chain_stage
+  )
+
+cat("Top CAPEX facilities prepared for matching:", nrow(top_capex_enhanced), "\n")
+
+# Show which facilities we're matching
+cat("\nTop CAPEX facilities being matched:\n")
+top_capex_summary <- top_capex_enhanced %>%
+  select(company_project_keywords, state, capex_amount_estimated, project_category_keywords) %>%
+  mutate(capex_billion = round(capex_amount_estimated/1e9, 2)) %>%
+  select(-capex_amount_estimated) %>%
+  arrange(desc(capex_billion))
+print(top_capex_summary)
+
+cat("\n--- 2. Performing subsidy matching for top CAPEX facilities ---\n")
+# Get states represented in top CAPEX facilities
+top_capex_states <- unique(top_capex_enhanced$state)
+cat("States to process:", paste(top_capex_states, collapse = ", "), "\n")
+
+# Custom matching function for the smaller subset
+match_state_top_capex <- function(state_code, params) {
+  cat(paste0("\nProcessing state: ", state_code, "\n"))
+  
+  state_facilities <- filter(top_capex_enhanced, state == state_code)
+  state_subsidies <- filter(subsidies_enhanced, state == state_code)
+  
+  if (nrow(state_facilities) == 0 || nrow(state_subsidies) == 0) {
+    cat("  No facilities or subsidies found. Skipping.\n")
+    return(NULL)
+  }
+  
+  cat(paste0("  Top CAPEX facilities: ", nrow(state_facilities), " | Subsidies: ", nrow(state_subsidies), "\n"))
+  
+  # Create all possible pairs
+  pairs <- expand_grid(master_id = state_facilities$master_id, subsidy_id = state_subsidies$subsidy_id)
+  
+  # Join facility and subsidy data
+  pairs <- pairs %>%
+    left_join(state_facilities, by = "master_id") %>%
+    left_join(state_subsidies, by = "subsidy_id", suffix = c("_facility", "_subsidy"))
+  
+  # Calculate similarity scores
+  matches <- pairs %>%
+    mutate(
+      sim_fac_company = stringsim(company_normalized_facility, company_normalized_subsidy, method = "jw"),
+      sim_fac_parent = stringsim(company_normalized_facility, parent_normalized, method = "jw"),
+      sim_primary_company = stringsim(company_primary_normalized, company_normalized_subsidy, method = "jw"),
+      sim_primary_parent = stringsim(company_primary_normalized, parent_normalized, method = "jw"),
+      max_similarity = pmax(sim_fac_company, sim_fac_parent, sim_primary_company, sim_primary_parent, na.rm = TRUE),
+      year_diff = subsidy_year - announcement_year,
+      temporal_match = year_diff >= -params$max_years_before_announcement & year_diff <= params$max_years_after_announcement,
+      suspicious_timing = abs(year_diff) > 5
+    ) %>%
+    filter(max_similarity >= params$similarity_threshold_low & !suspicious_timing)
+  
+  if (nrow(matches) == 0) {
+    cat("  No matches found.\n")
+    return(NULL)
+  }
+  
+  cat(paste0("  Found ", nrow(matches), " potential matches.\n"))
+  
+  # Final selection
+  final_matches <- matches %>%
+    mutate(
+      confidence_level = case_when(
+        max_similarity >= params$similarity_threshold_high & temporal_match ~ "High",
+        max_similarity >= params$similarity_threshold_high & !temporal_match ~ "Medium (time mismatch)",
+        max_similarity >= params$similarity_threshold_medium & temporal_match ~ "Medium",
+        max_similarity >= params$similarity_threshold_low & temporal_match ~ "Low",
+        TRUE ~ "Very Low"
+      ),
+      best_match_type = case_when(
+        max_similarity == sim_fac_company ~ "Facility company matches subsidy company",
+        max_similarity == sim_fac_parent ~ "Facility company matches subsidy parent",
+        max_similarity == sim_primary_company ~ "Facility primary matches subsidy company",
+        max_similarity == sim_primary_parent ~ "Facility primary matches subsidy parent",
+        TRUE ~ "No match"
+      )
+    ) %>%
+    select(
+      master_id, subsidy_id, confidence_level, name_similarity = max_similarity, match_type = best_match_type,
+      facility_data_source = data_source,
+      facility_company = company_project_keywords,
+      facility_announcement = announcement_date,
+      facility_year = announcement_year,
+      facility_capex = capex_amount_estimated,
+      facility_category = project_category_keywords,
+      facility_state = state_facility,
+      facility_county = county_name,
+      facility_cbsa = cbsa_name,
+      facility_csa = csa_name,
+      subsidy_company = Company,
+      subsidy_parent = `Parent Company`,
+      subsidy_year,
+      subsidy_value = `Subsidy Value`,
+      subsidy_program = `Program Name`,
+      subsidy_type = `Type of Subsidy`,
+      subsidy_state = state_subsidy,
+      subsidy_city = City,
+      subsidy_county = County,
+      subsidy_zip = Zip,
+      year_diff, temporal_match
+    )
+  
+  return(final_matches)
+}
+
+# Process each state
+top_capex_matches_list <- list()
+for (st in top_capex_states) {
+  tryCatch(
+    {
+      matches <- match_state_top_capex(st, matching_params)
+      if (!is.null(matches) && nrow(matches) > 0) {
+        top_capex_matches_list[[st]] <- matches
+      }
+    },
+    error = function(e) {
+      cat(paste0("  ERROR processing state ", st, ": ", e$message, "\n"))
+    }
+  )
+}
+
+top_capex_matches_df <- bind_rows(top_capex_matches_list)
+cat("\n\nTotal matches found for top CAPEX facilities:", nrow(top_capex_matches_df), "\n")
+
+cat("\n--- 3. Analyzing top CAPEX subsidy matches ---\n")
+if (nrow(top_capex_matches_df) > 0) {
+  # Summary by confidence level
+  top_capex_confidence_summary <- top_capex_matches_df %>%
+    group_by(confidence_level) %>%
+    summarise(
+      n_matches = n(),
+      n_facilities = n_distinct(master_id),
+      total_subsidy_m = round(sum(subsidy_value) / 1e6, 2),
+      avg_facility_capex_b = round(mean(facility_capex) / 1e9, 2),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_matches))
+  
+  cat("\nTop CAPEX matches by confidence level:\n")
+  print(top_capex_confidence_summary)
+  
+  # Facility-level summary
+  top_capex_facility_summary <- top_capex_matches_df %>%
+    group_by(master_id, facility_company, facility_state, facility_capex, facility_category) %>%
+    summarise(
+      n_subsidies = n(),
+      n_high_conf = sum(confidence_level == "High"),
+      total_subsidy_value = sum(subsidy_value),
+      subsidy_years = paste(sort(unique(subsidy_year)), collapse = ", "),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      facility_capex_b = round(facility_capex / 1e9, 2),
+      total_subsidy_m = round(total_subsidy_value / 1e6, 2),
+      subsidy_as_pct_capex = round(total_subsidy_value / facility_capex * 100, 1)
+    ) %>%
+    select(facility_company, facility_state, facility_capex_b, total_subsidy_m, 
+           subsidy_as_pct_capex, n_subsidies, n_high_conf, subsidy_years, facility_category) %>%
+    arrange(desc(facility_capex_b))
+  
+  cat("\nSubsidy matches by top CAPEX facility:\n")
+  print(top_capex_facility_summary)
+  
+  # High confidence matches detail
+  top_capex_high_conf <- top_capex_matches_df %>%
+    filter(confidence_level == "High") %>%
+    select(facility_company, subsidy_company, facility_state, 
+           facility_capex, subsidy_value, subsidy_year, subsidy_program) %>%
+    mutate(
+      facility_capex_b = round(facility_capex / 1e9, 2),
+      subsidy_value_m = round(subsidy_value / 1e6, 2)
+    ) %>%
+    select(-facility_capex, -subsidy_value) %>%
+    arrange(desc(facility_capex_b))
+  
+  cat("\nHigh confidence matches for top CAPEX facilities:\n")
+  print(head(top_capex_high_conf, 20))
+  
+  # Save results
+  if (data_exports) {
+    write_csv(top_capex_matches_df, file.path(output_folder, "top_capex_subsidy_matches_all.csv"))
+    write_csv(filter(top_capex_matches_df, confidence_level == "High"), 
+              file.path(output_folder, "top_capex_subsidy_matches_high_confidence.csv"))
+    write_csv(top_capex_facility_summary, file.path(output_folder, "top_capex_facility_subsidy_summary.csv"))
+    cat("\nTop CAPEX subsidy matching results saved.\n")
+  }
+  
+} else {
+  cat("No subsidy matches found for top CAPEX facilities.\n")
+}
+
+cat("\nTOP CAPEX SUBSIDY MATCHING COMPLETE\n")
+
+
 # Final summary
 cat("\n================================================================================\n")
 cat("SYNTHESIS COMPLETE\n")
@@ -2399,3 +2665,4 @@ if (data_exports) {
   sink()
   cat("\nConsole output saved to:", file.path(output_folder, "console_output.txt"), "\n")
 }
+
