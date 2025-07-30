@@ -1452,6 +1452,49 @@ if (data_exports) {
   write_csv(capex_summary, file.path(output_folder, "capex_summary.csv"))
 }
 
+# Create data frame with highest CAPEX investment per category
+cat("\n--- Creating highest CAPEX per category data frame ---\n")
+highest_capex_per_category <- all_facilities %>%
+  # Filter out rows without CAPEX information or category keywords
+  filter(capex_info_available == TRUE & 
+           !is.na(project_category_keywords) & 
+           project_category_keywords != "" &
+           capex_amount_estimated > 0) %>%
+  # Group by project category keywords
+  group_by(project_category_keywords) %>%
+  # Keep only the row with maximum CAPEX for each category
+  slice_max(order_by = capex_amount_estimated, n = 1, with_ties = FALSE) %>%
+  # If there are ties, take the most recent announcement
+  arrange(desc(announcement_date)) %>%
+  slice_head(n = 1) %>%
+  ungroup() %>%
+  # Sort by CAPEX amount descending
+  arrange(desc(capex_amount_estimated))
+
+# Summary statistics
+cat("Total unique categories with CAPEX data:", n_distinct(highest_capex_per_category$project_category_keywords), "\n")
+cat("Total CAPEX represented: $", format(sum(highest_capex_per_category$capex_amount_estimated, na.rm = TRUE)/1e9, big.mark = ",", digits = 2), "billion\n")
+cat("Largest single investment: $", format(max(highest_capex_per_category$capex_amount_estimated, na.rm = TRUE)/1e9, big.mark = ",", digits = 2), "billion\n")
+
+# Show top 10 investments
+cat("\nTop 10 highest CAPEX investments by category:\n")
+top_10_capex <- highest_capex_per_category %>%
+  select(project_category_keywords, company_project_keywords, state, capex_amount_estimated, data_source) %>%
+  mutate(capex_billion = round(capex_amount_estimated/1e9, 2)) %>%
+  select(-capex_amount_estimated) %>%
+  head(10)
+print(top_10_capex)
+
+# Save the data frame
+if (data_exports) {
+  write_csv(highest_capex_per_category, file.path(output_folder, "highest_capex_per_category.csv"))
+  cat("\nSaved highest CAPEX per category data to:", file.path(output_folder, "highest_capex_per_category.csv"), "\n")
+}
+
+cat("\n")
+
+
+
 # Part II: Identify Duplicate Facilities ---------------
 cat("\n================================================================================\n")
 cat("PART II: FACILITY DUPLICATE DETECTION\n")
