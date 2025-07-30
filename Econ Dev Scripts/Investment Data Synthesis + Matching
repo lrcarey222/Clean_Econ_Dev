@@ -2665,4 +2665,3 @@ if (data_exports) {
   sink()
   cat("\nConsole output saved to:", file.path(output_folder, "console_output.txt"), "\n")
 }
-
