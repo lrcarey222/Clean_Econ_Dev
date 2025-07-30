@@ -1435,8 +1435,138 @@ if (data_exports) {
   write_csv(all_facilities, file.path(output_folder, "all_facilities_geocoded.csv"))
 }
 
-# Continue with the rest of the script...
-# [Rest of the script continues unchanged from here]
+# PART 6.5: ENRICH CIM DATA WITH ALL COLUMNS
+cat("\n================================================================================\n")
+cat("ENRICHING CIM DATA WITH GEOCODING AND NAICS WHILE PRESERVING ORIGINAL COLUMNS\n")
+cat("================================================================================\n\n")
+
+# Extract row numbers from CIM master_ids to join back to original data
+cat("Extracting CIM facilities from all_facilities...\n")
+cim_enriched <- all_facilities %>%
+  filter(data_source == "CIM") %>%
+  mutate(
+    # Extract the row number from master_id (e.g., "CIM_123" -> 123)
+    original_row_number = as.numeric(str_extract(master_id, "\\d+"))
+  )
+
+cat("CIM facilities found:", nrow(cim_enriched), "\n")
+
+# Add row numbers to original CIM data for joining
+CIM_FACILITY_DATA_CONSOLIDATED_with_row <- CIM_FACILITY_DATA_CONSOLIDATED %>%
+  mutate(original_row_number = row_number())
+
+# Join the enriched data back with original CIM columns
+cat("Joining with original CIM data to restore all columns...\n")
+CIM_FACILITY_DATA_ENRICHED <- CIM_FACILITY_DATA_CONSOLIDATED_with_row %>%
+  left_join(
+    cim_enriched %>%
+      select(
+        original_row_number,
+        # Geocoding columns
+        county_fips, county_name, cbsa_code, cbsa_name, csa_code, csa_name,
+        geocoding_success, geocoding_attempted_address,
+        # Opportunity zone columns
+        in_opportunity_zone, oz_census_tract,
+        # NAICS columns
+        likely_naics_6_digit, likely_naics_6_digit_title,
+        # CAPEX category
+        capex_category,
+        # Supply chain stage (from our processing)
+        supply_chain_stage,
+        # Standardized fields
+        facility_status_standardized,
+        state_standardized = state,
+        # Keep track of what we added
+        master_id
+      ),
+    by = "original_row_number"
+  ) %>%
+  select(-original_row_number) # Remove the temporary row number column
+
+# Verify the enrichment
+cat("\nEnrichment summary:\n")
+cat("Original CIM rows:", nrow(CIM_FACILITY_DATA_CONSOLIDATED), "\n")
+cat("Enriched CIM rows:", nrow(CIM_FACILITY_DATA_ENRICHED), "\n")
+cat("Rows with county data:", sum(!is.na(CIM_FACILITY_DATA_ENRICHED$county_name)), "\n")
+cat("Rows with CBSA data:", sum(!is.na(CIM_FACILITY_DATA_ENRICHED$cbsa_name)), "\n")
+cat("Rows with CSA data:", sum(!is.na(CIM_FACILITY_DATA_ENRICHED$csa_name)), "\n")
+cat("Rows with NAICS codes:", sum(!is.na(CIM_FACILITY_DATA_ENRICHED$likely_naics_6_digit)), "\n")
+cat("Rows in opportunity zones:", sum(CIM_FACILITY_DATA_ENRICHED$in_opportunity_zone == TRUE, na.rm = TRUE), "\n")
+
+# Show sample of enriched data
+cat("\nSample of enriched CIM data:\n")
+sample_enriched <- CIM_FACILITY_DATA_ENRICHED %>%
+  filter(!is.na(county_name) & !is.na(likely_naics_6_digit)) %>%
+  select(unique_id, Company, State, county_name, cbsa_name, likely_naics_6_digit, 
+         in_opportunity_zone, supply_chain_stage) %>%
+  head(5)
+print(sample_enriched)
+
+cat("\nGlimpse of enriched CIM data:\n")
+glimpse(CIM_FACILITY_DATA_ENRICHED)
+
+
+#Within CIM_FACILITY_DATA_ENRICHED, identify all unique combinations of Decarb_Sector and Technology 
+#Add in a column for "Sector | Technology"
+#Also add in a column for "Sector | Technology | Subcategory"
+CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY <- CIM_FACILITY_DATA_ENRICHED %>%
+  mutate(
+    sector_technology = paste(Decarb_Sector, Technology, sep = " | "),
+    sector_technology_subcategory = paste(Decarb_Sector, Technology, Subcategory, sep = " | ")
+  )
+
+glimpse(CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY)
+
+#Create a new data frame that filters CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY such that we only have one row for each "sector_technology" value—the row for the investment with the highest "Estimated_Total_Facility_CAPEX" value; retain all columns
+CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX <- CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY %>%
+  group_by(sector_technology) %>%
+  slice_max(Estimated_Total_Facility_CAPEX, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+glimpse(CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX)
+
+#Now do the same thing for "sector_technology_subcategory"
+CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX_SUBCATEGORY <- CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY %>%
+  group_by(sector_technology_subcategory) %>%
+  slice_max(Estimated_Total_Facility_CAPEX, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+glimpse(CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX_SUBCATEGORY)
+
+#Export all of these data frames
+if (data_exports) {
+  write_csv(CIM_FACILITY_DATA_ENRICHED, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_SECTOR_TECH_SUBCATEGORY.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX_SUBCATEGORY, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_HIGHEST_CAPEX_SUBCATEGORY.csv"))
+}
+
+#Now let's do the same thing except #filter CIM_FACILITY_DATA_ENRICHED for rows where "Current_Facility_Status" is NOT "Canceled prior to operation" or "Retired"
+CIM_FACILITY_DATA_ENRICHED_ACTIVE <- CIM_FACILITY_DATA_ENRICHED %>%
+  filter(!Current_Facility_Status %in% c("Canceled prior to operation", "Retired"))
+# Create sector | technology and sector | technology | subcategory columns
+CIM_FACILITY_DATA_ENRICHED_ACTIVE_SECTOR_TECH_SUBCATEGORY <- CIM_FACILITY_DATA_ENRICHED_ACTIVE %>%
+  mutate(
+    sector_technology = paste(Decarb_Sector, Technology, sep = " | "),
+    sector_technology_subcategory = paste(Decarb_Sector, Technology, Subcategory, sep = " | ")
+  )
+# Create highest CAPEX data frames for active facilities
+CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX <- CIM_FACILITY_DATA_ENRICHED_ACTIVE_SECTOR_TECH_SUBCATEGORY %>%
+  group_by(sector_technology) %>%
+  slice_max(Estimated_Total_Facility_CAPEX, n = 1, with_ties = FALSE) %>%
+  ungroup()
+CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX_SUBCATEGORY <- CIM_FACILITY_DATA_ENRICHED_ACTIVE_SECTOR_TECH_SUBCATEGORY %>%
+  group_by(sector_technology_subcategory) %>%
+  slice_max(Estimated_Total_Facility_CAPEX, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Export active facility data frames
+if (data_exports) {
+  write_csv(CIM_FACILITY_DATA_ENRICHED_ACTIVE, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_ACTIVE.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_ACTIVE_SECTOR_TECH_SUBCATEGORY, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_ACTIVE_SECTOR_TECH_SUBCATEGORY.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX.csv"))
+  write_csv(CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX_SUBCATEGORY, file.path(output_folder, "CIM_FACILITY_DATA_ENRICHED_ACTIVE_HIGHEST_CAPEX_SUBCATEGORY.csv"))
+}
 
 # PART 7: PREPARE DATA FOR FACILITY MATCHING
 cat("\nPreparing data for facility matching...\n")
@@ -2665,3 +2795,4 @@ if (data_exports) {
   sink()
   cat("\nConsole output saved to:", file.path(output_folder, "console_output.txt"), "\n")
 }
+
