@@ -148,8 +148,11 @@ ggplot(data=ira_chips,aes(y=share_irachips,x=share_gdp,size=`Funding Amount`))+
 
 #Federal Tax Credit Incentives State-Level Estimates
 tax_inv_cat<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/federal_actual_investment_by_category.csv',skip=5)
-tax_inv_cat_tot <- tax_inv_cat%>% group_by(Segment,Category) %>%
+tax_inv_cat_tot <- tax_inv_cat%>% 
+  filter(!quarter %in% c("2024-Q4","2025-Q1")) %>%
+  group_by(Segment,Category) %>%
   summarize_at(vars(Total.Federal.Investment),sum,na.rm=T)
+
 tax_inv_state<-read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q3_2024/extended_CIM_data/federal_actual_investment_by_state.csv',skip=5)
 tax_inv_state_tot <- tax_inv_state %>% group_by(State) %>%
   summarize_at(vars(Total.Federal.Investment),sum,na.rm=T) 
@@ -657,7 +660,7 @@ state_climate_pol_sum<-state_climate_pol %>%
 
 
 #Climate Legislation------------------------------------
-climate_leg<-read.csv("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/climate_leg.csv")
+climate_leg<-read.csv(paste0(raw_data,"climate_leg.csv"))
 
 climate_leg_state<-climate_leg %>%
   filter(statename==state_name) %>%

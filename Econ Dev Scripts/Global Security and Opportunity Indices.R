@@ -68,8 +68,21 @@ ei<-read.csv(paste0(raw_data,"ei_stat_review_world_energy.csv"))  %>%
 all_countries <- ei %>%
   filter(Year == "2024",
          !grepl("World|Other|Total|OECD|OPEC", Country)) %>%
+  mutate(Country=recode(
+    Country,
+    "Vietnam" = "Viet Nam",
+    "Iran, Islamic Rep." = "Iran",
+    "Turkey"          = "Turkiye",
+    "United kingdom"  = "United Kingdom",
+    "Curacao"         = "Curaçao",
+    "Saudi arabia"         = "Saudi Arabia",
+    "Russian Federation" = "Russia",
+    "Czechia"="Czech Republic",
+    "Yemen, Rep."="Yemen",
+    "Venezuela, RB"="Venezuela"
+  )) %>%
   distinct(Country) %>%
-  pull()
+  pull() 
 
 ##----------Energy Security------------------------
 ##Energy security - the assurance that energy is available where and when it's needed - can be measured or benchmarked by looking at energy availability, energy prices, affordability, natural resource availability, import reliance, and global market share
@@ -556,25 +569,33 @@ critical_min_reserves<-bind_rows(cobalt_res,
                                      ifelse(Mineral=="Battery-grade graphite","Graphite",Mineral))),
              by=c("Mineral")
   ) %>%
-  filter(!is.na(tech)) 
+  filter(!is.na(tech)) %>%
+  group_by(Country,tech,data_type) %>%
+  mutate(share_24=share_24/sum(share_24)) %>% ungroup() 
 
 critical_min_res<-critical_min_reserves %>%
   filter(data_type=="index") %>%
-  group_by(Country,tech,supply_chain,category,data_type,source,explanation) %>%
-  summarize(value=weighted.mean(value,w=share_24,na.rm=T))%>%   #SM correction to share 24: share 23 does not exist
-  mutate(variable=str_glue("{tech} Reserves")) %>%
-  group_by(tech) %>%
+  group_by(Country,tech,supply_chain,category,data_type,source) %>%
+  summarize(value=weighted.mean(value,w=share_24,na.rm=T)) %>%   #SM correction to share 24: share 23 does not exist
+  mutate(variable=str_glue("{tech} Reserves"),
+         explanation="Weighted average of reserve availability by share of demand in technology") %>%
+  filter(value>0) %>%
+  group_by(tech,supply_chain) %>%
   mutate(value=median_scurve(value)) %>%
   rbind(critical_min_reserves %>%
           select(-tech) %>%
           rename("tech"="Mineral") %>%
           distinct(Country,tech,supply_chain,category,data_type,variable, value,source,explanation)
-  ) 
+  ) %>%
+  group_by(tech, supply_chain, category, data_type, source, variable, explanation) %>%
+  complete(Country = all_countries, fill = list(value = 0)) 
 
 
 #-- 3. Combine all reserves tidily --
 reserves_clean <- bind_rows(critical_min_res, oil_res, gas_res, coal_res) %>%
-  mutate(Country=ifelse(Country=="US","United States",Country))
+  mutate(Country=ifelse(Country=="US","United States",Country)) %>%
+  group_by(tech, supply_chain, category, data_type, source, variable, explanation) %>%
+  complete(Country = all_countries, fill = list(value = 0)) 
 
 #-- Inspect --
 View(reserves_clean)
@@ -671,7 +692,9 @@ criticalmineral_supply <- mineral_supply %>%
       )
     )
   ) %>%
-  select(country, tech, supply_chain, category,variable,data_type, value, source, explanation)
+  select(country, tech, supply_chain, category,variable,data_type, value, source, explanation) %>%
+  group_by(tech, supply_chain, category, data_type, source, variable, explanation) %>%
+  complete(country = all_countries, fill = list(value = 0)) 
 
 
 
@@ -718,8 +741,8 @@ read_production <- function(path, sheet, skip, nm_col, val_col,
       data_type    = if_else(data_type == "raw_value", "raw", "index"),
       source       = "EI Statistical Review of World Energy (2024)",
       explanation  = case_when(
-        data_type == "raw"   ~ str_glue("{tech_name} reserves ({unit_desc}) from sheet {sheet}"),
-        data_type == "index" ~ "Percent-rank of reserves across reporting entities (countries + RoW)"
+        data_type == "raw"   ~ str_glue("{tech_name} production ({unit_desc}) from sheet {sheet}"),
+        data_type == "index" ~ "Percent-rank of production across reporting entities (countries + RoW)"
       )
     ) %>% 
     select(Country, tech, supply_chain, category, variable,
@@ -834,20 +857,25 @@ critical_min_production<-bind_rows(cobalt_prod,
                                      ifelse(Mineral=="Battery-grade graphite","Graphite",Mineral))),
              by=c("Mineral")
   ) %>%
-  filter(!is.na(tech)) 
+  filter(!is.na(tech)) %>%
+  group_by(Country,tech,data_type) %>%
+  mutate(share_24=(share_24/sum(share_24))) %>% ungroup() 
 
 critical_min_prod<-critical_min_production %>%
   filter(data_type=="index") %>%
   group_by(Country,tech,supply_chain,category,data_type,source,explanation) %>%
   summarize(value=weighted.mean(value,w=share_24,na.rm=T))%>%   #SM correction to share 24: share 23 does not exist
-  mutate(variable=str_glue("{tech} Reserves")) %>%
+  mutate(variable=str_glue("{tech} Production")) %>%
+  filter(value>0) %>%
   group_by(tech) %>%
   mutate(value=median_scurve(value)) %>%
-  rbind(critical_min_reserves %>%
+  rbind(critical_min_production %>%
           select(-tech) %>%
           rename("tech"="Mineral") %>%
           distinct(Country,tech,supply_chain,category,data_type,variable, value,source,explanation)
-  ) 
+  ) %>%
+  group_by(tech, supply_chain, category, data_type, source, variable, explanation) %>%
+  complete(Country = all_countries, fill = list(value = 0)) 
 
 #Energy Imports----------------------------------
 fossil_imports<-ei%>%
@@ -1523,39 +1551,43 @@ critmin_trade_tech <- critmin_hhi %>%
   group_by(mineral,supply_chain) %>%
   mutate(criticalmineral_marketshare_index=median_scurve(market_share),
          criticalmineral_exportshare_index=median_scurve(exp_share),
-         criticalmineral_hhi_index=median_scurve(-HHI_24)) %>%
+         criticalmineral_hhi_index=hhi_index) %>%
   left_join(mineral_demand_clean %>%
               mutate(Mineral=ifelse(grepl("graphite",Mineral),"Graphite",Mineral)) %>%
               ungroup() %>%
-              select(Mineral,tech,share_24_index),
+              select(Mineral,tech,share_24),
             by=c("mineral"="Mineral")) %>%
   filter(!is.na(tech)) %>%
+  
   group_by(country,tech,supply_chain) %>%
+  mutate(share_24=share_24/sum(share_24)) %>% ungroup() %>%
+  group_by(country,tech,supply_chain) %>%
+  
   summarize(criticalmineral_marketshare_index=weighted.mean(criticalmineral_marketshare_index,
-                                                            share_24_index,
+                                                            share_24,
                                                             na.rm=T),
             criticalmineral_exportshare_index=weighted.mean(criticalmineral_exportshare_index,
-                                                            share_24_index,
+                                                            share_24,
                                                             na.rm=T),
             criticalmineral_hhi_index=weighted.mean(hhi_index,
-                                                    share_24_index,
+                                                    share_24,
                                                     na.rm=T)) %>%
   rowwise() %>% 
   mutate(
     ## average the three index columns, ignoring any NAs
-    critmin_trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)
+    critmin_trade_index = criticalmineral_marketshare_index
   )
 
 critmin_trade_tidy <- critmin_trade_tech %>%
+  select(country, tech,supply_chain,critmin_trade_index) %>%
   # 1. pivot all your metric-columns into a long format
   pivot_longer(
-    cols      = -c(country, tech),
+    cols      = -c(country, tech,supply_chain),
     names_to  = "variable",
     values_to = "value"
   ) %>%
   # 2. add the new constant columns
   mutate(
-    supply_chain = "Upstream",
     category     = "Trade",
     # 3. classify raw vs index based on the _index suffix
     data_type = if_else(str_detect(variable, "_index$"),
@@ -1655,6 +1687,7 @@ all_security_data <- cleantech_clean %>%
   rbind(energy_consumption_clean) %>%
   rbind(criticalmineral_supply %>%
           rename(Country=country)) %>%
+  rbind(critical_min_prod) %>%
   rbind(trade_tidy %>%
           filter(!is.na(Country),
                  variable %in% c("market_share","HHI")))  %>%
@@ -1662,16 +1695,32 @@ all_security_data <- cleantech_clean %>%
           filter(variable=="critmin_trade")) %>%
   rbind(ev_man) %>%
   rbind(neo_cap) %>%
-  filter(variable != "elec_growth_index")
+  mutate(Country=recode(
+    Country,
+    "Vietnam" = "Viet Nam",
+    "Iran, Islamic Rep." = "Iran",
+    "Turkey"          = "Turkiye",
+    "United kingdom"  = "United Kingdom",
+    "Curacao"         = "Curaçao",
+    "Saudi arabia"         = "Saudi Arabia",
+    "Russian Federation" = "Russia",
+    "Czechia"="Czech Republic",
+    "Yemen, Rep."="Yemen",
+    "Venezuela, RB"="Venezuela"
+  )) %>%
+  filter(!grepl("Total|Other|Rest|Africa|USSR",Country),
+         Country %in% all_countries)
 
 security_weights <- c(
-  "Foreign Dependency"   = 5,
-  "Energy Imports"    = 4,
-  "Reserves"        = 5,
+  "Foreign Dependency"   = 6,
+  "Energy Imports"    = 3,
+  "Reserves"        = 4,
+  "Resource availability"=3,
   "Trade"    = 2,
   "critmin_trade" = 3,
+  "Production" = 6,
   "Energy Access" = 3,
-  "Consumption" = 3
+  "Consumption" = 5
 )
 
 energy_security_index<-all_security_data %>%
@@ -2593,6 +2642,9 @@ us_scatter_index <- scatter_index %>%
 
 write.csv(us_scatter_index %>%
             mutate( `Overall Energy Security Index`=1- `Overall Energy Security Index`),"Downloads/us_scatter.csv")
+View(us_scatter_index %>% ungroup() %>% summarize(security=mean((1- `Overall Energy Security Index`),na.rm=T),
+                                                  opportunity=mean(`Overall Economic Opportunity Index`,na.rm=T)))
+
 
 #------------------Bilateral Relationships-----------------
 #US export Size & Growth------------------------------
@@ -3627,7 +3679,9 @@ strategy_tbl <- us_friendshore_index  %>%
     )
   ) %>%
   ungroup() %>%
-  arrange(desc(psi))
+  arrange(desc(psi)) %>% 
+  filter(country %in% all_countries,
+         country != "Guyana")
 
 compacts <- bind_cols(
   strategy_tbl %>%

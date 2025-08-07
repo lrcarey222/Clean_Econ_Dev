@@ -86,19 +86,31 @@ op_gen_ira <- op_gen  %>%
 abbr_opgen_12_23 <- op_gen %>%
   filter(`Plant State`== state_abbreviation,
          `Operating Year` > 2011) %>%
-  mutate(Technology = ifelse(grepl("Natural Gas", Technology), "Natural Gas", Technology)) %>%
-  filter(Technology != "Flywheels" & Technology != "All Other" & Technology != "Other Gases" & Technology != "Wood/Wood Waste Biomass" & Technology != "Pumped Storage" & Technology != "Wood and Wood Derived Fuels") 
+  mutate(tech = ifelse(grepl("Natural Gas", tech), "Natural Gas", tech)) %>%
+  filter(tech != "Flywheels" & tech != "All Other" & tech != "Other Gases" & tech != "Wood/Wood Waste Biomass" & tech != "Pumped Storage" & tech != "Wood and Wood Derived Fuels") 
 
 abbr_gen_12_24 <- op_gen %>%
-  group_by(`Operating Year`,Technology) %>%
+  group_by(`Operating Year`,tech) %>%
   summarize(capacity=sum(`Nameplate Capacity (MW)`,na.rm=T)) %>%
   pivot_wider(names_from=`Operating Year`,values_from=capacity)
 
 gen_24 <- abbr_gen_12_24 %>%
-  select(Technology,`2024`) %>%
-  mutate(`2024`=ifelse(is.na(`2024`),0,`2024`),
-         share=`2024`/sum(`2024`)*100) %>%
+  pivot_longer(cols=c(`1891`:`2025`),names_to="Year",values_to="Value") %>%
+  group_by(Year) %>%
+  mutate(`Value`=ifelse(is.na(`Value`),0,`Value`),
+         share=`Value`/sum(`Value`)*100) %>%
   arrange(desc(share))
+
+gen_ira <- gen_24 %>%
+  filter(`Year`>2021) %>%
+  mutate(clean=tech %in% c("Solar",
+                     "Geothermal",
+                     "Storage",
+                     "Wind")) %>%
+  group_by(clean) %>%
+  summarize(cap=sum(Value,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(share=cap/sum(cap))
 
 #Region-Level
 counties <- counties(class = "sf")

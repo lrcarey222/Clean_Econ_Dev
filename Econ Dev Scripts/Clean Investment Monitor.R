@@ -51,7 +51,7 @@ tech_mapping<-left_join(tech_mapping,naics2022 %>% select("2022 NAICS Code",
 investment_year<-investment %>% 
   mutate(year=as.numeric(substr(quarter,1, 4))) %>%
   group_by(year) %>%
-  summarize_at(vars(Value),sum,na.rm=T)
+  summarize_at(vars(Estimated_Actual_Quarterly_Expenditure ),sum,na.rm=T)
 
 #Total Investment by Segment,Year
 investment_year_segment<-investment %>%
@@ -931,8 +931,8 @@ facilities_cd <- facilities %>%
 
 
 #Federal Tax Credit Incentives State-Level Estimates----------------------------------
-tax_inv_cat<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_category.csv',skip=2)
-tax_inv_state<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/clean_investment_monitor_q1_24/tax_investment_by_state.csv',skip=2)
+tax_inv_cat<-read.csv(paste0(raw_data,"clean_investment_monitor_q1_2025/extended_data/federal_actual_investment_by_category.csv"),skip=5)
+tax_inv_state<-read.csv('C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/clean_investment_monitor_q1_25/tax_investment_by_state.csv',skip=2)
 
 #45X
 fac_45x<-facilities %>%
