@@ -373,3 +373,5 @@ years <- 2015:2024
 # 0) Stack all years once
 TAPESTRY_ALL_YEARS <- dplyr::bind_rows(tapestry_list)
 dplyr::glimpse(TAPESTRY_ALL_YEARS)
+
+
