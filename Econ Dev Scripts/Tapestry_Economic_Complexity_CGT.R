@@ -13,9 +13,108 @@ if (!requireNamespace("RSpectra", quietly = TRUE)) {
   stop("Please install RSpectra: install.packages('RSpectra')")
 }
 
-# ---- User paths (update to your environment) ----
-QCEW_META_DIR <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/BLS_QCEW/metadata"
-TAPESTRY_DIR_NAICS6D <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Tapestry_Employment/contains_naics_999999_county_XX999/NAICS_6D"
+
+# ---- Dynamic, cross-platform paths (mac/pc/user-agnostic) ----
+
+suppressPackageStartupMessages({ library(stringr); library(purrr) })
+
+# Helpers
+norm_dir <- function(p) normalizePath(p, winslash = "/", mustWork = FALSE)
+existing_dir <- function(cands) {
+  cands <- unique(cands[!is.na(cands) & nzchar(cands)])
+  ex <- cands[dir.exists(cands)]
+  if (length(ex)) return(norm_dir(ex[1]))
+  NULL
+}
+assert_dir <- function(p, hint = NULL) {
+  if (is.null(p) || !dir.exists(p)) {
+    msg <- paste0(
+      "Required directory not found.\nTried: ", paste(hint$tried, collapse = "\n  - "),
+      "\n\nSet an override env var and re-run, e.g.:\n",
+      "Sys.setenv(", hint$env, '="', hint$suggest, '")'
+    )
+    stop(msg, call. = FALSE)
+  }
+}
+
+home <- path.expand("~")
+
+# 1) Candidate OneDrive roots from env + common install paths (macOS & Windows)
+od_envs <- c(Sys.getenv("ONEDRIVE_ROOT"),
+             Sys.getenv("OneDrive"),           # Win consumer
+             Sys.getenv("OneDriveCommercial"), # Win business
+             Sys.getenv("OneDriveConsumer"))   # Win consumer (alt)
+
+# macOS new OneDrive location(s)
+mac_cloud_lib <- file.path(home, "Library", "CloudStorage")
+mac_od_glob <- if (dir.exists(mac_cloud_lib)) {
+  list.dirs(mac_cloud_lib, full.names = TRUE, recursive = FALSE)
+} else character(0)
+mac_od_glob <- mac_od_glob[basename(mac_od_glob) %>% str_detect("^OneDrive")]
+# Old macOS default (rare now)
+mac_old <- file.path(home, "OneDrive")
+
+# Windows typical
+win_od_org <- list.dirs(home, full.names = TRUE, recursive = FALSE)
+win_od_org <- win_od_org[basename(win_od_org) %>% str_detect("^OneDrive( - |$)")]
+
+onedrive_candidates <- c(od_envs, mac_od_glob, mac_old, win_od_org) %>% unique()
+onedrive_root <- existing_dir(onedrive_candidates)
+
+# Optional: allow user to hard-override via ONEDRIVE_ROOT; if missing, we’ll try to proceed.
+if (is.null(onedrive_root)) {
+  message("OneDrive root not auto-detected. You can set it with: ",
+          'Sys.setenv(ONEDRIVE_ROOT="/path/to/OneDrive-YourOrg")')
+}
+
+# 2) Build your project-specific relative paths
+RAW_DATA_REL <- file.path(
+  "US Program - Documents", "6_Projects", "Clean Regional Economic Development",
+  "ACRE", "Data", "Raw Data"
+)
+
+QCEW_META_REL <- file.path(RAW_DATA_REL, "BLS_QCEW", "metadata")
+TAPESTRY_REL  <- file.path(RAW_DATA_REL, "Tapestry_Employment",
+                           "contains_naics_999999_county_XX999", "NAICS_6D")
+
+# 3) Allow per-path env var overrides; otherwise place under detected OneDrive
+QCEW_META_DIR <- Sys.getenv("QCEW_META_DIR")
+TAPESTRY_DIR_NAICS6D <- Sys.getenv("TAPESTRY_DIR_NAICS6D")
+
+if (!nzchar(QCEW_META_DIR)) {
+  QCEW_META_DIR <- if (!is.null(onedrive_root)) file.path(onedrive_root, QCEW_META_REL) else NA_character_
+}
+if (!nzchar(TAPESTRY_DIR_NAICS6D)) {
+  TAPESTRY_DIR_NAICS6D <- if (!is.null(onedrive_root)) file.path(onedrive_root, TAPESTRY_REL) else NA_character_
+}
+
+QCEW_META_DIR <- norm_dir(QCEW_META_DIR)
+TAPESTRY_DIR_NAICS6D <- norm_dir(TAPESTRY_DIR_NAICS6D)
+
+# 4) Validate & give actionable hints if missing
+assert_dir(
+  QCEW_META_DIR,
+  hint = list(
+    env = "QCEW_META_DIR",
+    tried = c(
+      paste0("Env QCEW_META_DIR: ", Sys.getenv("QCEW_META_DIR")),
+      paste0("ONEDRIVE_ROOT + REL: ", file.path(ifelse(nzchar(Sys.getenv("ONEDRIVE_ROOT")), Sys.getenv("ONEDRIVE_ROOT"), "<not set>"), QCEW_META_REL))
+    ),
+    suggest = file.path(ifelse(!is.null(onedrive_root), onedrive_root, "/ABS/PATH/TO/OneDrive-YourOrg"), QCEW_META_REL)
+  )
+)
+
+assert_dir(
+  TAPESTRY_DIR_NAICS6D,
+  hint = list(
+    env = "TAPESTRY_DIR_NAICS6D",
+    tried = c(
+      paste0("Env TAPESTRY_DIR_NAICS6D: ", Sys.getenv("TAPESTRY_DIR_NAICS6D")),
+      paste0("ONEDRIVE_ROOT + REL: ", file.path(ifelse(nzchar(Sys.getenv("ONEDRIVE_ROOT")), Sys.getenv("ONEDRIVE_ROOT"), "<not set>"), TAPESTRY_REL))
+    ),
+    suggest = file.path(ifelse(!is.null(onedrive_root), onedrive_root, "/ABS/PATH/TO/OneDrive-YourOrg"), TAPESTRY_REL)
+  )
+)
 
 AREA_TITLES_FILE                  <- file.path(QCEW_META_DIR, "area-titles.csv")
 INDUSTRY_TITLES_FILE              <- file.path(QCEW_META_DIR, "industry-titles.csv")
@@ -264,3 +363,13 @@ TAPESTRY_2024 <- tapestry_list[[length(tapestry_list)]]
 
 # Quick check
 dplyr::glimpse(TAPESTRY_2024)
+
+# =========================================================
+# Combine all years + unique geographies + ECI deltas & insights
+# =========================================================
+
+years <- 2015:2024
+
+# 0) Stack all years once
+TAPESTRY_ALL_YEARS <- dplyr::bind_rows(tapestry_list)
+dplyr::glimpse(TAPESTRY_ALL_YEARS)
