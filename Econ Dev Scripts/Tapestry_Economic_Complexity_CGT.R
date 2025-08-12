@@ -1,38 +1,28 @@
-# Tapestry Economic Complexity — per-year enrichment + LQ
 # =========================================================
-# Load required libraries
+# Tapestry Economic Complexity — county × NAICS6 (2015–2024)
+# Robust implementation with symmetric eigen step + safe sparsity
+# Math per Brookings technical paper eqs. 4–7, 8–14, 15–22.
 # =========================================================
-library(readr)
-library(readxl)
-library(dplyr)
-library(tidyr)
-library(stringr)
-library(purrr)
-library(tibble)
-library(Matrix) # For sparse matrix operations
 
-# =========================================================
-# Define file paths for QCEW metadata
-# =========================================================
-# Note: User must update this path to their local directory
+# ---- Libraries ----
+suppressPackageStartupMessages({
+  library(readr); library(readxl); library(dplyr); library(tidyr)
+  library(stringr); library(purrr); library(tibble); library(Matrix)
+})
+if (!requireNamespace("RSpectra", quietly = TRUE)) {
+  stop("Please install RSpectra: install.packages('RSpectra')")
+}
+
+# ---- User paths (update to your environment) ----
 QCEW_META_DIR <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/BLS_QCEW/metadata"
+TAPESTRY_DIR_NAICS6D <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Tapestry_Employment/contains_naics_999999_county_XX999/NAICS_6D"
 
 AREA_TITLES_FILE                  <- file.path(QCEW_META_DIR, "area-titles.csv")
 INDUSTRY_TITLES_FILE              <- file.path(QCEW_META_DIR, "industry-titles.csv")
-SIZE_TITLES_FILE                  <- file.path(QCEW_META_DIR, "size-titles.csv")
-AGG_LEVEL_TITLES_FILE             <- file.path(QCEW_META_DIR, "agg-level-titles.csv")
 OWNERSHIP_TITLES_FILE             <- file.path(QCEW_META_DIR, "ownership-titles.csv")
-COUNTY_MSA_CSA_CROSSWALK_FILE     <- file.path(QCEW_META_DIR, "qcew_county-msa-csa-crosswalk-2024.csv")
-QCEW_NAICS_HIERARCHY_CROSSWALK_FILE <- file.path(QCEW_META_DIR, "qcew-naics-hierarchy-crosswalk.xlsx")
 
-# =========================================================
-# Check for and load QCEW metadata
-# =========================================================
-req_meta <- c(
-  AREA_TITLES_FILE, INDUSTRY_TITLES_FILE, SIZE_TITLES_FILE,
-  AGG_LEVEL_TITLES_FILE, OWNERSHIP_TITLES_FILE,
-  COUNTY_MSA_CSA_CROSSWALK_FILE, QCEW_NAICS_HIERARCHY_CROSSWALK_FILE
-)
+# ---- Load metadata (fail fast) ----
+req_meta <- c(AREA_TITLES_FILE, INDUSTRY_TITLES_FILE, OWNERSHIP_TITLES_FILE)
 missing_meta <- req_meta[!file.exists(req_meta)]
 if (length(missing_meta)) stop("Missing metadata files:\n - ", paste(missing_meta, collapse = "\n - "))
 
@@ -44,28 +34,34 @@ INDUSTRY_TITLES <- suppressMessages(readr::read_csv(
   INDUSTRY_TITLES_FILE,
   col_types = cols(industry_code = col_character(), industry_title = col_character())
 ))
-SIZE_TITLES             <- suppressMessages(readr::read_csv(SIZE_TITLES_FILE))
-AGG_LEVEL_TITLES        <- suppressMessages(readr::read_csv(AGG_LEVEL_TITLES_FILE))
-OWNERSHIP_TITLES        <- suppressMessages(readr::read_csv(
+OWNERSHIP_TITLES <- suppressMessages(readr::read_csv(
   OWNERSHIP_TITLES_FILE,
   col_types = cols(own_code = col_character(), own_title = col_character())
 ))
-COUNTY_MSA_CSA_CROSSWALK <- suppressMessages(readr::read_csv(COUNTY_MSA_CSA_CROSSWALK_FILE))
-QCEW_NAICS_HIERARCHY_CROSSWALK <- suppressMessages(readxl::read_excel(
-  QCEW_NAICS_HIERARCHY_CROSSWALK_FILE, sheet = "v2022"
-))
 
-# =========================================================
-# Data loader and enrichment function (per year)
-# =========================================================
-# Note: User must update this path to their local directory
-TAPESTRY_DIR_NAICS6D <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Tapestry_Employment/contains_naics_999999_county_XX999/NAICS_6D"
+# ---- Helpers ----
+is_valid_county_fips <- function(x) {
+  # Keep 5-digit numeric counties; drop XX000/XX999 rollups
+  str_detect(x, "^[0-9]{5}$") & !str_detect(x, "(000|999)$")
+}
 
+is_valid_naics6 <- function(x) {
+  # Keep strictly 6 numeric digits; drop 999999/000000 and non-digits
+  str_detect(x, "^[0-9]{6}$") & !(x %in% c("999999","000000"))
+}
+
+zscore <- function(x) {
+  if (all(is.na(x))) return(x)
+  mu <- mean(x, na.rm = TRUE); sdv <- sd(x, na.rm = TRUE)
+  if (is.na(sdv) || sdv == 0) return(rep(NA_real_, length(x)))
+  (x - mu) / sdv
+}
+
+# ---- Year reader & enrichment (safe types, LQ) ----
 read_and_enrich_year <- function(yr) {
   path <- file.path(TAPESTRY_DIR_NAICS6D, paste0(yr, ".csv"))
   if (!file.exists(path)) stop("Missing file: ", path)
   
-  # Force correct types and pad keys to keep leading zeros
   df <- readr::read_csv(
     path,
     col_types = cols(
@@ -79,217 +75,192 @@ read_and_enrich_year <- function(yr) {
     )
   ) %>%
     mutate(
-      area_fips  = str_pad(area_fips,  width = 5, side = "left", pad = "0"),
-      naics_code = str_pad(naics_code, width = 6, side = "left", pad = "0")
+      year      = coalesce(year, as.integer(yr)),
+      area_fips = str_pad(area_fips, 5, "left", "0"),
+      naics_code= str_pad(naics_code, 6, "left", "0")
     ) %>%
-    # ---- enrichment (hard-coded joins) ----
-  left_join(OWNERSHIP_TITLES, by = "own_code") %>%
+    left_join(OWNERSHIP_TITLES, by = "own_code") %>%
     left_join(AREA_TITLES,      by = "area_fips") %>%
-    left_join(INDUSTRY_TITLES, by = c("naics_code" = "industry_code"))
+    left_join(INDUSTRY_TITLES,  by = c("naics_code" = "industry_code"))
   
-  # ---- totals for this year (from tap_emplvl_est_3) ----
-  # county total (area_fips, year)
+  # Filter to county-level + NAICS6 good codes for the complexity core;
+  # keep all rows for the enriched output but mark what's eligible.
+  df <- df %>%
+    mutate(
+      complexity_core = is_valid_county_fips(area_fips) & is_valid_naics6(naics_code)
+    )
+  
+  # Totals for LQ
   county_totals <- df %>%
     group_by(area_fips, year) %>%
     summarise(total_employment_in_county = sum(tap_emplvl_est_3, na.rm = TRUE), .groups = "drop")
   
-  # national industry total (naics_code, year)
   industry_totals <- df %>%
     group_by(naics_code, year) %>%
     summarise(total_industry_employment_in_nation = sum(tap_emplvl_est_3, na.rm = TRUE), .groups = "drop")
   
-  # national total (year)
   national_totals <- df %>%
     group_by(year) %>%
     summarise(total_employment_national = sum(tap_emplvl_est_3, na.rm = TRUE), .groups = "drop")
   
-  # bring totals back
   df <- df %>%
     left_join(county_totals,   by = c("area_fips", "year")) %>%
     left_join(industry_totals, by = c("naics_code", "year")) %>%
-    left_join(national_totals, by = "year")
-  
-  # ---- Location Quotient (safe division) ----
-  df <- df %>%
+    left_join(national_totals, by = "year") %>%
     mutate(
-      area_share      = if_else(total_employment_in_county > 0,
-                                tap_emplvl_est_3 / total_employment_in_county, NA_real_),
-      national_share  = if_else(total_employment_national > 0,
-                                total_industry_employment_in_nation / total_employment_national, NA_real_),
+      area_share     = if_else(total_employment_in_county > 0,
+                               tap_emplvl_est_3 / total_employment_in_county, NA_real_),
+      national_share = if_else(total_employment_national > 0,
+                               total_industry_employment_in_nation / total_employment_national, NA_real_),
       location_quotient = if_else(!is.na(area_share) & !is.na(national_share) & national_share > 0,
                                   area_share / national_share, NA_real_)
-    ) %>%
-    select(
-      area_fips, area_title,
-      naics_code, industry_title,
-      own_code, own_title,
-      year, tap_emplvl_est_3,
-      total_employment_in_county,
-      total_industry_employment_in_nation,
-      total_employment_national,
-      area_share, national_share, location_quotient,
-      everything()
     )
   
   df
 }
 
-# =========================================================
-# NEW: Economic Complexity Calculation Function
-# =========================================================
-add_economic_complexity_metrics <- function(df) {
+# ---- Complexity engine for one year ----
+compute_complexity_for_year <- function(df_year) {
+  yr <- unique(df_year$year)
+  message("== Year ", yr, " ==")
   
-  message("Calculating complexity metrics for ", df$year[1], "...")
-  
-  # --- 1. Prepare M_ci (Revealed Comparative Advantage) Matrix ---
-  # Based on equation 5[cite: 2], M_ci is 1 if RCA (location_quotient) >= 1.
-  message("  Step 1/7: Creating RCA matrix (M_ci)...")
-  df_clean <- df %>%
+  # --- Build M (RCA≥1) on the core (county+good NAICS6) ---
+  core <- df_year %>%
+    filter(complexity_core) %>%
     select(area_fips, naics_code, location_quotient) %>%
-    distinct(area_fips, naics_code, .keep_all = TRUE) %>%
-    mutate(M_ci = if_else(!is.na(location_quotient) & location_quotient >= 1, 1, 0))
+    distinct() %>%
+    mutate(M_ci = as.integer(!is.na(location_quotient) & location_quotient >= 1))
   
-  # Create a sparse county-by-industry matrix for efficiency
-  counties <- sort(unique(df_clean$area_fips))
-  industries <- sort(unique(df_clean$naics_code))
+  counties  <- sort(unique(core$area_fips))
+  industries<- sort(unique(core$naics_code))
+  core <- core %>%
+    mutate(i = match(area_fips, counties),
+           j = match(naics_code, industries))
   
-  df_clean$county_idx <- match(df_clean$area_fips, counties)
-  df_clean$industry_idx <- match(df_clean$naics_code, industries)
-  
-  M <- sparseMatrix(i = df_clean$county_idx,
-                    j = df_clean$industry_idx,
-                    x = df_clean$M_ci,
+  M <- sparseMatrix(i = core$i, j = core$j, x = core$M_ci,
                     dims = c(length(counties), length(industries)),
                     dimnames = list(counties, industries))
   
-  # --- 2. Calculate Diversity and Ubiquity ---
-  # Diversity (eq. 6) [cite: 2] & Ubiquity (eq. 7) [cite: 2]
-  message("  Step 2/7: Calculating Diversity and Ubiquity...")
-  Diversity <- rowSums(M)
-  Ubiquity <- colSums(M)
+  Kc0 <- rowSums(M) # Diversity (eq. 6)
+  Ki0 <- colSums(M) # Ubiquity (eq. 7)
   
-  # Create safe denominators for division to avoid Inf/-Inf
-  Diversity_div <- ifelse(Diversity == 0, 1, Diversity)
-  Ubiquity_div <- ifelse(Ubiquity == 0, 1, Ubiquity)
+  # Drop zero rows/cols for spectral steps
+  keep_c <- which(Kc0 > 0)
+  keep_i <- which(Ki0 > 0)
   
-  # --- 3. Calculate ICI and ECI ---
-  # Using the eigenvector method described in section 2.1[cite: 4, 6].
-  # ECI is the 2nd largest eigenvector of M_tilde_C, and ICI for M_tilde_I.
-  # We calculate ICI first, then derive ECI, as ECI is the average ICI
-  # of industries present in a county.
-  message("  Step 3/7: Calculating Industry Complexity (ICI) and Economic Complexity (ECI)...")
+  if (length(keep_c) < 2 || length(keep_i) < 2) {
+    stop("Not enough positive-diversity counties or positive-ubiquity industries in year ", yr)
+  }
   
-  # Construct the matrix for the ICI eigenvector calculation
-  M_tilde_I_num <- t(M) %*% sweep(M, 1, Diversity_div, "/")
-  M_tilde_I <- sweep(M_tilde_I_num, 1, Ubiquity_div, "/")
+  Mtrim <- M[keep_c, keep_i, drop = FALSE]
+  kc    <- pmax(rowSums(Mtrim), 1)        # safe denominators
+  ki    <- pmax(colSums(Mtrim), 1)
   
-  # Eigen decomposition. The paper notes the second largest eigenvector is used.
-  # Eigenvalues are sorted in decreasing order by default.
-  eigen_I <- eigen(as.matrix(M_tilde_I))
-  ICI_vector <- Re(eigen_I$vectors[, 2]) # Take real part to handle potential floating point inaccuracies
+  # --- Symmetric ICI (second eigenvector of A_I) (eqs. 10–14) ---
+  # A_I = Di^{-1/2} * M' * Dc^{-1} * M * Di^{-1/2}
+  Dc_inv  <- Diagonal(x = 1 / kc)
+  Di_mh   <- Diagonal(x = 1 / sqrt(ki))
   
-  # Derive ECI from ICI (as per Hausmann & Hidalgo)
-  ECI_raw <- (M %*% ICI_vector) / Diversity_div
-  ECI_vector <- as.numeric(ECI_raw)
+  A_I <- Di_mh %*% (t(Mtrim) %*% Dc_inv %*% Mtrim) %*% Di_mh
+  # Largest eigenvector corresponds to trivial structure; take the second one
+  ev_I <- RSpectra::eigs_sym(A_I, k = 2, which = "LM")
+  v2_I <- as.numeric(ev_I$vectors[,2])
   
-  # Standardize vectors for interpretability (z-scores)
-  ECI_vector[is.infinite(ECI_vector) | is.nan(ECI_vector)] <- NA
-  ICI_vector[is.infinite(ICI_vector) | is.nan(ICI_vector)] <- NA
+  # Map back to raw ICI on trimmed industries
+  ICI_raw_trim <- v2_I  # already real; relative scale is fine
+  names(ICI_raw_trim) <- colnames(Mtrim)
   
-  ECI_std <- scale(ECI_vector)
-  ICI_std <- scale(ICI_vector)
+  # County ECI as average ICI of present industries (eq. 11/14 derivation)
+  ECI_raw_trim <- as.numeric( (Mtrim %*% ICI_raw_trim) / kc )
+  names(ECI_raw_trim) <- rownames(Mtrim)
   
-  ECI_df <- tibble(area_fips = counties, economic_complexity_index_county = as.numeric(ECI_std))
-  ICI_df <- tibble(naics_code = industries, industry_complexity_index_score = as.numeric(ICI_std))
+  # --- Co-location proximity φ (eqs. 15–16) ---
+  # U = M' M ; φ_{i,i'} = U_{i,i'} / max(U_{i,i}, U_{i',i'})
+  U <- t(Mtrim) %*% Mtrim
+  u_diag <- diag(U)
+  # Build dense φ safely at trimmed scale (industries are ~1–2k; manageable)
+  U_dense <- as.matrix(U)
+  max_den <- pmax(outer(u_diag, u_diag, FUN = pmax), 1)  # avoid 0/0
+  phi <- U_dense / max_den
+  diag(phi) <- 0
   
-  # --- 4. Calculate Proximity (phi) ---
-  # Based on co-location, as per equation 16.
-  message("  Step 4/7: Calculating Proximity (phi)...")
-  U <- t(M) %*% M # Co-occurrence matrix
-  diag_U <- diag(U) # This is also the Ubiquity vector
+  # --- Density d_{c,i} (eq. 19) ---
+  col_den   <- pmax(colSums(phi), 1)
+  density   <- as.matrix(Mtrim %*% phi) / rep(col_den, each = nrow(Mtrim))
+  rownames(density) <- rownames(Mtrim); colnames(density) <- colnames(Mtrim)
   
-  max_U_matrix <- outer(diag_U, diag_U, pmax)
+  # --- Strategic Index (eq. 21) & Strategic Gain (eq. 22) ---
+  ICI_vec <- ICI_raw_trim
+  ICI_vec[is.na(ICI_vec)] <- 0
+  M_abs   <- 1 - as.matrix(Mtrim)
   
-  phi <- U
-  phi[max_U_matrix > 0] <- U[max_U_matrix > 0] / max_U_matrix[max_U_matrix > 0]
-  phi[max_U_matrix == 0] <- 0
-  diag(phi) <- 0 # Proximity to self is set to 0
+  # SI_c = sum_i d_{c,i} * (1 - M_{c,i}) * ICI_i
+  SI_trim <- as.numeric(density %*% ( (1 - diag(ncol(density))) * 0 + ICI_vec )) # prep
+  # The above line just coerces vector length; do properly:
+  SI_trim <- rowSums( density * (M_abs * rep(ICI_vec, each = nrow(Mtrim))) )
   
-  # --- 5. Calculate Density ---
-  # Measures relatedness of a county's industries to a target industry (eq. 19).
-  message("  Step 5/7: Calculating Industry Density...")
-  density_den <- colSums(phi)
-  density_den_div <- ifelse(density_den == 0, 1, density_den)
+  # SG_{c,i} = [ sum_{i'} ( φ_{i,i'} / sum_{i''} φ_{i'',i'} ) * (1 - M_{c,i'}) * ICI_{i'} ] - d_{c,i} * ICI_i
+  phi_norm_by_den <- sweep(phi, 2, col_den, "/")
+  term1 <- (M_abs %*% (t(phi_norm_by_den) * ICI_vec))  # (C×I)
+  term2 <- density * rep(ICI_vec, each = nrow(density))
+  SG_trim <- term1 - term2
+  rownames(SG_trim) <- rownames(Mtrim); colnames(SG_trim) <- colnames(Mtrim)
   
-  density_num <- M %*% phi
-  density_matrix <- sweep(density_num, 2, density_den_div, FUN = "/")
+  # --- Standardize within year (z-score) ---
+  ECI_z <- zscore(ECI_raw_trim)
+  ICI_z <- zscore(ICI_raw_trim)
   
-  density_df <- as.data.frame(as.matrix(density_matrix)) %>%
-    rownames_to_column(var = "area_fips") %>%
-    pivot_longer(cols = -area_fips, names_to = "naics_code", values_to = "industry_density_for_county")
+  # --- Frame results & join back to full df_year ---
+  ECI_df <- tibble(area_fips = names(ECI_z),
+                   economic_complexity_index_county = as.numeric(ECI_z))
+  ICI_df <- tibble(naics_code = names(ICI_z),
+                   industry_complexity_index_score = as.numeric(ICI_z))
   
-  # --- 6. Calculate Strategic Index (SI) ---
-  # Measures value of absent industries weighted by density and ICI (eq. 21).
-  message("  Step 6/7: Calculating Strategic Index (SI)...")
-  M_absent <- 1 - M
-  term_to_sum <- density_matrix * M_absent
-  ICI_vector_named <- setNames(as.numeric(ICI_std), industries)
+  density_df <- as_tibble(density, rownames = "area_fips") |>
+    pivot_longer(-area_fips, names_to = "naics_code",
+                 values_to = "industry_density_for_county")
   
-  # Handle NAs in ICI before sweep
-  ICI_vector_named[is.na(ICI_vector_named)] <- 0
+  SI_df <- tibble(area_fips = names(SI_trim),
+                  strategic_index = as.numeric(SI_trim))
   
-  term_to_sum_weighted <- sweep(term_to_sum, 2, ICI_vector_named, FUN = "*")
-  SI_vector <- rowSums(term_to_sum_weighted)
+  SG_df <- as_tibble(SG_trim, rownames = "area_fips") |>
+    pivot_longer(-area_fips, names_to = "naics_code",
+                 values_to = "strategic_gain")
   
-  SI_df <- tibble(area_fips = counties, strategic_index = SI_vector)
-  
-  # --- 7. Calculate Strategic Gain (SG) ---
-  # Estimates improvement by adding a specific nascent industry (eq. 22).
-  message("  Step 7/7: Calculating Strategic Gain (SG)...")
-  phi_norm_by_den <- sweep(phi, 2, density_den_div, FUN = "/")
-  M_absent_ici <- sweep(M_absent, 2, ICI_vector_named, FUN = "*")
-  
-  SG_part1_matrix <- t(phi_norm_by_den %*% t(M_absent_ici))
-  SG_part2_matrix <- sweep(density_matrix, 2, ICI_vector_named, FUN = "*")
-  
-  SG_matrix <- SG_part1_matrix - SG_part2_matrix
-  
-  SG_df <- as.data.frame(as.matrix(SG_matrix)) %>%
-    rownames_to_column(var = "area_fips") %>%
-    pivot_longer(cols = -area_fips, names_to = "naics_code", values_to = "strategic_gain")
-  
-  # --- Final Assembly: Join all new metrics back to the original dataframe ---
-  message("  Joining all metrics back to the main data frame...")
-  final_df <- df %>%
-    mutate(
-      industry_comparative_advantage_county = if_else(!is.na(location_quotient) & location_quotient >= 1, 1, 0)
-    ) %>%
+  out <- df_year %>%
+    mutate(industry_comparative_advantage_county =
+             as.integer(!is.na(location_quotient) & location_quotient >= 1)) %>%
     left_join(ECI_df, by = "area_fips") %>%
     left_join(ICI_df, by = "naics_code") %>%
-    left_join(density_df, by = c("area_fips", "naics_code")) %>%
+    left_join(density_df, by = c("area_fips","naics_code")) %>%
     left_join(SI_df, by = "area_fips") %>%
-    left_join(SG_df, by = c("area_fips", "naics_code"))
+    left_join(SG_df, by = c("area_fips","naics_code"))
   
-  message("...done for ", df$year[1], ".\n")
-  return(final_df)
+  # Set ECI/ICI/density/SI/SG to NA for rows that were not in the core
+  out <- out %>%
+    mutate(
+      across(c(economic_complexity_index_county,
+               industry_complexity_index_score,
+               industry_density_for_county,
+               strategic_index, strategic_gain),
+             ~ if_else(complexity_core, .x, NA_real_))
+    )
+  
+  message("..done ", yr)
+  out
 }
 
-# =========================================================
-# --------- Generate final data frames for each year --------
-# --------- with enrichment, LQ, and complexity metrics ---
-# =========================================================
-TAPESTRY_2015 <- add_economic_complexity_metrics(read_and_enrich_year(2015))
-TAPESTRY_2016 <- add_economic_complexity_metrics(read_and_enrich_year(2016))
-TAPESTRY_2017 <- add_economic_complexity_metrics(read_and_enrich_year(2017))
-TAPESTRY_2018 <- add_economic_complexity_metrics(read_and_enrich_year(2018))
-TAPESTRY_2019 <- add_economic_complexity_metrics(read_and_enrich_year(2019))
-TAPESTRY_2020 <- add_economic_complexity_metrics(read_and_enrich_year(2020))
-TAPESTRY_2021 <- add_economic_complexity_metrics(read_and_enrich_year(2021))
-TAPESTRY_2022 <- add_economic_complexity_metrics(read_and_enrich_year(2022))
-TAPESTRY_2023 <- add_economic_complexity_metrics(read_and_enrich_year(2023))
-TAPESTRY_2024 <- add_economic_complexity_metrics(read_and_enrich_year(2024))
+# ---- Run for all years ----
+years <- 2015:2024
+tapestry_list <- map(years, ~ compute_complexity_for_year(read_and_enrich_year(.x)))
 
-# =========================================================
-# GLIMPSE FINAL DATA FRAME TO VERIFY NEW COLUMNS
-# =========================================================
-glimpse(TAPESTRY_2024)
+# Examples: access per-year data frame
+TAPESTRY_2015 <- tapestry_list[[1]]
+TAPESTRY_2024 <- tapestry_list[[length(tapestry_list)]]
+
+# Optional: save RDS per year
+# pwalk(list(tapestry_list, years),
+#       ~ saveRDS(..1, file = file.path("output", paste0("tapestry_", ..2, ".rds"))))
+
+# Quick check
+dplyr::glimpse(TAPESTRY_2024)
