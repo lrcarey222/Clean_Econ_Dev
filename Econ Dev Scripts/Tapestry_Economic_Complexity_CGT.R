@@ -374,4 +374,8 @@ years <- 2015:2024
 TAPESTRY_ALL_YEARS <- dplyr::bind_rows(tapestry_list)
 dplyr::glimpse(TAPESTRY_ALL_YEARS)
 
-
+write_csv(
+  TAPESTRY_ALL_YEARS,
+  file = file.path(TAPESTRY_DIR_NAICS6D, "Tapestry_Economic_Complexity_COUNTY_6D_NAICS_AUG_11_TRIAL.csv"),
+  na = "NA"
+)
