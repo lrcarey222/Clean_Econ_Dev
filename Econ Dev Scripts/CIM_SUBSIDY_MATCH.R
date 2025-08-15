@@ -180,9 +180,44 @@ get_state_county_lookup <- function(year = 2020) {
     if (inherits(ct, "try-error")) stop("Failed to download counties.")
     if (is.na(sf::st_crs(ct))) sf::st_crs(ct) <- CRS_GEO
     
-    st_map <- tigris::fips_codes %>%
-      distinct(state_code, state_abbr) %>%
-      mutate(state_code = stringr::str_pad(as.character(state_code), 2, pad = "0"))
+    # Debug: Check what columns are available in fips_codes
+    fips_cols <- names(tigris::fips_codes)
+    cat("[DEBUG] Available fips_codes columns:", paste(fips_cols, collapse = ", "), "\n")
+    
+    # Create state mapping with error handling
+    st_map <- try({
+      # Check for different possible column names
+      if ("state_abbr" %in% names(tigris::fips_codes)) {
+        tigris::fips_codes %>%
+          distinct(state_code, state_abbr) %>%
+          mutate(state_code = stringr::str_pad(as.character(state_code), 2, pad = "0"))
+      } else if ("state" %in% names(tigris::fips_codes)) {
+        tigris::fips_codes %>%
+          distinct(state_code, state) %>%
+          rename(state_abbr = state) %>%
+          mutate(state_code = stringr::str_pad(as.character(state_code), 2, pad = "0"))
+      } else {
+        # Fallback: create manual state mapping
+        data.frame(
+          state_code = stringr::str_pad(as.character(1:56), 2, pad = "0"),
+          state_abbr = c(state.abb, "DC", "PR", "VI", "AS", "GU", "MP")[1:56],
+          stringsAsFactors = FALSE
+        ) %>%
+          filter(!is.na(state_abbr))
+      }
+    }, silent = TRUE)
+    
+    if (inherits(st_map, "try-error")) {
+      cat("[WARN] Could not create state mapping, using fallback\n")
+      # Fallback state mapping
+      st_map <- data.frame(
+        state_code = c(stringr::str_pad(as.character(1:51), 2, pad = "0"), "11", "72"),
+        state_abbr = c(state.abb, "DC", "PR"),
+        stringsAsFactors = FALSE
+      )
+    }
+    
+    cat("[DEBUG] State mapping created with", nrow(st_map), "rows\n")
     
     ct %>%
       sf::st_transform(CRS_GEO) %>%
@@ -195,12 +230,33 @@ get_state_county_lookup <- function(year = 2020) {
         county_centroid = suppressWarnings(sf::st_point_on_surface(geometry)),
         county_lon = suppressWarnings(sf::st_coordinates(county_centroid)[,1]),
         county_lat = suppressWarnings(sf::st_coordinates(county_centroid)[,2]),
-        state = dplyr::coalesce(state_abbr, NA_character_)
+        # Use coalesce with fallback
+        state = dplyr::coalesce(
+          state_abbr, 
+          # Fallback mapping for common FIPS codes
+          case_when(
+            STATEFP == "01" ~ "AL", STATEFP == "02" ~ "AK", STATEFP == "04" ~ "AZ", STATEFP == "05" ~ "AR",
+            STATEFP == "06" ~ "CA", STATEFP == "08" ~ "CO", STATEFP == "09" ~ "CT", STATEFP == "10" ~ "DE",
+            STATEFP == "11" ~ "DC", STATEFP == "12" ~ "FL", STATEFP == "13" ~ "GA", STATEFP == "15" ~ "HI",
+            STATEFP == "16" ~ "ID", STATEFP == "17" ~ "IL", STATEFP == "18" ~ "IN", STATEFP == "19" ~ "IA",
+            STATEFP == "20" ~ "KS", STATEFP == "21" ~ "KY", STATEFP == "22" ~ "LA", STATEFP == "23" ~ "ME",
+            STATEFP == "24" ~ "MD", STATEFP == "25" ~ "MA", STATEFP == "26" ~ "MI", STATEFP == "27" ~ "MN",
+            STATEFP == "28" ~ "MS", STATEFP == "29" ~ "MO", STATEFP == "30" ~ "MT", STATEFP == "31" ~ "NE",
+            STATEFP == "32" ~ "NV", STATEFP == "33" ~ "NH", STATEFP == "34" ~ "NJ", STATEFP == "35" ~ "NM",
+            STATEFP == "36" ~ "NY", STATEFP == "37" ~ "NC", STATEFP == "38" ~ "ND", STATEFP == "39" ~ "OH",
+            STATEFP == "40" ~ "OK", STATEFP == "41" ~ "OR", STATEFP == "42" ~ "PA", STATEFP == "44" ~ "RI",
+            STATEFP == "45" ~ "SC", STATEFP == "46" ~ "SD", STATEFP == "47" ~ "TN", STATEFP == "48" ~ "TX",
+            STATEFP == "49" ~ "UT", STATEFP == "50" ~ "VT", STATEFP == "51" ~ "VA", STATEFP == "53" ~ "WA",
+            STATEFP == "54" ~ "WV", STATEFP == "55" ~ "WI", STATEFP == "56" ~ "WY", STATEFP == "72" ~ "PR",
+            TRUE ~ NA_character_
+          )
+        )
       ) %>%
       sf::st_drop_geometry() %>%
       select(state, county_name = NAME, county_norm, county_fips = GEOID, county_lon, county_lat)
   })
 }
+
 
 # ==============================================================================
 # PROGRAM KEYWORDS & ALIASES
