@@ -932,7 +932,7 @@ compute_stack_for_geo_year <- function(AF, geo_slug) {
   
   if (CFG$verbose_debug) .log("[stack] ", toupper(geo_slug), " | done | rows=", nrow(OUT),
                               " | ", .mem_str(), " | elapsed=", round(.tic() - t0, 2), "s")
-  OUT[]
+  return(list(metrics = OUT[], contributions = data.table()))
 }
 # ---------- END REPLACEMENT ---------------------------------------------------
 
