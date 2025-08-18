@@ -1,5 +1,10 @@
 # =============================================================================
-# Tapestry Employment (2001–2024) — Full Pipeline with 2024 Preview Gate
+# Tapestry Employment (2001–2024)
+#Leverages Tapestry data downloaded from https://tapestry.nkn.uidaho.edu/
+#Uses economic complexity computations described by Daboin et al (2018) here: https://www.brookings.edu/wp-content/uploads/2019/05/Technical-Paper.pdf
+#Attempts to generate six-digit NAICS economic complexity and relatedness matrices at the county, CBSA, CSA, and state level for years 2001-2024
+#What this script does NOT do: (a) transition industries (b) harmonization of NAICS between editions (c) harmonization of FIPS changes
+#Last updated by Ben Feshbach, 18 August 2025
 #
 # Implements:
 #   • Chunked read/aggregate of 6-digit NAICS employment (+establishments if present)
