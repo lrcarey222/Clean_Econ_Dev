@@ -51,7 +51,7 @@ state_counties<-us_counties %>%
 
 #State Operating Generation Capacity----------------------------
 #EIA Generation Capacity Data - Check it's the latest month available
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/june_generator2025.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/july_generator2025.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -83,7 +83,7 @@ op_gen_ira <- op_gen  %>%
          `Operating Year`>2021) 
 
 #State-Level
-abbr_opgen_12_23 <- op_gen %>%
+abbr_opgen_12_25 <- op_gen %>%
   filter(`Plant State`== state_abbreviation,
          `Operating Year` > 2011) %>%
   mutate(tech = ifelse(grepl("Natural Gas", tech), "Natural Gas", tech)) %>%
@@ -94,7 +94,7 @@ abbr_gen_12_24 <- op_gen %>%
   summarize(capacity=sum(`Nameplate Capacity (MW)`,na.rm=T)) %>%
   pivot_wider(names_from=`Operating Year`,values_from=capacity)
 
-gen_24 <- abbr_gen_12_24 %>%
+gen_24 <- abbr_gen_12_25 %>%
   pivot_longer(cols=c(`1891`:`2025`),names_to="Year",values_to="Value") %>%
   group_by(Year) %>%
   mutate(`Value`=ifelse(is.na(`Value`),0,`Value`),
@@ -766,7 +766,7 @@ ggplot(data=state_industrial,aes(x=Year,y=Expenditure.US.Dollars,fill=Source)) +
 
 
 #Electricity Price in Industrial Sector - SEDS Data-------------------------------------------
-seds_all <- read.csv('https://www.eia.gov/state/seds/sep_update/Complete_SEDS_update.csv') #NB: BIG file
+seds_all <- read.csv('https://www.eia.gov/state/seds/CDF/Complete_SEDS.csv') #NB: BIG file
 
 msn_descriptions <- data.frame(
   MSN=c("ESICD", #Electricity price in the industrial sector
@@ -788,7 +788,7 @@ seds_elec_pric_ind <- seds_all %>%
                     "ESICV", #Electricity expenditures in the industrial sector
                     "ESISB", #Electricity sales to the industrial sector excluding refinery use
                     "GDPRV"), #Real GDP
-         Year %in% 2002:2022) %>%
+         Year %in% 2002:2023) %>%
   left_join(msn_descriptions,by=c("MSN"="MSN")) %>%
   left_join(census_divisions, by=c("StateCode"="State.Code")) %>%
   left_join(seds_all %>% filter(MSN=="GDPRV"),by=c("Year"="Year","StateCode"="StateCode"), suffix = c("", "_gdp")) %>%

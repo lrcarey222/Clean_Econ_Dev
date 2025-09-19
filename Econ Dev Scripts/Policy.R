@@ -477,8 +477,85 @@ division_xchange <- xchange %>%
   pivot_wider(names_from=Topic,values_from=value) %>%
   write.csv(paste0(output_folder,"/",state_abbreviation,"_division_xchange.csv"),row.names=F)
 
-#Comparing Policies and Outcomes
-state_pol <- xchange_pol_index %>%
+
+
+# Path to the file you uploaded
+file_path <- paste0(raw_data,"State Climate Policy Dashboard - Full Download (1.28.25) 2.xlsx")
+
+# Tabs to process (skip metadata tabs)
+all_tabs <- excel_sheets(file_path)
+policy_tabs <- setdiff(all_tabs, c("README", "State Overview"))
+
+# ---- Helper: map Policy Status to numeric index ----
+status_to_index <- function(x) {
+  x <- str_to_lower(trimws(as.character(x)))
+  case_when(
+    x == "enacted" ~ 1,
+    x == "partially-enacted" ~ 0.5,
+    x == "in-progress" ~ 0.25,
+    x == "not-enacted" ~ 0,
+    TRUE ~ NA_real_
+  )
+}
+
+# ---- Read & combine all policy tabs ----
+read_policy_tab <- function(tab) {
+  # Read as-is; tabs share a common schema in this download
+  df <- read_excel(file_path, sheet = tab)
+  
+  # Keep a consistent set of columns if present
+  keep_cols <- c(
+    "Policy Area", "Policy Category", "Policy",
+    "State", "State Abbreviation", "Policy Status"
+  )
+  present_cols <- intersect(keep_cols, names(df))
+  
+  df %>%
+    select(any_of(present_cols)) %>%
+    mutate(
+      Source_Tab = tab,
+      Policy_Index = status_to_index(`Policy Status`)
+    )
+}
+
+policy_index_df <- map_dfr(policy_tabs, read_policy_tab) %>%
+  # Keep rows that actually represent state-level policy rows
+  filter(!is.na(State), !is.na(Policy), !is.na(`Policy Status`))
+
+# ---- Optional: composite scores ----
+# Per-state, per-Policy Area composite (simple mean of policy indices in the area)
+state_policy_scores <- policy_index_df %>%
+  group_by(State, `State Abbreviation`, `Policy Area`,`Policy Category`,`Policy`) %>%
+  summarize(
+    Area_Policy_Count = sum(!is.na(Policy_Index)),
+    Area_Index_Mean = mean(Policy_Index, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+state_area_scores <- policy_index_df %>%
+  group_by(State, `State Abbreviation`, `Policy Area`) %>%
+  summarize(
+    Area_Policy_Count = sum(!is.na(Policy_Index)),
+    Area_Index_Mean = mean(Policy_Index, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Per-state overall composite across *all* policies
+state_overall_scores <- state_area_scores %>%
+  group_by(State, `State Abbreviation`) %>%
+  summarize(
+    Overall_Policy_Count = sum(!is.na(Area_Policy_Count)),
+    Overall_Index_Mean = sum(Area_Index_Mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---- Optional: wide formats (if you want matrices) ----
+# Policy-by-state matrix (rows = policies, columns = states)
+policy_by_state_wide <- policy_index_df %>%
+  unite("Policy_Key", `Policy Area`, `Policy Category`, Policy, sep = " | ") %>%
+  select(Policy_Key, State, Policy_Index) %>%
+  distinct() %>%
+  pivot_wider(names_from = State, values_from = Policy_Index)
 
 
 
@@ -853,4 +930,84 @@ mountain_stc_1823<-stc_1823 %>%
   pivot_longer(cols=c(property_tax_gdp,sales_tax_gdp,fuel_tax_gdp,corp_inc_tax_gdp,ind_income_tax_gdp,severance_tax_gdp)) %>%
   pivot_wider(names_from=state_abbr,values_from=value) %>%
   write.csv("Downloads/mountain_taxes.csv")
+
+
+#SPOT Analysis---------------------------------
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+
+#url: https://www.spotforcleanenergy.org/policy/policyName/compareStateTool?compare=UNKNOWN%2CUNKNOWN%2CUNKNOWN%2CUNKNOWN
+file_path<-paste0(raw_data,"50 State Gap Analysis.xlsx")
+
+# Get all sheet names
+sheet_names <- excel_sheets(file_path)
+
+# Function to process each sheet
+process_sheet <- function(sheet_name) {
+  df <- read_excel(file_path, sheet = sheet_name, skip = 1) %>% # skip first row (headers)
+    rename(Question = 1, Answer = 2) %>% 
+    filter(!is.na(Answer)) %>% # drop category rows
+    mutate(
+      Policy_Index = case_when(
+        str_to_lower(Answer) == "yes" ~ 1,
+        str_to_lower(Answer) == "no" ~ 0,
+        str_detect(str_to_lower(Answer), "partial|some") ~ 0.5,
+        TRUE ~ NA_real_ # keep for manual review
+      ),
+      State = sheet_name
+    )
+  return(df)
+}
+
+# Apply to all sheets and combine
+policy_index_df <- map_dfr(sheet_names, process_sheet)
+
+# View result
+head(policy_index_df)
+
+#State Index
+spot <- policy_index_df %>%
+  filter(!is.na(Question)) %>%
+  mutate(State=gsub("_"," ",State),
+         State=str_to_title(State)) %>%
+  group_by(State) %>%
+  summarize(Policy_Index=mean(Policy_Index,na.rm=T)) %>%
+  arrange(desc(Policy_Index))
+
+elec_spot<-left_join(state_area_scores %>%
+                       filter(`Policy Area`=="Electricity"),
+                     states_rengen %>% 
+                       ungroup() %>%
+                       filter(`Operating Year`=="2024") %>%
+                       select(State,rengrowth_18_23),
+                     by=c("State"))
+
+elec_spot %>%
+  filter(State != "Louisiana") %>%
+  ggplot(aes(x = Area_Index_Mean, y = rengrowth_18_23)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = "lm") +   # remove state=, explicitly set method if you like
+  geom_text_repel(aes(label = State)) +         # use label aesthetic
+  theme_minimal()
+
+elec_price_index<-left_join(state_area_scores %>%
+                       filter(`Policy Area`=="Electricity"),
+                       seds_elec_pric_ind %>% 
+                       ungroup() %>%
+                       filter(`Year`=="2023",
+                              MSN=="ESICD") %>%
+                       select(State,Data),
+                     by=c("State"))
+
+elec_price_index %>%
+  #filter(State != "Louisiana") %>%
+  ggplot(aes(x = Area_Index_Mean, y = Data)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = "lm") +   # remove state=, explicitly set method if you like
+  geom_text_repel(aes(label = State)) +         # use label aesthetic
+  theme_minimal()
+
+write.csv(elec_price_index,"Downloads/elec_price.csv")
 
