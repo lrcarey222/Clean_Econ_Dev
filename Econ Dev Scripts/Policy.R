@@ -1011,3 +1011,140 @@ elec_price_index %>%
 
 write.csv(elec_price_index,"Downloads/elec_price.csv")
 
+
+#Electricity Price regression
+utility<-read_excel(paste0(raw_data,"egrid2023_data_metric_rev2.xlsx"),sheet=4,skip=1)
+
+utility_shares<-utility %>%
+  group_by(OPRNAME,PLFUELCT) %>%
+  summarize(cap_mw=sum(NAMEPCAP,na.rm=T)) %>%
+  group_by(OPRNAME) %>%
+  mutate(cap_share=cap_mw/sum(cap_mw)*100) %>%
+  select(-cap_mw) %>%
+  pivot_wider(names_from="PLFUELCT",values_from="cap_share") %>%
+  mutate(solar_share=sum(c(SOLAR),na.rm=T),
+         wind_share=sum(c(WIND),na.rm=T),
+         nuclear_share=sum(c(NUCLEAR),na.rm=T),
+         coal_share=sum(c(COAL),na.rm=T),
+         gas_share=sum(c(GAS),na.rm=T),) %>%
+  select(OPRNAME,solar_share,wind_share,,nuclear_share,coal_share,gas_share)
+
+utility_total<-utility %>%
+  group_by(OPRNAME) %>%
+  summarize(cap_mw=sum(NAMEPCAP,na.rm=T)) 
+
+
+utility_cbsa <- utility %>%
+  mutate(FIPSST=as.numeric(FIPSST),
+         FIPSCNTY=as.numeric(FIPSCNTY)) %>%
+  left_join(county_cbsa,by=c("FIPSST"="FIPS.State.Code",
+                             "FIPSCNTY"="FIPS.County.Code")) %>%
+  distinct(CBSA.Title,OPRNAME,BANAME) %>% 
+  left_join(all_geos %>%
+              filter(geo=="Metro Area") %>%
+              select(geo_name,gdp,`Electricity Consumption Renewable Percentage`,
+                     `Utility Solar Potential (MWh)`,`Wind Potential (MWh)`,
+                     man_share,med_house_inc,pov_rate,PropertyValueUSD,pop),
+            by=c("CBSA.Title"="geo_name"))
+
+
+elec_policy<- state_policy_scores %>%
+  filter(`Policy Area`=="Electricity") %>%
+  select(`State Abbreviation`,Policy, `Area_Index_Mean`) %>%
+  pivot_wider(names_from="Policy",values_from="Area_Index_Mean") %>%
+  left_join(state_vars,by=c("State Abbreviation"="State.Code")) %>%
+  left_join(rtos, by=c("State Abbreviation"="abbr"))
+
+
+utility_res_price<-read_excel("Downloads/table_6.xlsx",skip=2)
+
+utility_res_price2 <- utility_res_price %>%
+  fuzzy_left_join(utility_shares,by=c("Entity"="OPRNAME"),
+                  match_fun = ~ stringdist::stringdist(.x, .y, method = "jw") < 0.1) %>%
+  select(-OPRNAME) %>%
+  fuzzy_left_join(utility_total,by=c("Entity"="OPRNAME"),
+                  match_fun = ~ stringdist::stringdist(.x, .y, method = "jw") < 0.1) %>%
+  select(-OPRNAME) %>%
+  fuzzy_left_join(utility_cbsa,by=c("Entity"="OPRNAME"),
+                  match_fun = ~ stringdist::stringdist(.x, .y, method = "jw") < 0.1) %>%
+  left_join(elec_policy,by=c("State"="State Abbreviation"))
+
+elec_policy_clean <- utility_res_price2 %>%
+  filter(!is.na(OPRNAME)) %>%
+  select(`Average Price (cents/kWh)`,
+         #BANAME,
+         cap_mw,
+         solar_share,
+         wind_share,
+         nuclear_share,
+         coal_share,
+         gas_share,
+         Ownership,
+         `Community Choice Aggregation`,
+         `Distributed Generation Carve-out`,
+         `Net Metering`,
+         `Shared Renewables`,
+         `Coal Phaseouts`,
+         `Coal Plant Securitization`,
+         `Clean Energy Plans`,
+         `Clean Energy and Renewable Portfolio Standards`,
+         `Electricity Greenhouse Gas Emissions Reduction Targets`,
+         `Energy Storage Targets`,
+         `Interconnection Standards`,
+         #demshare_state,
+         gdp,
+         corporate_tax,
+         state_gdp_5yr,
+         cnbc_rank,
+         climate_policy_index,
+         `Electricity Consumption Renewable Percentage`,
+         `Utility Solar Potential (MWh)`,`Wind Potential (MWh)`,
+         man_share,med_house_inc,pov_rate,PropertyValueUSD
+         )
+
+# Fit the model
+model <- lm(`Average Price (cents/kWh)` ~ ., data = elec_policy_clean)
+
+# View results
+summary(model)
+
+# Packages
+library(fixest)   # great package for FE models with robust SEs
+
+# Build a dataset with just the relevant variables + IDs for FEs
+fe_data <- utility_res_price2 %>%
+  filter(!is.na(OPRNAME)) %>%
+  select(`Average Price (cents/kWh)`,
+         OPRNAME, State, CBSA.Title,    # <-- adjust if you have a metro identifier column
+         `Community Choice Aggregation`,
+         `Distributed Generation Carve-out`,
+         `Net Metering`,
+         `Shared Renewables`,
+         `Coal Phaseouts`,
+         `Coal Plant Securitization`,
+         `Clean Energy Plans`,
+         `Clean Energy and Renewable Portfolio Standards`,
+         `Electricity Greenhouse Gas Emissions Reduction Targets`,
+         `Energy Storage Targets`,
+         `Interconnection Standards`) %>%
+  mutate(
+    State = factor(State),
+    OPRNAME = factor(OPRNAME),
+    CBSA.Title = factor(CBSA.Title)
+  )
+
+# Fixed-effects regression: price on policy variables + FE for utility + state + metro
+fe_model <- feols(
+  `Average Price (cents/kWh)` ~
+    `Community Choice Aggregation` + `Distributed Generation Carve-out` +
+    `Net Metering` + `Shared Renewables` + `Coal Phaseouts` +
+    `Coal Plant Securitization` + `Clean Energy Plans` +
+    `Clean Energy and Renewable Portfolio Standards` +
+    `Electricity Greenhouse Gas Emissions Reduction Targets` +
+    `Energy Storage Targets` + `Interconnection Standards`
+  | OPRNAME + CBSA.Title,   # utility & metro FE, NO state FE
+  data = fe_data,
+  cluster = "State"
+)
+summary(fe_model)
+

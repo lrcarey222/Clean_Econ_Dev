@@ -130,18 +130,19 @@ geo_long <- geo %>%
   filter(!is.na(geo_name))
 
 #CIM Recent Announcements------------------------------
-investment<- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/quarterly_actual_investment.csv',skip=5)
-facilities <- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/manufacturing_energy_and_industry_facility_metadata.csv',skip=5)
-socioecon<- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv',skip=5)
+investment<- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/quarterly_actual_investment.csv',skip=5)
+facilities <- read.csv('OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/manufacturing_energy_and_industry_facility_metadata.csv',skip=5)
 
 facilities_clean <- facilities %>%
-  as.data.frame() %>%
-  mutate(fips=county_2020_geoid) %>%
-  #select(unique_id:Production_Date,coal_closure_community:energy_community,GEOID) %>%
-  mutate(announce_year=substr(Announcement_Date,1,7))  %>%
-  rename(cd_119=CD119_2024_Name) %>%
-  left_join(geo %>%
-              select(-cd_119),by="fips") %>%
+  mutate(
+    fips = county_2020_geoid,
+    Announcement_Date = na_if(str_trim(Announcement_Date), ""),         # "" -> NA
+    announce_date = parse_date_time(Announcement_Date, 
+                                    orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+    announce_year = year(announce_date)                                 # 4-digit year
+  ) %>%
+  rename(cd_119 = CD119_2024_Name) %>%
+  left_join(geo %>% select(-cd_119), by = "fips") %>%
   distinct()
 
 #Technology
@@ -245,7 +246,9 @@ results_list <- list()
 for (geog in geographies) {
   # Process data for the current geography
   facilities_geog_total <- facilities_clean %>%
-    mutate(announce_year = as.Date(Announcement_Date)) %>%
+    mutate(announce_date = parse_date_time(Announcement_Date, 
+                                           orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+           announce_year = year(announce_date)   ) %>%
     filter(Investment_Status != "",
            announce_year > "2022-08-15") %>%
     mutate(Estimated_Total_Facility_CAPEX = ifelse(is.na(Estimated_Total_Facility_CAPEX), 0, Estimated_Total_Facility_CAPEX)) %>%
@@ -285,7 +288,9 @@ results_list <- list()
 for (geog in geographies) {
   facilities_geog_total <- facilities_clean %>%
     mutate(
-      announce_year = as.Date(Announcement_Date),
+      announce_date = parse_date_time(Announcement_Date, 
+                                      orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+      announce_year = year(announce_date)   ,
       Estimated_Total_Facility_CAPEX = ifelse(is.na(Estimated_Total_Facility_CAPEX), 0, Estimated_Total_Facility_CAPEX)
     ) %>%
     filter(
@@ -338,7 +343,9 @@ results_list <- list()
 for (geog in geographies) {
   # Process data for the current geography
   facilities_geog_total <- facilities_clean %>%
-    mutate(announce_year=as.Date(Announcement_Date)) %>%
+    mutate(announce_date = parse_date_time(Announcement_Date, 
+                                           orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+           announce_year = year(announce_date)   ) %>%
     filter(announce_year > "2022-08-15",
            Investment_Status != "C",
            Investment_Status != "R") %>%
@@ -365,7 +372,9 @@ for (geog in geographies) {
   facility_company <- facilities_clean %>%
     filter(Investment_Status != "C",
            Investment_Status != "R") %>%
-    mutate(date = as.Date(Announcement_Date)) %>%
+    mutate(announce_date = parse_date_time(Announcement_Date, 
+                                           orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+           announce_year = year(announce_date)   ) %>%
     filter(date>"2022-08-15") %>%
     mutate(Company = gsub("\\([0-9]+\\)", "", Company),
            Company=gsub(", LLC","",Company)) %>%
@@ -472,7 +481,10 @@ facilities_all <-facilities_total %>%
 facilities_clean_geo<-facilities_clean %>%
   select(-percent_district,
          -State) %>%
-  filter(as.Date(Announcement_Date)>"2022-08-01") %>%
+  mutate(announce_date = parse_date_time(Announcement_Date, 
+                                         orders = c("mdy","ymd","mdY","m/d/y","m/d/Y")),
+         announce_year = year(announce_date)   ) %>%
+  filter(announce_date>2022-08-01) %>%
   rename("State"="State.Name",
          "Economic Area" = "PEA",
          "Metro Area"="CBSA.Title",
@@ -482,7 +494,7 @@ facilities_clean_geo<-facilities_clean %>%
   distinct(Region,Division,State,`Economic Area`,`Metro Area`,`Congressional District`,`County`,Company,Decarb_Sector,Technology,Estimated_Total_Facility_CAPEX,Latitude,Longitude) 
 
 #Renewable Energy Capacity-------------------
-url <- 'https://www.eia.gov/electricity/data/eia860m/xls/february_generator2025.xlsx'
+url <- 'https://www.eia.gov/electricity/data/eia860m/xls/august_generator2025.xlsx'
 destination_folder<-'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/States Data/'
 file_path <- paste0(destination_folder, "eia_op_gen.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
@@ -625,6 +637,155 @@ tech_cap <- final_results %>%
          growth_21_24 = round((`2024`-`2021`),1))
 
 
+
+#Electricity Price-----------------------------------
+
+utility<-read_excel(paste0(raw_data,"egrid2023_data_metric_rev2.xlsx"),sheet=4,skip=1)
+
+utility<-utility %>% 
+  distinct(OPRNAME,BANAME,FIPSST,FIPSCNTY) %>% 
+  mutate(fips=as.numeric(paste0(FIPSST,FIPSCNTY))) %>%
+  left_join(geo,by=c("fips")) 
+
+utility_res_price<-read_excel(paste0(raw_data,"utility_res_price.xlsx"),skip=2)
+
+utility_res_price2 <- utility_res_price %>%
+  fuzzy_left_join(utility,by=c("Entity"="OPRNAME"),
+                  match_fun = ~ stringdist::stringdist(.x, .y, method = "jw") < 0.1)
+
+
+results_list <- list()
+
+for (geog in geographies) {
+  if (geog == "cd_119") {
+    # Special case for cd_119
+    elec_price <- utility_res_price2 %>%
+      group_by(!!sym(geog)) %>%
+      summarize(
+        across(
+          c(`Average Price (cents/kWh)`),
+          ~ weighted.mean(.x, w = `Customers (Count)` * percent_district / 100, na.rm = TRUE)
+        ),
+        .groups = "drop"
+      )
+  } else {
+    # General case for other geographies
+    elec_price <- utility_res_price2 %>%
+      group_by(!!sym(geog)) %>%
+      distinct(!!sym(geog), `Average Price (cents/kWh)`,`Customers (Count)`) %>%
+      summarize(
+        across(
+          c(`Average Price (cents/kWh)`),
+          ~ weighted.mean(.x, w = `Customers (Count)`, na.rm = TRUE)
+        ),
+        .groups = "drop"
+      )
+  }
+  
+  results_list[[geog]] <- elec_price
+}
+
+# Combine all results into one dataframe
+elec_price <- bind_rows(results_list)
+elec_price <- elec_price %>%
+  ungroup() %>%
+  mutate(geo = case_when(
+    !is.na(State.Name) ~ "State",
+    !is.na(cd_119) ~ "Congressional District",
+    !is.na(PEA) ~ "Economic Area",
+    !is.na(GeoName) ~"County",
+    TRUE ~ "Metro Area"
+  )) %>%
+  mutate(geo_name = case_when(
+    !is.na(State.Name) ~ State.Name,
+    !is.na(cd_119) ~ cd_119,
+    !is.na(PEA) ~ PEA,
+    !is.na(GeoName) ~ GeoName,
+    TRUE ~ CBSA.Title
+  )) %>%
+  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
+  select(-State.Name, -cd_119, -PEA, -CBSA.Title,-GeoName) 
+
+utility_res_price_22<-read_excel(paste0(raw_data,"EIA_861/ESR_22/","table_6.xlsx"),skip=2)
+utility_res_price_21<-read_excel(paste0(raw_data,"EIA_861/ESR_21/","table6.xlsx"),skip=2)
+utility_res_price_20<-read_excel(paste0(raw_data,"EIA_861/ESR_20/","table6.xlsx"),skip=2)
+
+utility_res_price3 <- utility_res_price_22 %>%
+  rename(price_22=`Average Price (cents/kWh)`,
+         customers_22=`Customers (Count)`) %>%
+  select(Entity,price_22,customers_22) %>%
+  left_join(utility_res_price_21 %>%
+              rename(price_21=`Average Price (cents/kWh)`,
+                     customers_21=`Customers (Count)`) %>%
+              select(Entity,price_21,customers_21),by=c("Entity")) %>%
+  left_join(utility_res_price_20 %>%
+              rename(price_20=`Average Price (cents/kWh)`,
+                     customers_20=`Customers (Count)`) %>%
+              select(Entity,price_20,customers_20),by=c("Entity")) %>%
+  mutate(price_22=as.numeric(price_22),
+         price_21=as.numeric(price_21),
+         price_20=as.numeric(price_20)) %>%
+  fuzzy_left_join(utility,by=c("Entity"="OPRNAME"),
+                  match_fun = ~ stringdist::stringdist(.x, .y, method = "jw") < 0.1)
+
+
+results_list <- list()
+
+for (geog in geographies) {
+  if (geog == "cd_119") {
+    # Special case for cd_119
+    elec_price2 <- utility_res_price3 %>%
+      group_by(!!sym(geog)) %>%
+      summarize(
+        across(
+          c(price_22,price_21,price_20),
+          ~ weighted.mean(.x, w = customers_22 * percent_district / 100, na.rm = TRUE)
+        ),
+        .groups = "drop"
+      )
+  } else {
+    # General case for other geographies
+    elec_price2 <- utility_res_price3 %>%
+      group_by(!!sym(geog)) %>%
+      distinct(!!sym(geog), price_22,price_21,price_20,customers_22) %>%
+      summarize(
+        across(
+          c(price_22,price_21,price_20),
+          ~ weighted.mean(.x, w = customers_22, na.rm = TRUE)
+        ),
+        .groups = "drop"
+      )
+  }
+  
+  results_list[[geog]] <- elec_price2
+}
+
+elec_price2 <- bind_rows(results_list)
+elec_price2 <- elec_price2 %>%
+  ungroup() %>%
+  mutate(geo = case_when(
+    !is.na(State.Name) ~ "State",
+    !is.na(cd_119) ~ "Congressional District",
+    !is.na(PEA) ~ "Economic Area",
+    !is.na(GeoName) ~"County",
+    TRUE ~ "Metro Area"
+  )) %>%
+  mutate(geo_name = case_when(
+    !is.na(State.Name) ~ State.Name,
+    !is.na(cd_119) ~ cd_119,
+    !is.na(PEA) ~ PEA,
+    !is.na(GeoName) ~ GeoName,
+    TRUE ~ CBSA.Title
+  )) %>%
+  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
+  select(-State.Name, -cd_119, -PEA, -CBSA.Title,-GeoName) 
+
+elec_price<-elec_price %>%
+  rename(price_23=`Average Price (cents/kWh)`) %>%
+  left_join(elec_price2,by=c("geo","geo_name")) %>%
+  mutate(elec_inf_2223=price_23/price_22-1,
+         elec_inf_2023=price_23/price_20-1)
+
 #Electricity Consumption------------------------
 
 # Define the URL
@@ -715,6 +876,10 @@ matched <- matched %>%
   select(ID,NAME.x,STATE,CNTRL_AREA,HOLDING_CO,NET_GEN,CUSTOMERS,STATEFP,COUNTYFP,GEOID) %>%
   mutate(id=as.numeric(ID))
 
+rtos<-matched %>%
+  distinct(STATEFP, CNTRL_AREA) %>%
+  mutate(STATEFP=as.numeric(STATEFP)) %>%
+  left_join(states_simple,by=c("STATEFP"="fips"))
 
 electricity_maps_match<-electricity_maps %>%
   mutate(Zone.Name=case_when(
@@ -794,31 +959,31 @@ elec_grid<-elec_grid %>%
   mutate("Grid Carbon Intensity Rank"=rank(-`Electricity Consumption Carbon Intensity (CO2eq/kWh)`),
          "Grid Renewables Percentage Rank"=rank(-`Electricity Consumption Renewable Percentage`))
 
-#2022 Average Manufacturing Pay------------
-cbp_2022_nat <- getCensus(
+#2023 Average Manufacturing Pay------------
+cbp_2023_nat <- getCensus(
   name = "cbp",
   vars=c("NAICS2017",
          "PAYANN",
          "EMP"),
   region = "us:*",
-  vintage = 2022)
+  vintage = 2023)
 
-manshare_us <- cbp_2022_nat %>%
+manshare_us <- cbp_2023_nat %>%
   filter(NAICS2017 %in% c("31-33", "00")) %>%
   select(-PAYANN) %>%
   pivot_wider(names_from = NAICS2017, values_from = EMP) %>%
   mutate(man_share = round(`31-33` / `00` * 100, 1))
 
-cbp_2022 <- getCensus(
+cbp_2023 <- getCensus(
   name = "cbp",
   vars=c("STATE",
          "NAICS2017",
          "PAYANN",
          "EMP"),
   region = "county:*",
-  vintage = 2022)
+  vintage = 2023)
 
-manpay <- cbp_2022 %>%
+manpay <- cbp_2023 %>%
   filter(NAICS2017 %in% c("31-33")) %>%
   mutate(worker_pay=PAYANN/EMP*1000,
          fips=as.numeric(paste0(state,county))) %>%
@@ -879,9 +1044,9 @@ manpay_geo<-manpay_geo %>%
   mutate(Manpay_rank=rank(-man_pay))
 
 
-##2022 Average Manufacturing Share of Employment
+##2023 Average Manufacturing Share of Employment
 
-cbp_2022<-cbp_2022 %>%
+cbp_2023<-cbp_2023 %>%
   mutate(fips=as.numeric(paste0(state,county))) %>%
   left_join(geo,by="fips")
 results_list <- list()
@@ -889,7 +1054,7 @@ results_list <- list()
 for (geog in geographies) {
   if (geog == "cd_119") {
     # Special case for cd_119
-    manshare <- cbp_2022 %>%
+    manshare <- cbp_2023 %>%
       filter(NAICS2017 %in% c("31-33", "00")) %>%
       group_by(!!sym(geog), NAICS2017) %>%
       summarize(
@@ -900,7 +1065,7 @@ for (geog in geographies) {
       mutate(man_share = round(`31-33` / `00` * 100, 1))
   } else {
     # General case for other geographies
-    manshare <- cbp_2022 %>%
+    manshare <- cbp_2023 %>%
       filter(NAICS2017 %in% c("31-33", "00")) %>%
       distinct(!!sym(geog),NAICS2017,EMP) %>%
       group_by(!!sym(geog), NAICS2017) %>%
@@ -2057,34 +2222,6 @@ innovation_geo<-innovation_geo %>%
   filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") 
 
 
-#Put County-level Together---------------------
-
-all_geos <- geo_long_all %>%
-  left_join(rengen,by=c("geo","geo_name")) %>%  
-  left_join(facilities_all,by=c("geo","geo_name")) %>%
-  ungroup() %>% 
-  left_join(geo_credits,by=c("geo","geo_name")) %>%
-  left_join(fed_inv_geo,by=c("geo","geo_name")) %>%
-  left_join(elec_grid,by=c("geo","geo_name")) %>%
-  left_join(supplycurve_geo,by=c("geo","geo_name")) %>%
-  left_join(tech_pot_geo,by=c("geo","geo_name")) %>%
-  left_join(county_gdp_ind,by=c("geo","geo_name")) %>%
-  left_join(manpay_geo,by=c("geo","geo_name"))%>%
-  left_join(manshare,by=c("geo","geo_name")) %>%
-  left_join(vit,by=c("geo","geo_name")) %>%
-  left_join(pop,by=c("geo","geo_name")) %>%
-  left_join(prop,by=c("geo","geo_name")) %>%
-  left_join(life_geo,by=c("geo","geo_name")) %>%
-  left_join(pres2024,by=c("geo","geo_name")) %>%
-  left_join(innovation_geo,by=c("geo","geo_name")) %>%
-  distinct() %>%
-  mutate(across(where(is.numeric), ~ replace_na(., 0))) %>%
-  select(-state_abbr,-State,-Region,-Division)
-
-write.csv(all_geos %>%
-            filter(geo=="Congressional District") %>%
-            select(-gdp) %>%
-            arrange(desc(total_investment)),"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Congressional District Data.csv")
 
 
 ##STATE VARIABLES------------------------------
@@ -2143,17 +2280,22 @@ xchange_pol_index<-xchange_pol_index %>%
 
 #State Emissions------------
 
-url<-'https://www.eia.gov/environment/emissions/state/excel/table1.xlsx'
+url<-'https://www.eia.gov/state/seds/sep_sum/html/xls/CO2_total.xlsx'
 destination_folder<-"C:/Users/LCarey/Downloads/"
 file_path <- paste0(destination_folder, "eia_ems.xlsx")
 downloaded_content <- GET(url, write_disk(file_path, overwrite = TRUE))
-state_ems <- read_excel(file_path, sheet = 1,skip=4)
+state_ems <- read_excel(file_path, sheet = 2,skip=2)
 
 state_ems<-state_ems %>%
-  mutate(state_ems_change_1722 = round((`2022`-`2017`)/`2017`*100,3)) %>%
-  select(State,`2022`,state_ems_change_1722) %>%
-  rename("emissions_2022"="2022") 
+  mutate(state_ems_change_1823 = round((`2023`-`2018`)/`2018`*100,3)) %>%
+  select(State,`2023`,state_ems_change_1823) %>%
+  rename("emissions_2023"="2023") 
 
+state_ems_cap<-read_excel(file_path, sheet = 3,skip=2)
+state_ems_cap<-state_ems_cap %>%
+  mutate(state_emscap_change_1823 = round((`2023`-`2018`)/`2018`*100,3)) %>%
+  select(State,`2023`,state_emscap_change_1823) %>%
+  rename("emissions_capita_2023"="2023") 
 
 
 #Taxes------------
@@ -2238,6 +2380,36 @@ cnbc<-cnbc %>%
 
 
 
+#Put County-level Together---------------------
+
+all_geos <- geo_long_all %>%
+  left_join(rengen,by=c("geo","geo_name")) %>%  
+  left_join(facilities_all,by=c("geo","geo_name")) %>%
+  ungroup() %>% 
+  left_join(geo_credits,by=c("geo","geo_name")) %>%
+  left_join(fed_inv_geo,by=c("geo","geo_name")) %>%
+  left_join(elec_grid,by=c("geo","geo_name")) %>%
+  left_join(elec_price,by=c("geo","geo_name")) %>%
+  left_join(supplycurve_geo,by=c("geo","geo_name")) %>%
+  left_join(tech_pot_geo,by=c("geo","geo_name")) %>%
+  left_join(county_gdp_ind,by=c("geo","geo_name")) %>%
+  left_join(manpay_geo,by=c("geo","geo_name"))%>%
+  left_join(manshare,by=c("geo","geo_name")) %>%
+  left_join(vit,by=c("geo","geo_name")) %>%
+  left_join(pop,by=c("geo","geo_name")) %>%
+  left_join(prop,by=c("geo","geo_name")) %>%
+  left_join(life_geo,by=c("geo","geo_name")) %>%
+  left_join(pres2024,by=c("geo","geo_name")) %>%
+  #left_join(innovation_geo,by=c("geo","geo_name")) %>%
+  distinct() %>%
+  mutate(across(where(is.numeric), ~ replace_na(., 0))) %>%
+  select(-state_abbr,-State,-Region,-Division)
+
+write.csv(all_geos %>%
+            filter(geo=="Congressional District") %>%
+            select(-gdp) %>%
+            arrange(desc(total_investment)),"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Congressional District Data.csv")
+
 ##Putting State Variables Together-------------------
 state_vars<- census_divisions %>%
   left_join(gjf_statetotal_1924 %>%
@@ -2246,10 +2418,11 @@ state_vars<- census_divisions %>%
               filter(geo=="State") %>%
               select(-geo,-partisan)%>%
               rename("demshare_state"="demshare"),by=c("State"="geo_name")) %>%
-  left_join(ind_price,by=c("State.Code"="State")) %>%
+  #left_join(ind_price,by=c("State.Code"="State")) %>%
   left_join(eia_gas_2024,by=c("State"="state")) %>%
   left_join(corporate_tax,by=c("State"="State")) %>%
-  left_join(state_ems,by=c("State"="State")) %>%
+  left_join(state_ems,by=c("State.Code"="State")) %>%
+left_join(state_ems_cap,by=c("State.Code"="State")) %>%
   left_join(xchange_pol_index,by=c("State.Code"="abbr")) %>%
   left_join(gdp_q %>%
               select(GeoName,state_gdp_1yr,state_gdp_5yr),
@@ -2506,7 +2679,7 @@ normalized_geos <- all_geos %>%
       0.025*prof_science_tech_5yrgdp+
       0.1 * (1 - man_pay) +
       0.1 * (man_share) +
-      0.15 * (1 - ind_price_cents_kwh) +
+      0.15 * (1 - price_23) +
       0.15*(1-gas_price)+
       0.15 * (1 - PropertyValueUSD) +
       0.1 * (1 - cnbc_rank) +
@@ -2518,18 +2691,20 @@ normalized_geos <- all_geos %>%
       0.2 * (1 - emp_pop) +
       0.3 * (1 - life_expectancy) +
       0.1 * (1 - vacancy),
-    energy_clim_index = 0.2*Strategic_Feasibility +
+    energy_clim_index = 0.1*Strategic_Feasibility +
       0.1 * climate_policy_index +
       0.1 * inv_gdp +
       0.1 * `Electricity Consumption Carbon Intensity (CO2eq/kWh)` +
       0.1 * `Electricity Consumption Renewable Percentage` +
-      0.5 * (1-Solar_cost_rank)+
-      0.5 * (1-Wind_cost_rank)+
-      0.5 * (1-Geothermal_cost_rank)+
+      0.1 * (1-Solar_cost_rank)+
+      0.1 * (1-Wind_cost_rank)+
+      0.1 * (1-Geothermal_cost_rank)+
       0.1 * inv_gdp +
       0.1 * clean_share +
       0.1 * growth_19_24_Clean +
-      0.1 * state_ems_change_1722
+      0.1 * state_ems_change_1823+
+      0.1 * emissions_capita_2023+
+      0.1 * state_emscap_change_1823
   ) %>%
   ungroup() %>% # Ungroup after rowwise operations
   distinct()
@@ -2552,7 +2727,7 @@ all_geo_data<-all_geos %>%
   left_join(index,by=c("geo","geo_name")) %>%
   distinct() 
 
-all_geo_index<-all_geos %>%
+all_geo_index<-all_geo_data %>%
   select(geo,
          geo_name,
          invest_index,
@@ -2565,7 +2740,7 @@ all_geo_index<-all_geos %>%
          prof_science_tech_5yrgdp,
          man_pay,
          man_share,
-         ind_price_cents_kwh,gas_price,
+         `Average Price (cents/kWh)`,gas_price,
          PropertyValueUSD,
          cnbc_rank,
          state_gdp_5yr,
@@ -2589,7 +2764,9 @@ all_geo_index<-all_geos %>%
          inv_gdp,
          clean_share,
          growth_19_24_Clean,
-         state_ems_change_1722
+         state_ems_change_1823,
+         emissions_capita_2023,
+         state_emscap_change_1823
   )
 
 write.csv(all_geo_index %>%
