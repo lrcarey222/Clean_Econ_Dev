@@ -1,4 +1,8 @@
 #Generic Setup for CRED analysis
+#Set the Working Directory to your Username and update output folder for saved charts etc
+setwd("C:/Users/LCarey/")
+output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
+
 
 raw_data<-"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/"
 
@@ -7,9 +11,6 @@ raw_data<-"OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Econo
 state_name <- "Montana"
 state_abbreviation <- "MT"
 
-#Set the Working Directory to your Username and update output folder for saved charts etc
-setwd("C:/Users/LCarey/")
-output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Slide Decks/States/",state_abbreviation)
 
 
 # Libraries

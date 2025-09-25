@@ -576,7 +576,7 @@ critical_min_reserves<-bind_rows(cobalt_res,
 critical_min_res<-critical_min_reserves %>%
   filter(data_type=="index") %>%
   group_by(Country,tech,supply_chain,category,data_type,source) %>%
-  summarize(value=weighted.mean(value,w=share_24,na.rm=T)) %>%   #SM correction to share 24: share 23 does not exist
+  summarize(value=weighted.mean(value,w=share_24,na.rm=T)) %>%   
   mutate(variable=str_glue("{tech} Reserves"),
          explanation="Weighted average of reserve availability by share of demand in technology") %>%
   filter(value>0) %>%
@@ -876,6 +876,99 @@ critical_min_prod<-critical_min_production %>%
   ) %>%
   group_by(tech, supply_chain, category, data_type, source, variable, explanation) %>%
   complete(Country = all_countries, fill = list(value = 0)) 
+
+#Critical Minerals - USGS Data ----------------------------------
+usgs <- read.csv(paste0(raw_data,"MCS2025_World_Data.csv")) %>%
+  mutate(COMMODITY = recode(COMMODITY,
+    "Platinum-Group metals"="PGMs"
+  ),
+  RESERVES_2024=as.numeric(RESERVES_2024)) 
+
+# helper flags
+is_world <- function(x) str_detect(x, regex("^World", ignore_case = TRUE))
+is_other <- function(x) str_detect(x, regex("^Other", ignore_case = TRUE))
+
+# S-curve that expects a percentile r in [0,1]
+scurve_from_rank <- function(r, gamma = 0.5) (r^gamma) / (r^gamma + (1 - r)^gamma)
+
+# Weighted mid-rank percentile (handles ties like percent_rank's "mid" behavior)
+weighted_midrank <- function(x, w) {
+  res <- rep(NA_real_, length(x))
+  ok  <- !is.na(x) & !is.na(w) & w > 0
+  if (!any(ok)) return(res)
+  xv <- x[ok]; wv <- w[ok]
+  tot <- sum(wv)
+  u   <- sort(unique(xv))
+  lower <- vapply(u, function(v) sum(wv[xv < v]), numeric(1))
+  equal <- vapply(u, function(v) sum(wv[xv == v]), numeric(1))
+  ranks <- (lower + 0.5 * equal) / tot
+  res[ok] <- ranks[match(xv, u)]
+  res
+}
+
+# Choose M dynamically per group/column (fallback to 10)
+estimate_M <- function(share, other_flag, world_flag) {
+  other_share <- sum(share[other_flag], na.rm = TRUE)
+  named_min   <- suppressWarnings(min(share[!other_flag & !world_flag & share > 0], na.rm = TRUE))
+  if (is.finite(named_min) && named_min > 0 && is.finite(other_share) && other_share > 0) {
+    M <- round(other_share / named_min)
+    M <- max(1, min(M, 50))  # clamp for sanity
+  } else {
+    M <- 10
+  }
+  M
+}
+
+usgs_idx <- usgs %>%
+  group_by(COMMODITY, TYPE) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      \(col) {
+        wflag <- is_world(COUNTRY)
+        oflag <- is_other(COUNTRY)
+        
+        W <- suppressWarnings(first(na.omit(col[wflag])))
+        if (is.na(W) || W == 0) return(rep(NA_real_, length(col)))
+        
+        share <- col / W
+        
+        # weights: 1 for named countries, 0 for world, M for "Other Countries"
+        wt <- rep(1, length(share))
+        wt[wflag] <- 0
+        if (any(oflag, na.rm = TRUE)) wt[oflag] <- estimate_M(share, oflag, wflag)
+        
+        r <- weighted_midrank(share, wt)         # percentile including "Other" mass
+        idx <- scurve_from_rank(r, gamma = 0.5)  # apply your median_scurve shape
+        idx[wflag] <- NA_real_                   # no index for world rows
+        idx
+      },
+      .names = "{.col}_idx"
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(index=PROD_EST_.2024_idx,
+         index=ifelse(!is.na(PROD_EST_.2024_idx),PROD_EST_.2024_idx,
+                      ifelse(!is.na(PROD_2023_idx),PROD_2023_idx,
+                             ifelse(!is.na(CAP_EST_.2024_idx),CAP_EST_.2024_idx,
+                                    ifelse(!is.na(RESERVES_2024_idx),RESERVES_2024_idx,0)))))
+
+usgs_et<-usgs_idx %>%
+  select(COUNTRY,COMMODITY,TYPE,UNIT_MEAS,index) %>%
+  filter(!grepl("Other|World",COUNTRY)) %>%
+  inner_join(mineral_demand_clean %>%
+               mutate(Mineral = recode(Mineral,
+                                         "Battery-grade graphite"="Graphite"
+               )),by=c("COMMODITY"="Mineral") ) %>%
+  group_by(COUNTRY,tech) %>%
+  mutate(share_24=share_24/sum(share_24)) %>% ungroup() %>%
+  group_by(COUNTRY,tech) %>%
+  
+  summarize(usgs_index=weighted.mean(index,
+                                                            share_24,
+                                                            na.rm=T))
+
+
 
 #Energy Imports----------------------------------
 fossil_imports<-ei%>%
@@ -1245,20 +1338,24 @@ sectors <- hs_codes %>%
         "Kerosene", "Petroleum Solids", "Gasoline", "Naphtha",
         "Motor Fuel", "Fuel Oils: Other"
       )                                          ~ "Oil Upstream",
+      Sector == "Thermal Power" & Sub.Sector %in% c("Internal Combustion Generating\nSets","Generators") ~ "Oil Midstream",
+      Sector == "Thermal Power" & Sub.Sector== "Steam (Coal, Nuclear,\nGeothermal, Combined Cycle\nGas, Etc.)" ~ "Coal Midstream; Gas Midstream; Nuclear Midstream",
       Sub.Sector == "Crude Oils"                 ~ "Oil Upstream",
-      Sub.Sector %in% c("Ethylene", "Propylene", "Butylene", "Butadiene")
+      Sub.Sector %in% c("Gas","Ethylene", "Propylene", "Butylene", "Butadiene")
       ~ "Gas Midstream",
-      Sub.Sector %in% c("Gas", "Propane", "Butane", "Ethane", "Petroleum Gases")
+      Sub.Sector %in% c("Propane", "Butane", "Ethane", "Petroleum Gases","Natural Gas")
       ~ "Gas Upstream",
       str_detect(Sector, "Coal")                 ~ "Coal Upstream",
       Sub.Sector == "Nuclear Fuel"               ~ "Nuclear Upstream",
-      Sector == "Electricity\nInfrastructure"    ~ "Electricity Infrastructure Midstream",
-      Sector == "Thermal Power"                  ~ "Coal Midstream",
+      Sector == "Electricity\nInfrastructure"    ~ "Electric Grid Midstream",
       Sub.Sector == "Equipment"                  ~ "Nuclear Midstream",
+      Sector == "Fossil Energy:\nEquipment"  ~ "Oil Midstream; Gas Midstream",
       # default:
-      TRUE                                       ~ Sector
+      TRUE                                       ~ NA
     )
-  )
+  ) %>%
+  separate_rows(industry, sep = "\\s*;\\s*") %>%
+  mutate(industry = str_squish(industry))
 
 
 # Inspect the result
@@ -1458,6 +1555,7 @@ trade_tidy <- trade_indices %>%
          data_type, value, source, explanation)
 
 
+
 #UN Comtrade--------------
 library(comtradr)
 set_primary_comtrade_key('2940653b9bbe4671b3f7fde2846d14be')
@@ -1563,7 +1661,10 @@ critmin_trade_tech <- critmin_hhi %>%
   mutate(share_24=share_24/sum(share_24)) %>% ungroup() %>%
   group_by(country,tech,supply_chain) %>%
   
-  summarize(criticalmineral_marketshare_index=weighted.mean(criticalmineral_marketshare_index,
+  summarize(criticalmineral_marketshare=weighted.mean(market_share,
+                                                            share_24,
+                                                            na.rm=T),
+            criticalmineral_marketshare_index=weighted.mean(criticalmineral_marketshare_index,
                                                             share_24,
                                                             na.rm=T),
             criticalmineral_exportshare_index=weighted.mean(criticalmineral_exportshare_index,
@@ -1605,78 +1706,109 @@ critmin_trade_tidy <- critmin_trade_tech %>%
     variable, data_type, value, source, explanation
   )
 
-# 
-# critmin_hhi_im <- critmin_trade %>%
-#   group_by(reporter_iso,country,mineral) %>%
-#   summarize(imports=sum(imports,na.rm=T)) %>%
-#   left_join(total_import %>%
-#               select(reporter_iso,
-#                      total_imports=primary_value),by=c("reporter_iso")) %>%
-#   mutate(imp_share=imports/total_imports) %>%
-#   group_by(mineral) %>%
-#   mutate(market_share=imports/sum(imports,na.rm=T)) %>%
-#   group_by(mineral) %>%
-#   mutate(
-#     # convert percent ??? fraction
-#     share_frac_24 = imports/sum(imports,na.rm=T),
-#     # HHI = sum of squared shares
-#     HHI_24 = sum(share_frac_24^2, na.rm = TRUE)) %>%
-#   ungroup() %>%
-#   mutate(hhi_index=median_scurve(-HHI_24)
-#   )
-# 
-# 
-# critmin_trade_tech_im <- critmin_hhi_im %>%
-#   left_join(mineral_demand_clean %>%
-#               mutate(Mineral=ifelse(grepl("graphite",Mineral),"Graphite",Mineral)) %>%
-#               ungroup() %>%
-#               select(Mineral,tech,share_24_index),
-#             by=c("mineral"="Mineral")) %>%
-#   filter(!is.na(tech)) %>%
-#   group_by(country,tech) %>%
-#   summarize(criticalmineral_marketshare=weighted.mean(market_share,
-#                                                       share_24_index,
-#                                                       na.rm=T),
-#             criticalmineral_hhi=weighted.mean(HHI_24,
-#                                               share_24_index,
-#                                               na.rm=T)) %>%
-#   ungroup() %>%
-#   mutate(criticalmineral_marketshare_index=median_scurve(criticalmineral_marketshare)) %>%
-#   mutate(criticalmineral_hhi_index=median_scurve(-criticalmineral_hhi)) %>%
-#   rowwise() %>%
-#   mutate(critmin_trade_index=mean(criticalmineral_marketshare_index,criticalmineral_hhi_index)) %>%
-#   ungroup() %>%
-#   mutate(critmin_trade_index=median_scurve(critmin_trade_index))
-# 
-# critmin_trade_tidy_im <- critmin_trade_tech_im %>%
-#   # 1. pivot all your metric-columns into a long format
-#   pivot_longer(
-#     cols      = -c(country, tech),
-#     names_to  = "variable",
-#     values_to = "value"
-#   ) %>%
-#   # 2. add the new constant columns
-#   mutate(
-#     supply_chain = "Midstream",
-#     category     = "Trade",
-#     # 3. classify raw vs index based on the _index suffix
-#     data_type = if_else(str_detect(variable, "_index$"),
-#                         "index", "raw"),
-#     # 4. strip off the "_index" so variable matches the pre-index name
-#     variable  = str_remove(variable, "_index$"),
-#     # 5. fill in source/explanation
-#     source      = "UN Comtrade",
-#     explanation = "UN Comtrade import data"
-#   ) %>%
-#   # 6. match the column names/order of trade_tidy
-#   rename(Country = country) %>%
-#   select(
-#     Country, tech, supply_chain, category,
-#     variable, data_type, value, source, explanation
-#   )
-# 
-# critmin_trade_tidy<-rbind(critmin_trade_tidy,critmin_trade_tidy_im)
-# 
+market_share_us<-trade_tidy %>%
+  filter(Country=="United States",
+         tech != "Green Hydrogen",
+         !is.na(tech),!is.na(supply_chain),
+         data_type=="raw",
+         variable=="market_share") %>%
+  left_join(critmin_trade_tech %>%
+              filter(country=="United States",
+                     supply_chain=="Upstream") %>%
+              select(tech,supply_chain,criticalmineral_marketshare),by=c("tech","supply_chain")) %>%
+  mutate(value=ifelse(is.na(criticalmineral_marketshare),value,criticalmineral_marketshare*100)) %>%
+  select(tech,supply_chain,value) %>%
+  pivot_wider(names_from="tech", values_from="value") %>%
+write.csv("Downloads/market_share_us.csv")
+
+deficit_us<-trade_tidy %>%
+  filter(Country=="United States",
+         tech != "Green Hydrogen",
+         !is.na(tech),!is.na(supply_chain),
+         data_type=="raw",
+         variable %in% c("exports","deficit")) %>%
+    select(tech,supply_chain,variable,value) %>%
+  pivot_wider(names_from="variable", values_from="value") %>%
+  mutate(imports=(exports-deficit),
+         import_share=imports/(exports+imports)*100) %>%
+  select(tech,supply_chain,import_share) %>%
+  pivot_wider(names_from="tech",values_from="import_share") %>%
+  write.csv("Downloads/import_share_us.csv")
+
+
+#All Energy Trade
+country_info_iso <- country_info %>%
+  filter(!iso3c %in% c("ASM", "CHI", "GUM", "IMN", "LIE", "MAF", "MCO", "PRI", "XKX"))
+
+library(dplyr)
+library(stringr)
+library(purrr)
+
+# 1) Clean & prep the HS6 codes
+codes <- sectors$code_6 %>%
+  as.character() %>%
+  str_replace_all("\\D", "") %>%        # keep digits only, just in case
+  str_pad(width = 6, side = "left", pad = "0") %>%
+  na.omit() %>%
+  unique()
+
+# 2) Split into chunks by max characters allowed in the commodity_code param
+split_by_nchar <- function(x, max_chars = 2500) {
+  chunks <- list(); cur <- character(); cur_len <- 0
+  for (code in x) {
+    add_len <- nchar(code) + ifelse(length(cur) == 0, 0, 1) # comma if not first
+    if (cur_len + add_len > max_chars) {
+      chunks[[length(chunks) + 1]] <- cur
+      cur <- code
+      cur_len <- nchar(code)
+    } else {
+      cur <- c(cur, code)
+      cur_len <- cur_len + add_len
+    }
+  }
+  if (length(cur)) chunks[[length(chunks) + 1]] <- cur
+  chunks
+}
+
+code_chunks <- split_by_nchar(codes, max_chars = 2500)  # conservative margin under 4096
+
+# 3) Pull each chunk (add a tiny pause to be polite to the API)
+safe_ct <- purrr::possibly(ct_get_data, otherwise = NULL)
+
+res_list <- purrr::map(code_chunks, ~{
+  Sys.sleep(0.4)  # adjust if you hit rate limits
+  safe_ct(
+    reporter       = country_info_iso$iso3c,
+    partner        = "World",
+    commodity_code = .x,
+    start_date     = 2024,
+    end_date       = 2024,
+    flow_direction = "import"
+  )
+})
+
+# 4) Bind all successful chunks
+energy_import <- res_list %>%
+  discard(is.null) %>%
+  dplyr::bind_rows()
+
+
+res_list <- purrr::map(code_chunks, ~{
+  Sys.sleep(0.4)  # adjust if you hit rate limits
+  safe_ct(
+    reporter       = country_info_iso$iso3c,
+    partner        = "World",
+    commodity_code = .x,
+    start_date     = 2024,
+    end_date       = 2024,
+    flow_direction = "export"
+  )
+})
+
+# 4) Bind all successful chunks
+energy_export <- res_list %>%
+  discard(is.null) %>%
+  dplyr::bind_rows()
 
 
 #Energy Security index-------------------------------
@@ -2862,60 +2994,71 @@ import_growth_allies <- import_growth2 %>%
 library(dplyr)
 library(tidyr)
 library(stringr)
+library(readr)
+library(janitor)
 
-outbound<-read.csv(paste0(raw_data,"us_outbound_15_24.csv"),skip=4) %>%
-  slice(-1) %>%                     # 1. drop the row that only holds "2015 . 2024"
-  clean_names() %>%                 #   normalise headers (spaces ??? _, etc.)
-  rename(country = x) %>%           #   first col is the country label
-  mutate(across(-country, parse_number)) %>%   # 2. everything else ??? numeric
-  pivot_longer(                     # 3. pull year-suffix off the colname
+outbound <- read.csv(
+  file.path(raw_data, "us_outbound_15_24.csv"),
+  skip = 4,
+  na.strings = c("n.s.", "(D)", "(*)")   # add "(*)"
+) %>%
+  slice(-1) %>%                       # drop the '2015' header row
+  rename(country = X) %>%
+  clean_names() %>%                   # All.Industries.Total.1 -> all_industries_total_1
+  mutate(across(
     -country,
-    names_to  = "industry",
-    values_to = "value",
-    names_transform = list(
-      industry = ~ str_remove(.x, "\\_\\d+$")) # remove ".1", ".2", . ".9"
-  ) %>% 
-  group_by(country, industry) %>%   # 4. add up 2015-24 values inside each industry
-  summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>% 
-  pivot_wider(names_from = industry, values_from = total)  %>% # 5. wide result
-  mutate(
-    Downstream_size     = `utilities` + information+`wholesale_trade` + `professional_scientific_and_technical_services`,
-    Midstream_size      = `total_manufacturing`,     # adjust if your actual Manufacturing col differs
-    Upstream_size       = `mining`      # adjust if your actual Upstream col differs
-  ) %>%
-  rename(Country = 1) %>%
-  mutate(Country= str_trim(Country, side = "left"))  %>%
-  select(Country, Downstream_size, Midstream_size, Upstream_size) %>%
-  filter(!str_detect(Country, "All|Other|Asia|Middle|EU|nonzero|Caribbean")) %>%
-  mutate(across(2:4, ~replace_na(.x, 0))) %>%
-  left_join(gdp, by=c("Country"="country")) %>%
-  mutate(GDP=GDP/1000000) %>%
-  mutate(
-    Downstream_share  = Downstream_size  / GDP,
-    Midstream_share   = Midstream_size   / GDP,
-    Upstream_share    = Upstream_size    / GDP,
-    
-    Downstream_size_index   = median_scurve(Downstream_size),
-    Midstream_size_index    = median_scurve(Midstream_size),
-    Upstream_size_index     = median_scurve(Upstream_size),
-    
-    Downstream_share_index  = median_scurve(Downstream_share),
-    Midstream_share_index   = median_scurve(Midstream_share),
-    Upstream_share_index    = median_scurve(Upstream_share)
-  ) %>%
-  
-  # 1) Pivot all six metrics (size & share, raw & index) long
+    ~ readr::parse_number(as.character(.x),
+                          na = c("n.s.", "(D)", "(*)"))   # add "(*)"
+  )) %>%
   pivot_longer(
-    cols = matches("^(Downstream|Midstream|Upstream)_(size|share)(_index)?$"),
-    names_to    = c("supply_chain","metric","type"),
-    names_pattern = "(Downstream|Midstream|Upstream)_(size|share)(_index)?",
-    values_to   = "value"
+    -country,
+    names_to = "industry",
+    values_to = "value",
+    # strip trailing _1, _2, ... so all years collapse under one industry
+    names_transform = list(industry = ~ str_remove(.x, "_\\d+$"))
   ) %>%
-  # 2) Clean up `type` (NA ??? raw, else 'index')
+  group_by(country, industry) %>%
+  summarise(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = industry, values_from = total) %>%
   mutate(
-    type = if_else(type=="", "raw", "index"),
-    supply_chain = str_to_sentence(supply_chain)
-  ) 
+    downstream_size = rowSums(across(c(
+      utilities,
+      information,
+      wholesale_trade,
+      professional_scientific_and_technical_services
+    )), na.rm = TRUE),
+    midstream_size  = coalesce(total_manufacturing, 0),
+    upstream_size   = coalesce(mining, 0)
+  ) %>%
+  mutate(country = str_trim(country)) %>%
+  select(country, downstream_size, midstream_size, upstream_size) %>%
+  filter(!str_detect(country, "(?i)All|Other|Asia|Middle|EU|nonzero|Caribbean")) %>%
+  left_join(gdp, by = "country") %>%
+  mutate(
+    GDP = GDP / 1e6,
+    downstream_share = downstream_size / GDP,
+    midstream_share  = midstream_size  / GDP,
+    upstream_share   = upstream_size   / GDP,
+    
+    downstream_size_index = median_scurve(downstream_size),
+    midstream_size_index  = median_scurve(midstream_size),
+    upstream_size_index   = median_scurve(upstream_size),
+    
+    downstream_share_index = median_scurve(downstream_share),
+    midstream_share_index  = median_scurve(midstream_share),
+    upstream_share_index   = median_scurve(upstream_share)
+  ) %>%
+  pivot_longer(
+    cols = matches("(?i)^(downstream|midstream|upstream)_(size|share)(?:_(index))?$"),
+    names_to      = c("supply_chain", "metric", "type"),
+    names_pattern = "(?i)^(downstream|midstream|upstream)_(size|share)(?:_(index))?$",
+    values_to     = "value"
+  ) %>%
+  mutate(
+    supply_chain = stringr::str_to_sentence(tolower(supply_chain)),  # Downstream/Midstream/Upstream
+    type         = dplyr::coalesce(type, "raw")                      # "index" or "raw"
+  )
+
 
 outbound_indexed <-outbound %>%  
   # 3) Compute composite segment-index = mean(size_index, share_index)
@@ -2932,11 +3075,13 @@ View(outbound_indexed)
 
 
 outbound_chart <- outbound %>%
+  rename(Country=country) %>%
   filter(!grepl("Europ",Country),
          !grepl("America",Country),
          !grepl("Africa",Country),
          metric=="size",
-         type=="raw") %>%
+         type=="index",
+         year=="2023") %>%
   select(Country,supply_chain,value) %>%
   pivot_wider(names_from="supply_chain",values_from="value") %>%
   rowwise() %>%
@@ -3685,7 +3830,7 @@ strategy_tbl <- us_friendshore_index  %>%
 
 compacts <- bind_cols(
   strategy_tbl %>%
-    slice_max(psi, n = 10) %>%
+    slice_max(psi, n = 20) %>%
     left_join(country_flags,by=c("country"="Country")) %>%
     select(
       code_0=Code,
@@ -3693,7 +3838,7 @@ compacts <- bind_cols(
       Partnership_index = psi
     ),
   strategy_tbl %>%
-    slice_max(us_friendshore_index, n = 10) %>%
+    slice_max(us_friendshore_index, n = 20) %>%
     left_join(country_flags,by=c("country"="Country")) %>%
     select(
       code_1=Code,
@@ -3701,7 +3846,7 @@ compacts <- bind_cols(
       Safer_index = us_friendshore_index
     ),
   strategy_tbl %>%
-    slice_max(us_opportunity_index, n = 10) %>%
+    slice_max(us_opportunity_index, n = 20) %>%
     left_join(country_flags,by=c("country"="Country")) %>%
     select(
       code_2=Code,
@@ -3709,7 +3854,7 @@ compacts <- bind_cols(
       Prosperous_index = us_opportunity_index
     ),
   strategy_tbl %>%
-    slice_max(dev_potential_index, n = 10) %>%
+    slice_max(dev_potential_index, n = 20) %>%
     left_join(country_flags,by=c("country"="Country")) %>%
     select(
       code_3=Code,
