@@ -20,8 +20,8 @@ output_folder <- paste0("OneDrive - RMI/Documents - US Program/6_Projects/Clean 
 
 
 # Clean investment Monitor Data - Check it's the latest quarter available
-investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/quarterly_actual_investment.csv'
-facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q1_2025/extended_data/manufacturing_energy_and_industry_facility_metadata.csv'
+investment_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/quarterly_actual_investment.csv'
+facilities_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q2_2025/manufacturing_energy_and_industry_facility_metadata.csv'
 socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/clean_investment_monitor_q4_2024/socioeconomics.csv'
 
 # Read Data
@@ -470,6 +470,7 @@ plot_manufacturing<-ggplot(data=state_man,aes(x=reorder(State,-Total_Facility_CA
 
 ggsave(paste0(output_folder,"/",state_abbreviation,"_manufacturing.png"),plot=plot_manufacturing,width=8,height=6,units="in",dpi=300)
 
+
 #ANNOUNCED INVESTMENT-------------------------------------------------
 #All Manufacturing Facilities
 facilities_man<-facilities %>%
@@ -479,7 +480,12 @@ facilities_man<-facilities %>%
                            "Wind",
                            "Critical Minerals")) %>%
   mutate(industry = paste0(Technology," "," (",Subcategory,")")) %>%
-  mutate(date=as.Date(Announcement_Date)) %>%
+  mutate(
+    # empty strings -> NA, then parse common date patterns
+    Announcement_Date = na_if(trimws(Announcement_Date), ""),
+    date = parse_date_time(Announcement_Date, orders = c("mdy", "ymd"), quiet = TRUE) |> as.Date(),
+    subcat = na_if(Subcategory, "")
+  )%>%
   filter(date > "2022-08-01",
          Investment_Reported_Flag=="True") %>%
   select(Company,industry,Technology,Estimated_Total_Facility_CAPEX,Latitude,Longitude)

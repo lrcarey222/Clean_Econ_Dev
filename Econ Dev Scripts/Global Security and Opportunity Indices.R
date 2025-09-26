@@ -1740,10 +1740,6 @@ deficit_us<-trade_tidy %>%
 country_info_iso <- country_info %>%
   filter(!iso3c %in% c("ASM", "CHI", "GUM", "IMN", "LIE", "MAF", "MCO", "PRI", "XKX"))
 
-library(dplyr)
-library(stringr)
-library(purrr)
-
 # 1) Clean & prep the HS6 codes
 codes <- sectors$code_6 %>%
   as.character() %>%
@@ -2766,7 +2762,7 @@ scatter_index<-rbind(energy_security_index %>%
   filter(industry != "Geothermal: Midstream")
 
 us_scatter_index <- scatter_index %>%
-  filter(Country=="United States")%>%
+  filter(Country=="Japan")%>%
   select(industry,tech,supply_chain,variable,value) %>%
   #group_by(variable) %>%
   #mutate(value=median_scurve(value)) %>%

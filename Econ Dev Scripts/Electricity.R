@@ -291,10 +291,14 @@ states_gen <- op_gen %>%
   summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
   left_join(census_divisions,by=c("Plant State"="State.Code"))
 
-states_rengen <- states_gen %>%
+states_rengen <- op_gen %>%
+  group_by(`Plant State`,`Operating Year`,Technology) %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+  left_join(census_divisions,by=c("Plant State"="State.Code")) %>%
   filter(`Operating Year` > 2012 & Technology %in% c("Conventional Hydroelectric",
                                                      "Onshore Wind Turbine",
                                                      "Batteries",
+                                                     "Nuclear",
                                                      "Solar Photovoltaic",
                                                      "Solar Thermal with Energy Storage",
                                                      "Hydroelectric Pumped Storage",
@@ -304,15 +308,12 @@ states_rengen <- states_gen %>%
   
   group_by(Division,State, `Operating Year`) %>%
   summarize(`Nameplate Capacity (MW)` = sum(`Nameplate Capacity (MW)`, na.rm = TRUE)) %>%
-  complete(`Operating Year` = 2013:2024, fill = list(`Nameplate Capacity (MW)` = 0)) %>%
+  complete(`Operating Year` = 2013:2025, fill = list(`Nameplate Capacity (MW)` = 0)) %>%
   mutate(Year = make_date(`Operating Year`)) %>%
   mutate(cum_cap = cumsum(`Nameplate Capacity (MW)`)) %>%
   group_by(Division,State) %>%
-  mutate(cap_index_18 = 100*cum_cap/cum_cap[Year=="2018-01-01"]) %>%
-  mutate(rengrowth_18_23 = round(cap_index_18-100,1)) 
-
-region_abbrv<-census_divisions %>%
-  filter(State.Code == state_abbreviation) 
+  mutate(cap_index_19 = 100*cum_cap/cum_cap[Year=="2019-01-01"]) %>%
+  mutate(rengrowth_19_25 = cum_cap - cum_cap[Year=="2019-01-01"]) 
 
 plot_elec_2020index<-ggplot(data=states_rengen %>%
                               filter(Division == region_abbrv$Division),
