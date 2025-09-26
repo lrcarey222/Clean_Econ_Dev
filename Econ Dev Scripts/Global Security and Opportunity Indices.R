@@ -81,8 +81,7 @@ all_countries <- ei %>%
     "Yemen, Rep."="Yemen",
     "Venezuela, RB"="Venezuela"
   )) %>%
-  distinct(Country) %>%
-  pull() 
+  distinct(ISO3166_alpha3,Country) 
 
 ##----------Energy Security------------------------
 ##Energy security - the assurance that energy is available where and when it's needed - can be measured or benchmarked by looking at energy availability, energy prices, affordability, natural resource availability, import reliance, and global market share
@@ -217,9 +216,17 @@ neo_cap <- bnef_neo %>%
   mutate(
     Fuel.type = recode(Fuel.type,
                        "CCGT"            = "Gas",
+                       "Coal with CCS" = "Coal",
+                       "Gas peaker with CCS" = "Gas",
+                       "CCGT with CCS" = "Gas",
                        "Utility-scale PV" = "Solar",
+                       "Unabated oil"  = "Oil",
+                       "Gas production" = "Gas",
+                       "Gas peaker"  = "Gas",
                        "Hydrogen"        = "Green Hydrogen",
-                       "Battery storage" = "Batteries")
+                       "Battery storage" = "Batteries",
+                       "Small modular nuclear" = "Nuclear",
+                       "Small-scale PV"="Solar")
   ) %>% 
   select(
     Country = Region,
@@ -245,9 +252,14 @@ mutate(
 ) %>% 
   
   # ---- 4. carry on with your existing calculations ------------------------
-group_by(Country) %>% 
+group_by(Country,tech) %>% 
+  summarize(X2024_pc=sum(X2024_pc,na.rm=T),
+            X2035_pc=sum(X2035_pc,na.rm=T),
+            X2024=sum(X2024,na.rm=T),
+            X2035=sum(X2035,na.rm=T)) %>%
+  group_by(Country) %>%
   mutate(
-    share_24       = X2024_pc / sum(X2024_pc),              # share of per-capita total
+    share_24       = X2024 / sum(X2024),              # share of per-capita total
     growth_2435    = (X2035_pc - X2024_pc) / X2024_pc
   ) %>% 
   filter(tech %in% techs) %>% 
@@ -1373,7 +1385,8 @@ energy_codes<-rbind(sectors %>%
   mutate(industry=str_replace_all(industry," NA"," Upstream"),
          industry=str_replace_all(industry,"Battery","Batteries"),
          industry=str_replace_all(industry,"Nuclear Power","Nuclear"),
-         industry=str_replace_all(industry,"Critical Minerals","Batteries"))
+         industry=str_replace_all(industry,"Critical Minerals","Batteries")) %>%
+  mutate(code6 = stringr::str_extract(product, "^\\d{6}"))
 
 #4 Digit
 aec_4_data<-read.csv(paste0(raw_data,"hs92_country_product_year_4.csv")) %>%
@@ -1805,6 +1818,7 @@ res_list <- purrr::map(code_chunks, ~{
 energy_export <- res_list %>%
   discard(is.null) %>%
   dplyr::bind_rows()
+
 
 
 #Energy Security index-------------------------------
@@ -2762,7 +2776,7 @@ scatter_index<-rbind(energy_security_index %>%
   filter(industry != "Geothermal: Midstream")
 
 us_scatter_index <- scatter_index %>%
-  filter(Country=="Japan")%>%
+  filter(Country=="South Korea")%>%
   select(industry,tech,supply_chain,variable,value) %>%
   #group_by(variable) %>%
   #mutate(value=median_scurve(value)) %>%

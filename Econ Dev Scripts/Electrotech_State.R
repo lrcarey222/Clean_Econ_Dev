@@ -1,5 +1,7 @@
 #Electrotech Index
 
+
+
 #Policy Intent
 
 #Econ Dev Incentives----------------
@@ -426,7 +428,13 @@ ind_price <- ind_price_m %>%
   ungroup() %>%
   mutate(price_index = 1-rowMeans(across(where(is.numeric)), na.rm = TRUE))
 
+ind_price_yr <- ind_price_m %>%
+  group_by(State,Year) %>%
+  summarize(ind_price=mean(ind_price_m,na.rm=T)) %>%
+  filter(State %in% target_states) %>%
+  pivot_wider(names_from="State",values_from="ind_price")
 
+write.csv(ind_price_yr,"Downloads/ind_price_yr.csv")
 #Infrastructure Index----------------------
 
 # 1) Decide polarity (edit these as you see fit)
@@ -682,3 +690,134 @@ electrotech_div <- electrotech %>%
   left_join(census_divisions,by=c("State"="State.Code")) %>%
   group_by(Division) %>%
   summarize(electrotech_index=mean(electrotech_index,na.rm=T))
+
+elec_price<- electrotech %>%
+  left_join(ind_price,by=c("State"="State"))
+# select only numeric columns
+num_vars <- elec_price %>%
+  dplyr::select(where(is.numeric))
+
+# compute correlation matrix
+cor_matrix <- cor(num_vars, use = "pairwise.complete.obs", method = "pearson")
+
+# view
+cor_matrix
+
+
+#ELectrotech Facilities Chart
+
+
+median_scurve <- function(x, gamma = 0.5) {
+  # 1) turn raw x into a [0,1] percentile
+  r <- dplyr::percent_rank(x)
+  # 2) compress around 0.5 by using
+  #    f(r) = r^gamma / (r^gamma + (1-r)^gamma)
+  #
+  # When gamma < 1, slope at r=0.5 is <1 (flat middle)
+  #       and slope ??? ??? as r???0 or 1 (steep tails).
+  idx <- (r^gamma) / (r^gamma + (1 - r)^gamma)
+  idx
+}
+
+elec_fac<-op_gen %>%
+  filter(Technology %in% c("Batteries",
+                           "Solar Photovoltaic"),
+         `Operating Year`>2021) %>%
+  filter(Status=="(OP) Operating") %>%
+  mutate(unit="MW",
+         cat=ifelse(Technology=="Batteries","Electricity Storage","Solar Generation")) %>%
+  select(name=`Entity Name`,size=`Nameplate Capacity (MW)`,cat,tech=Technology,Latitude,Longitude,unit)
+
+
+facilities_cim_electro <- facilities %>%
+  filter(
+    Technology %in% c("Batteries","Solar","Zero Emission Vehicles"),
+    Investment_Status != "C",
+    Segment == "Manufacturing"
+  ) %>%
+  mutate(
+    Announcement_Date = na_if(trimws(Announcement_Date), ""),
+    # handle both 4/18/23 and 2023-04-18
+    date = parse_date_time(Announcement_Date, orders = c("mdy","ymd"), quiet = TRUE) |> as_date(),
+    Technology=ifelse(Technology=="Zero Emission Vehicles","Electric Vehicle",Technology)
+  ) %>%
+  filter(
+    !is.na(date),
+    date > as.Date("2022-01-01"),
+    Investment_Reported_Flag == TRUE   # <- no quotes
+  ) %>%
+  mutate(
+    tech = if_else(Segment == "Manufacturing",
+                   paste(Subcategory, Technology, Segment),
+                   Technology),
+    unit = "USD",
+    cat=paste(Technology,Segment)
+  ) %>%
+  select(name = Company, tech, cat, size = Estimated_Total_Facility_CAPEX,
+         Latitude, Longitude, unit)
+
+
+datacenter_fac <-BNEF_POINTS %>%
+  mutate(tech=paste(`Facility Category`,"Datacenter"),
+         cat="Datacenter",
+         unit="MW") %>%
+  filter(Date=="2025-03-31",
+         grepl("2022|2023|2024|2025",`First Live`)) %>%
+  st_drop_geometry() %>%
+  select(name=Company,tech,cat,size=`Headline Capacity (MW)`,Latitude,Longitude,unit) %>%
+  distinct(name,cat,tech,size,Latitude,Longitude,unit)
+  
+  semi_fac <- SEMICONDUCTOR_MANUFACTURING_INVESTMENT %>%
+    mutate(project_size_usd = as.numeric(gsub("[\\$,]", "", trimws(`Project.Size....`)))/1000000,
+           tech=paste("Semiconductor",Category),
+           cat="Semiconductor Manufacturing",
+           unit="USD") %>%
+    select(name=Company,cat,tech,size=project_size_usd,Latitude=LAT,Longitude=LON,unit) 
+
+  
+electrotech_fac<-rbind(facilities_cim_electro,datacenter_fac) %>%
+  rbind(semi_fac) %>%
+  rbind(elec_fac) %>%
+  group_by(unit) %>%
+  mutate(across(
+    c(size),
+    ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
+      (max(.[!is.infinite(.)] - min(.[!is.infinite(.)], na.rm = TRUE), na.rm = TRUE))
+  )) %>%
+  ungroup() %>%
+  mutate(size=ifelse(unit=="MW",size*0.66,size))
+
+
+write.csv(electrotech_fac,"Downloads/electrotech.csv")
+
+
+#By State
+electrotech_fac <- bind_rows(facilities_cim_electro, datacenter_fac, semi_fac, elec_fac) %>%
+  filter(!is.na(Longitude), !is.na(Latitude)) %>%
+  st_as_sf(coords = c("Longitude","Latitude"), crs = 4326, remove = FALSE)
+
+# 2) Ensure states is sf and in the same CRS
+# (If you created it with tigris/usaboundaries it's already sf; just transform)
+states <- st_transform(states, 4326)
+
+# 3) Spatial join: attach state attrs to each point
+# Use st_intersects (robust for boundary points); st_within also works.
+electrotech_fac <- st_join(
+  electrotech_fac,
+  states %>% select(state_abbr = STUSPS, STATE),  # adjust to your column names
+  join = st_intersects,
+  left = TRUE
+)
+
+# 4) If you want a plain data.frame again:
+electrotech_fac_df <- st_drop_geometry(electrotech_fac) %>%
+  group_by(state_abbr,STATE,cat,unit) %>%
+  summarize(size=sum(size,na.rm=T))
+
+state_electro_wide<-electrotech_fac_df %>%
+  filter(state_abbr %in% target_states) %>%
+  ungroup() %>%
+  select(state_abbr,cat,size) %>%
+  pivot_wider(names_from="cat",values_from="size")
+
+write.csv(state_electro_wide,"Downloads/state_electro.csv")  
