@@ -1,3 +1,7 @@
+================================================================================
+# BEGIN setup.R
+================================================================================
+
 # ACRE Pipeline — Q2 2025 (prep through geo_long + ALL raw loads + GEO coverage checks with names)
 # Updated: 2025-09-28 | Full, start-to-finish script (nothing omitted) | Extra debugging throughout
 # Coverage checks report MISSING geographies *with names* wherever possible
@@ -65,7 +69,6 @@ paths <- list(data_root=DATA_DIR, raw_data=file.path(DATA_DIR,"Raw Data"), us_ma
 invisible(lapply(paths, function(p) if(!dir.exists(p)) dir.create(p, recursive=TRUE, showWarnings=FALSE)))
 
 ct_fips_changes_raw <-readr::read_csv(file.path(paths$ct_fips_data,"geocorr_county_to_county_CT.csv"), skip = 1); glimpse(ct_fips_changes_raw)
-
 
 # API keys
 # --- Census API key bootstrapper (interactive-safe) ---------------------------
@@ -531,9 +534,6 @@ print(
   n=Inf
 )
 
-apply_fix_df <- function(df) {
-  if (exists("fix_df", mode = "function")) tryCatch(fix_df(df), error = function(e) df) else df
-
 
 
 # Full text fixer: quotes/control → re-encode (twice) → simple fixes → squish
@@ -793,8 +793,21 @@ geographies <- c("State.Name", "cd_119", "PEA", "CBSA.Title", "GeoName")
 # Normalize all geography names (dots -> spaces)
 geographies_clean <- gsub("\\.", " ", geographies)
 
+cim_dir <- file.path(paths$raw_data,"clean_investment_monitor_q2_2025")
+
+apply_fix_df <- function(df) {
+  if (exists("fix_df", mode = "function")) tryCatch(fix_df(df), error = function(e) df) else df
 }
 
+
+dbg_head <- function(df, nm = deparse(substitute(df)), n = 5) {
+  if (DEBUG_LEVEL < 2L) return(invisible(df))
+  message("\n==== ", nm, " ====")
+  message("class: ", paste(class(df), collapse = ", "))
+  message("rows x cols: ", nrow(df), " x ", ncol(df))
+  print(utils::head(df, n))
+  invisible(df)
+}
 
 norm_fips <- function(x) {
   x <- as.character(x)
@@ -816,7 +829,82 @@ validate_fips <- function(v, nm, sample_n = MAX_SHOW) {
   }
 }
 
-cim_dir <- file.path(paths$raw_data,"clean_investment_monitor_q2_2025")
+check_required_cols <- function(df, nm, required) {
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) .failf("Missing required columns in %s: %s", nm, paste(missing, collapse = ", "))
+}
+
+check_dups <- function(df, key, nm, show = MAX_SHOW) {
+  dups <- df %>% count(.data[[key]], name = "n") %>% filter(n > 1)
+  if (nrow(dups) > 0) {
+    .warnf("Duplicates in %s on key %s: %d (showing %d)", nm, key, nrow(dups), min(nrow(dups), show))
+    print(utils::head(dups, show))
+  } else {
+    .debug("No duplicates in %s on key %s", nm, key)
+  }
+  invisible(dups)
+}
+
+na_report <- function(df, cols, nm, show = MAX_SHOW) {
+  out <- purrr::map_dfr(cols, ~tibble(
+    column = .x,
+    na_cnt = sum(is.na(df[[.x]])),
+    non_na = sum(!is.na(df[[.x]]))
+  ))
+  .note("NA report for %s:\n%s", nm, paste(capture.output(print(out)), collapse = "\n"))
+  invisible(out)
+}
+
+`%||%` <- function(x, y) if (!is.null(x)) x else y
+wavg <- function(x, w) {
+  w <- as.numeric(w); x <- as.numeric(x)
+  if (all(is.na(x)) || all(is.na(w)) || sum(w[!is.na(w)], na.rm = TRUE) <= 0) return(NA_real_)
+  stats::weighted.mean(x, w = w, na.rm = TRUE)
+}
+sum_safe <- function(x) {
+  if (all(is.na(x))) return(NA_real_)
+  s <- sum(x, na.rm = TRUE)
+  if (is.na(s)) NA_real_ else s
+}
+
+apply_fix_df <- function(df) {
+  if (exists("fix_df", mode = "function")) tryCatch(fix_df(df), error = function(e) df) else df
+}
+
+dedup_county <- function(df, nm, value_col, weight_col) {
+  d0 <- nrow(df)
+  dups <- check_dups(df, "county_geoid", nm)
+  if (nrow(dups) > 0) {
+    .warnf("%s: aggregating duplicates to county level (weighted by %s)", nm, weight_col)
+    df <- df %>%
+      group_by(county_geoid) %>%
+      summarise(
+        across(all_of(value_col), ~ wavg(.x, .data[[weight_col]])),
+        across(all_of(weight_col), sum_safe),
+        .groups = "drop"
+      )
+  }
+  d1 <- nrow(df)
+  if (d1 < d0) .note("%s: rows %d -> %d after deduplication.", nm, d0, d1)
+  df
+}
+
+pct_sanitize <- function(p, nm = "percent") {
+  p <- as.numeric(p)
+  bad <- which(!is.na(p) & (p < 0 | p > 100))
+  if (length(bad) > 0) .warnf("%s: %d out-of-range values detected; clamping to [0,100].", nm, length(bad))
+  p <- pmin(pmax(p, 0), 100)
+  p
+}
+
+================================================================================
+# END setup.R
+================================================================================
+
+
+================================================================================
+# BEGIN Facilities.R
+================================================================================
 
 
 # Clean Investment Monitor (raw CSV drops)
@@ -1132,6 +1220,15 @@ missing_gdp_facilities_all <- facilities_all %>%
   dplyr::select(geo, geo_name, geo_code, gdp)
 cat("\nFacilities_all rows with missing/blank gdp:\n"); print(missing_gdp_facilities_all)
 
+================================================================================
+# END Facilities.R
+================================================================================
+
+
+================================================================================
+# BEGIN Rengen.R
+================================================================================
+
 
 # EIA 860M (latest)
 get_latest_eia860m <- function(lookback_months=3, timeout_sec=30){
@@ -1375,9 +1472,31 @@ for (gt in by_type) {
 
 glimpse(rengen)
 
+================================================================================
+# END Rengen.R
+================================================================================
+
+
+================================================================================
+# BEGIN elec_grid.R
+================================================================================
+
+# ====================== PREP: Quick glances at input data already in memory ======================
+cat("Glimpse COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA:\n"); glimpse(COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA)
+cat("Glimpse geo:\n"); glimpse(geo)
+cat("Glimpse geo_long:\n"); glimpse(geo_long)
+cat("Glimpse tigris_counties_2020_raw:\n"); glimpse(tigris_counties_2020_raw)
+cat("Glimpse geocorr_county_2020_cd_119: \n"); glimpse(geocorr_county_2020_cd_119)
+cat("Glimpse geocorr_ct_county_cd_119: \n"); glimpse(geocorr_ct_county_cd_119)
+cat("Glimpse (tigris_cbsa_2020_raw"); glimpse(tigris_cbsa_2020_raw)
+cat("Glimpse tigris_states_2024_raw:\n"); glimpse(tigris_states_2024_raw)
+cat("Glimpse tigris_congressional_districts_2024_raw"); glimpse(tigris_congressional_districts_2024_raw)
+cat("Glimpse geographies"); glimpse(geographies)
+cat("Glimpse geographies_clean"); glimpse(geographies_clean)
+
 # ==============================================================
 # Electricity grid → geographies with 100% coverage of geo_long
-# Enhanced with maximum debugging at every step
+# (Compressed: identical logic, same outputs)
 # ==============================================================
 
 # -----------------------
@@ -1397,110 +1516,44 @@ dbg  <- function(x, title = deparse(substitute(x))) {
   }
   invisible(NULL)
 }
-
-# Enhanced debugging function for detailed checks
-dbg_detailed <- function(x, title = deparse(substitute(x)), checks = list()) {
-  dbg(x, title)
-  if (DEBUG && length(checks)) {
-    cat("--- Additional checks for", title, "---\n")
-    for (check_name in names(checks)) {
-      result <- checks[[check_name]](x)
-      cat(sprintf("  %s: %s\n", check_name, result))
-    }
-  }
-  invisible(NULL)
-}
-
-norm_key <- function(x) {
-  dcat("[DEBUG] Normalizing", length(x), "keys\n")
-  result <- x %>%
-    toupper() %>%
-    str_replace_all("&", "AND") %>%
-    str_replace_all("PUD NO\\.", "PUBLIC UTILITY DISTRICT NO.") %>%
-    str_replace_all("[^A-Z0-9 ]+", " ") %>%
-    str_squish()
-  dcat("[DEBUG] Normalized keys: unique count =", length(unique(result)), "\n")
-  result
-}
-
+norm_key <- function(x) x %>%
+  toupper() %>%
+  str_replace_all("&", "AND") %>%
+  str_replace_all("PUD NO\\.", "PUBLIC UTILITY DISTRICT NO.") %>%
+  str_replace_all("[^A-Z0-9 ]+", " ") %>%
+  str_squish()
 pick_col <- function(df, pat){
   nm <- names(df)
   h  <- nm[str_detect(nm, regex(pat, TRUE))]
-  result <- ifelse(length(h), h[1], NA_character_)
-  dcat("[DEBUG] Column pattern '", pat, "' matched: ", 
-       ifelse(is.na(result), "NONE", result), "\n")
-  result
+  ifelse(length(h), h[1], NA_character_)
 }
-
 wmean_safe <- function(x, w){
-  if (length(x) == 0) {
-    dcat("[DEBUG] wmean_safe: Empty input\n")
-    return(NA_real_)
-  }
+  if (length(x) == 0) return(NA_real_)
   w <- replace_na(w, 0)
-  if (all(is.na(x))) {
-    dcat("[DEBUG] wmean_safe: All values NA\n")
-    return(NA_real_)
-  }
+  if (all(is.na(x))) return(NA_real_)
   sw <- sum(w, na.rm = TRUE)
-  if (is.na(sw) || sw == 0) {
-    result <- mean(x, na.rm = TRUE)
-    dcat("[DEBUG] wmean_safe: Zero weights, using simple mean =", result, "\n")
-    return(result)
-  }
-  result <- stats::weighted.mean(x, w, na.rm = TRUE)
-  dcat("[DEBUG] wmean_safe: Weighted mean =", result, "(sum_weights =", sw, ")\n")
-  result
+  if (is.na(sw) || sw == 0) mean(x, na.rm = TRUE) else stats::weighted.mean(x, w, na.rm = TRUE)
 }
 
 # ---------------
-# STEP 0: Validate Preconditions
+# Preconditions
 # ---------------
-cat("\n==== STEP 0: VALIDATING PRECONDITIONS ====\n")
-
-# Check for required objects
-need <- c("retail_territories_raw","tigris_counties_2020_raw","geo","geographies",
-          "county_gdp_clean","geo_long")
-miss <- need[!sapply(need, exists)]
-if (length(miss)) stop("Missing required objects in environment: ", paste(miss, collapse = ", "))
-cat("[OK] All required objects present\n")
-
-# Validate input data structures
-cat("\n--- Validating input data structures ---\n")
-cat("retail_territories_raw: ", nrow(retail_territories_raw), "rows,", 
-    ncol(retail_territories_raw), "cols\n")
-cat("tigris_counties_2020_raw: ", nrow(tigris_counties_2020_raw), "rows,", 
-    ncol(tigris_counties_2020_raw), "cols\n")
-cat("geo: ", nrow(geo), "rows,", ncol(geo), "cols\n")
-cat("geo_long: ", nrow(geo_long), "rows,", ncol(geo_long), "cols\n")
-cat("county_gdp_clean: ", nrow(county_gdp_clean), "rows,", ncol(county_gdp_clean), "cols\n")
-cat("geographies: ", length(geographies), "geographies =", paste(geographies, collapse=", "), "\n")
-
-# Fix column names if needed
-if ("CBSA Title" %in% names(geo) && !("CBSA.Title" %in% names(geo))) {
-  geo <- dplyr::rename(geo, CBSA.Title = `CBSA Title`)
-  cat("[FIX] Renamed 'CBSA Title' to 'CBSA.Title'\n")
+territory_path <- nz_chr(Sys.getenv("ELECTRIC_TERRITORIES_SHP"))
+if (is.na(territory_path)) {
+  cand <- file.path(paths$raw_data, "Electric_Retail_Service_Territories.shp")
+  territory_path <- if (file.exists(cand)) cand else NA_character_
 }
-if ("CBSA Code" %in% names(geo) && !("CBSA.Code" %in% names(geo))) {
-  geo <- dplyr::rename(geo, CBSA.Code = `CBSA Code`)
-  cat("[FIX] Renamed 'CBSA Code' to 'CBSA.Code'\n")
-}
+retail_territories_raw <- st_read(territory_path); cat("Glimpse of retail_territories_raw..."); glimpse(retail_territories_raw)
 
-# Check for required columns
-cat("\n--- Checking required columns ---\n")
-required_geo_cols <- c("fips", "State.Name", "cd_119", "PEA", "CBSA.Title", "GeoName")
-missing_geo_cols <- setdiff(required_geo_cols, names(geo))
-if (length(missing_geo_cols)) {
-  cat("[WARNING] Missing columns in geo:", paste(missing_geo_cols, collapse=", "), "\n")
-} else {
-  cat("[OK] All required columns present in geo\n")
-}
+need <- c("retail_territories_raw","tigris_counties_2020_raw","geo","geographies","county_gdp_clean","geo_long")
+miss <- need[!sapply(need, exists)]; if (length(miss)) stop("Missing required objects in environment: ", paste(miss, collapse = ", "))
+
+if ("CBSA Title" %in% names(geo) && !("CBSA.Title" %in% names(geo))) geo <- dplyr::rename(geo, CBSA.Title = `CBSA Title`)
+if ("CBSA Code" %in% names(geo) && !("CBSA.Code" %in% names(geo))) geo <- dplyr::rename(geo, CBSA.Code = `CBSA Code`)
 
 # -------------------------------
-# STEP 1: Load Electricity Maps 2024 data
+# 1) Electricity Maps 2024 (raw)
 # -------------------------------
-cat("\n==== STEP 1: LOADING ELECTRICITY MAPS DATA ====\n")
-
 zones <- c(
   "US-CAR-YAD","US-SW-AZPS","US-MIDW-AECI","US-NW-AVA","US-CAL-BANC","US-NW-BPAT",
   "US-CAL-CISO","US-NW-TPWR","US-FLA-TAL","US-CAR-DUK","US-FLA-FPC","US-CAR-CPLE",
@@ -1512,87 +1565,39 @@ zones <- c(
   "US-CAR-SCEG","US-CAR-SC","US-SE-SOCO","US-CENT-SWPP","US-CENT-SPA","US-FLA-TEC",
   "US-TEN-TVA","US-SW-TEPC","US-CAL-TIDC","US-SW-WALC","US-NW-WACM","US-NW-WAUW"
 )
-
-cat("Loading", length(zones), "electricity zones...\n")
 em_list <- lapply(zones, function(z){
   u <- paste0("https://data.electricitymaps.com/2025-01-27/", z, "_2024_yearly.csv")
-  result <- tryCatch(read.csv(u, check.names = FALSE), 
-                     error = function(e) {
-                       cat("[ERROR] Failed to load zone", z, ":", as.character(e), "\n")
-                       tibble(zone = z, err = as.character(e))
-                     })
-  if (!"err" %in% names(result)) cat("[OK] Loaded zone", z, "\n")
-  result
+  tryCatch(read.csv(u, check.names = FALSE), error = function(e) tibble(zone = z, err = as.character(e)))
 })
-
 electricity_maps_2024_raw <- bind_rows(em_list) %>% fix_df()
-
-dbg_detailed(electricity_maps_2024_raw, "electricity_maps_2024_raw", list(
-  "Unique zones" = function(x) length(unique(x$`Zone Id`)),
-  "Has errors" = function(x) sum("err" %in% names(x)),
-  "Missing values" = function(x) sum(is.na(x))
-))
+dbg(electricity_maps_2024_raw, "electricity_maps_2024_raw")
 
 # -------------------------------
-# STEP 2: Prepare spatial data - Retail territories → counties
+# 2) Retail territories → counties
 # -------------------------------
-cat("\n==== STEP 2: SPATIAL JOIN - TERRITORIES TO COUNTIES ====\n")
-
-# Transform counties to sf
 counties_sf <- st_as_sf(tigris_counties_2020_raw, sf_column_name = "geometry",
                         crs = st_crs(tigris_counties_2020_raw$geometry)) %>%
   st_transform(4326)
+dcat("[DEBUG] counties CRS:", st_crs(counties_sf)$epsg, "\n")
 
-cat("Counties SF: ", nrow(counties_sf), "counties, CRS =", st_crs(counties_sf)$epsg, "\n")
-cat("Unique county GEOIDs:", length(unique(counties_sf$GEOID)), "\n")
-
-# Transform and validate territories
 territories_to_county <- retail_territories_raw %>%
   st_transform(st_crs(counties_sf)) %>%
   st_make_valid()
-
-cat("Territories transformed: ", nrow(territories_to_county), "territories\n")
-cat("Invalid geometries fixed:", sum(!st_is_valid(retail_territories_raw)), "\n")
-
-# Perform spatial join
-cat("\nPerforming spatial join...\n")
 sf::sf_use_s2(FALSE)
 territories_to_county <- st_join(territories_to_county, counties_sf, join = st_intersects)
 sf::sf_use_s2(TRUE)
-
-cat("Post-join rows:", nrow(territories_to_county), "\n")
-cat("Territories matched to counties:", sum(!is.na(territories_to_county$GEOID)), "\n")
-cat("Territories NOT matched:", sum(is.na(territories_to_county$GEOID)), "\n")
-
-# Clean and process join results
 territories_to_county <- territories_to_county %>%
   st_drop_geometry() %>%
   transmute(GEOID = sprintf("%05d", as.integer(GEOID)),
             CNTRL_AREA = norm_key(CNTRL_AREA)) %>%
   distinct()
 
-dbg_detailed(territories_to_county, "territories_to_county (cleaned)", list(
-  "Unique GEOIDs" = function(x) length(unique(x$GEOID)),
-  "Unique control areas" = function(x) length(unique(x$CNTRL_AREA)),
-  "Missing GEOIDs" = function(x) sum(is.na(x$GEOID)),
-  "Missing CNTRL_AREA" = function(x) sum(is.na(x$CNTRL_AREA))
-))
-
 # ----------------------------------------
-# STEP 3: Clean Electricity Maps zone metadata
+# 3) Clean Electricity Maps zone metadata
 # ----------------------------------------
-cat("\n==== STEP 3: CLEANING ELECTRICITY MAPS DATA ====\n")
-
-# Find required columns
 ci_col  <- pick_col(electricity_maps_2024_raw, "^Carbon\\s*Intensity.*\\(direct\\)$")
 ren_col <- pick_col(electricity_maps_2024_raw, "^Renewable[\\._ ]*Percentage$")
-
-if (any(is.na(c(ci_col, ren_col)))) {
-  stop("Could not find CI/Renewable columns in electricity_maps_2024_raw.")
-}
-cat("Using columns: CI =", ci_col, ", Renewable =", ren_col, "\n")
-
-# Name mapping for consistency
+if (any(is.na(c(ci_col, ren_col)))) stop("Could not find CI/Renewable columns in electricity_maps_2024_raw.")
 emap_fix <- c(
   "Northwestern Energy"="NORTHWESTERN ENERGY (NWMT)",
   "Duke Energy Progress West"="DUKE ENERGY PROGRESS WEST",
@@ -1604,9 +1609,6 @@ emap_fix <- c(
   "Pacificorp East"="PACIFICORP - EAST",
   "Pacificorp West"="PACIFICORP - WEST"
 )
-
-cat("Applying", length(emap_fix), "name fixes\n")
-
 em24 <- electricity_maps_2024_raw %>%
   rename(`Zone Name` = any_of(c("Zone Name","Zone.Name")),
          `Zone Id`   = any_of(c("Zone Id","Zone.Id"))) %>%
@@ -1618,107 +1620,46 @@ em24 <- electricity_maps_2024_raw %>%
   ) %>%
   select(`Zone Id`,`Zone Name`,cntrl_area_key,ci_direct,ren_share)
 
-dbg_detailed(em24, "em24 (cleaned electricity maps)", list(
-  "Unique zones" = function(x) length(unique(x$`Zone Id`)),
-  "Valid CI values" = function(x) sum(!is.na(x$ci_direct)),
-  "Valid renewable values" = function(x) sum(!is.na(x$ren_share)),
-  "CI range" = function(x) paste(range(x$ci_direct, na.rm=TRUE), collapse=" - "),
-  "Renewable range" = function(x) paste(range(x$ren_share, na.rm=TRUE), collapse=" - ")
-))
-
 # ------------------------------------------------------
-# STEP 4: Prepare GDP weights (county-level)
+# 4) GDP weights (county-level)
 # ------------------------------------------------------
-cat("\n==== STEP 4: PREPARING GDP WEIGHTS ====\n")
-
-# Find GDP column
 gdp_cols <- grep("^gdp_\\d{4}$|^gdp$", names(county_gdp_clean), value = TRUE)
 if (!length(gdp_cols)) stop("county_gdp_clean must have a 'gdp' or 'gdp_YYYY' column.")
 gdp_col <- gdp_cols[order(gdp_cols, decreasing = TRUE)][1]
-cat("Using GDP column:", gdp_col, "\n")
-
 gdp_county_final <- county_gdp_clean %>%
   mutate(fips = sprintf("%05d", as.integer(.data[["fips"]]))) %>%
   transmute(GEOID = fips, gdp = as.numeric(.data[[gdp_col]])) %>%
   group_by(GEOID) %>%
   summarise(gdp = sum(gdp, na.rm = TRUE), .groups = "drop")
-
-dbg_detailed(gdp_county_final, "gdp_county_final", list(
-  "Unique counties" = function(x) nrow(x),
-  "GDP range (millions)" = function(x) paste(round(range(x$gdp, na.rm=TRUE)/1e6, 2), collapse=" - "),
-  "Missing GDP" = function(x) sum(is.na(x$gdp)),
-  "Zero GDP" = function(x) sum(x$gdp == 0, na.rm=TRUE),
-  "Total GDP (trillions)" = function(x) round(sum(x$gdp, na.rm=TRUE)/1e12, 2)
-))
+dbg(gdp_county_final, "gdp_county_final")
 
 # ------------------------------------------------------
-# STEP 5: Build per-county join table with attributes + GDP
+# 5) Build per-county join table with attributes + GDP
 # ------------------------------------------------------
-cat("\n==== STEP 5: BUILDING COUNTY-LEVEL JOIN TABLE ====\n")
-
-# Join electricity maps with territories
-cat("Joining electricity maps with territories...\n")
 em_counties <- territories_to_county %>%
-  inner_join(em24, by = c("CNTRL_AREA" = "cntrl_area_key"))
-
-cat("Rows after join with electricity maps:", nrow(em_counties), "\n")
-cat("Counties with electricity data:", length(unique(em_counties$GEOID)), "\n")
-
-# Join with geo data
-cat("\nJoining with geo data...\n")
-pre_join_rows <- nrow(em_counties)
-em_counties <- em_counties %>%
+  inner_join(em24, by = c("CNTRL_AREA" = "cntrl_area_key")) %>%
   left_join(select(geo, fips, State.Name, cd_119, percent_district, PEA, CBSA.Title, GeoName, gdp),
-            by = c("GEOID" = "fips"), relationship = "many-to-many")
-cat("Rows after geo join:", nrow(em_counties), "(was", pre_join_rows, ")\n")
-
-# Join with GDP data
-cat("\nJoining with GDP data...\n")
-em_counties <- em_counties %>%
+            by = c("GEOID" = "fips")) %>%
   left_join(gdp_county_final %>% rename(gdp_county = gdp), by = "GEOID") %>%
   mutate(gdp_any = coalesce(gdp, gdp_county, 0))
 
-dbg_detailed(em_counties, "em_counties (full join)", list(
-  "Total rows" = function(x) nrow(x),
-  "Unique counties" = function(x) length(unique(x$GEOID)),
-  "Counties with State" = function(x) sum(!is.na(x$State.Name)),
-  "Counties with CD" = function(x) sum(!is.na(x$cd_119)),
-  "Counties with PEA" = function(x) sum(!is.na(x$PEA)),
-  "Counties with CBSA" = function(x) sum(!is.na(x$CBSA.Title)),
-  "Counties with GDP" = function(x) sum(x$gdp_any > 0, na.rm=TRUE)
-))
-
 # ------------------------------------------------------
-# STEP 6: Primary aggregation
+# 6) Primary aggregation (fast path)
 # ------------------------------------------------------
-cat("\n==== STEP 6: PRIMARY AGGREGATION BY GEOGRAPHY ====\n")
-
 agg_one <- function(key){
-  cat("\nAggregating by:", key, "\n")
-  if (!key %in% names(em_counties)) {
-    cat("  [SKIP] Column not found\n")
-    return(NULL)
-  }
-  
+  if (!key %in% names(em_counties)) return(NULL)
   df <- filter(em_counties, !is.na(.data[[key]]))
-  cat("  Rows with non-NA", key, ":", nrow(df), "\n")
-  cat("  Unique", key, "values:", length(unique(df[[key]])), "\n")
-  
   if (key == "cd_119") {
-    result <- df %>% 
-      group_by(.data[[key]]) %>% 
-      summarise(
-        `Electricity Consumption Carbon Intensity (CO2eq/kWh)` =
-          wmean_safe(ci_direct, replace_na(gdp_county, 0) * replace_na(percent_district, 0) / 100),
-        `Electricity Consumption Renewable Percentage` =
-          wmean_safe(ren_share,  replace_na(gdp_county, 0) * replace_na(percent_district, 0) / 100),
-        .groups = "drop"
-      )
+    df %>% group_by(.data[[key]]) %>% summarise(
+      `Electricity Consumption Carbon Intensity (CO2eq/kWh)` =
+        wmean_safe(ci_direct, replace_na(gdp_county, 0) * replace_na(percent_district, 0) / 100),
+      `Electricity Consumption Renewable Percentage` =
+        wmean_safe(ren_share,  replace_na(gdp_county, 0) * replace_na(percent_district, 0) / 100),
+      .groups = "drop"
+    )
   } else {
-    result <- df %>% 
-      distinct(.data[[key]], ci_direct, ren_share, gdp_any) %>%
-      group_by(.data[[key]]) %>% 
-      summarise(
+    df %>% distinct(.data[[key]], ci_direct, ren_share, gdp_any) %>%
+      group_by(.data[[key]]) %>% summarise(
         `Electricity Consumption Carbon Intensity (CO2eq/kWh)` =
           wmean_safe(ci_direct, replace_na(gdp_any, 0)),
         `Electricity Consumption Renewable Percentage` =
@@ -1726,12 +1667,6 @@ agg_one <- function(key){
         .groups = "drop"
       )
   }
-  
-  cat("  Aggregated to", nrow(result), "unique values\n")
-  cat("  CI range:", paste(round(range(result$`Electricity Consumption Carbon Intensity (CO2eq/kWh)`, na.rm=TRUE), 2), collapse=" - "), "\n")
-  cat("  Renewable range:", paste(round(range(result$`Electricity Consumption Renewable Percentage`, na.rm=TRUE), 2), collapse=" - "), "\n")
-  
-  result
 }
 
 elec_grid <- bind_rows(lapply(geographies, agg_one)) %>%
@@ -1748,32 +1683,15 @@ elec_grid <- bind_rows(lapply(geographies, agg_one)) %>%
   filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
   select(-State.Name, -cd_119, -PEA, -CBSA.Title, -GeoName)
 
-cat("\n--- Primary aggregation results ---\n")
-cat("Total rows in elec_grid:", nrow(elec_grid), "\n")
-by_geo <- elec_grid %>% count(geo)
-for(i in 1:nrow(by_geo)) {
-  cat("  ", by_geo$geo[i], ":", by_geo$n[i], "\n")
-}
-
 # ------------------------------------------------------
-# STEP 7: Coverage backstop (guarantee 100% of geo_long)
+# 7) Coverage backstop (guarantee 100% of geo_long)
 # ------------------------------------------------------
-cat("\n==== STEP 7: COVERAGE BACKSTOP ====\n")
-
-# Prepare county-level metrics
-cat("Computing county-level metrics...\n")
 county_metrics <- em_counties %>%
   group_by(GEOID) %>%
   summarise(ci_direct_cm = mean(ci_direct, na.rm = TRUE),
             ren_share_cm = mean(ren_share, na.rm = TRUE), .groups = "drop") %>%
   left_join(gdp_county_final, by = "GEOID")
 
-cat("County metrics computed for", nrow(county_metrics), "counties\n")
-cat("Counties with valid CI:", sum(!is.na(county_metrics$ci_direct_cm)), "\n")
-cat("Counties with valid renewable:", sum(!is.na(county_metrics$ren_share_cm)), "\n")
-
-# State-level fallback
-cat("\nComputing state-level fallback metrics...\n")
 state_by_county <- geo %>%
   select(fips, State.Name) %>%
   mutate(fips = sprintf("%05d", as.integer(fips))) %>%
@@ -1786,17 +1704,10 @@ state_metrics <- county_metrics %>%
   summarise(ci_state = wmean_safe(ci_direct_cm, gdp),
             ren_state = wmean_safe(ren_share_cm, gdp), .groups = "drop")
 
-cat("State metrics computed for", nrow(state_metrics), "states\n")
-
-# National-level fallback
 national_metrics <- county_metrics %>%
   summarise(ci_nat  = wmean_safe(ci_direct_cm, gdp),
             ren_nat = wmean_safe(ren_share_cm, gdp))
 
-cat("National fallback: CI =", round(national_metrics$ci_nat, 2), 
-    ", Renewable =", round(national_metrics$ren_nat, 2), "%\n")
-
-# Geography column mapping
 geo_col_map <- c(
   "State"                  = "State.Name",
   "Congressional District" = "cd_119",
@@ -1805,109 +1716,68 @@ geo_col_map <- c(
   "Metro Area"             = "CBSA.Title"
 )
 
-# Helper function to get counties for a geography
 counties_for_geo <- function(geo_type, geo_name) {
   key <- geo_col_map[[geo_type]]
-  if (is.na(key) || !key %in% names(geo)) {
-    dcat("[DEBUG] No mapping for geo_type:", geo_type, "\n")
-    return(character(0))
-  }
-  result <- geo %>%
+  if (is.na(key) || !key %in% names(geo)) return(character(0))
+  geo %>%
     filter(.data[[key]] == geo_name) %>%
     transmute(GEOID = sprintf("%05d", as.integer(fips))) %>%
     distinct(GEOID) %>%
     pull(GEOID)
-  dcat("[DEBUG] Found", length(result), "counties for", geo_type, "=", geo_name, "\n")
-  result
 }
 
-# Aggregation from counties with fallback
 agg_from_counties <- function(geo_type, geo_name) {
-  dcat("[DEBUG] Aggregating from counties for", geo_type, "=", geo_name, "\n")
   geos <- counties_for_geo(geo_type, geo_name)
-  
   if (!length(geos)) {
-    dcat("[DEBUG]   No counties found, trying state fallback\n")
     if (geo_type == "State") {
       st_row <- state_metrics %>% filter(State.Name == geo_name)
-      if (nrow(st_row)) {
-        dcat("[DEBUG]   Using state metric\n")
-        return(tibble(
-          `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = st_row$ci_state[1],
-          `Electricity Consumption Renewable Percentage`         = st_row$ren_state[1]
-        ))
-      }
+      if (nrow(st_row)) return(tibble(
+        `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = st_row$ci_state[1],
+        `Electricity Consumption Renewable Percentage`         = st_row$ren_state[1]
+      ))
     }
-    dcat("[DEBUG]   Using national fallback\n")
     return(tibble(
       `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = national_metrics$ci_nat[1],
       `Electricity Consumption Renewable Percentage`         = national_metrics$ren_nat[1]
     ))
   }
-  
   df <- county_metrics %>% filter(GEOID %in% geos)
   if (!nrow(df)) {
-    dcat("[DEBUG]   No metrics for counties, trying state mode\n")
     st_mode <- geo %>%
       filter(fips %in% as.integer(geos)) %>%
       count(State.Name, sort = TRUE) %>%
       slice_head(n = 1) %>%
       pull(State.Name)
-    
     if (length(st_mode) && st_mode %in% state_metrics$State.Name) {
       st_row <- state_metrics %>% filter(State.Name == st_mode)
-      dcat("[DEBUG]   Using state", st_mode, "metrics\n")
       return(tibble(
         `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = st_row$ci_state[1],
         `Electricity Consumption Renewable Percentage`         = st_row$ren_state[1]
       ))
     }
-    dcat("[DEBUG]   Using national fallback\n")
     return(tibble(
       `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = national_metrics$ci_nat[1],
       `Electricity Consumption Renewable Percentage`         = national_metrics$ren_nat[1]
     ))
   }
-  
-  dcat("[DEBUG]   Aggregating", nrow(df), "counties with GDP weighting\n")
   tibble(
     `Electricity Consumption Carbon Intensity (CO2eq/kWh)` = wmean_safe(df$ci_direct_cm, df$gdp),
     `Electricity Consumption Renewable Percentage`         = wmean_safe(df$ren_share_cm, df$gdp)
   )
 }
 
-# Check coverage
-cat("\nChecking coverage gaps...\n")
 elec_key   <- elec_grid %>% transmute(geo, geo_name)
 target_key <- geo_long  %>% transmute(geo = geo_type, geo_name)
-
-cat("Target geographies:", nrow(target_key), "\n")
-cat("Current coverage:", nrow(elec_key), "\n")
-
 missing_keys <- anti_join(target_key, elec_key, by = c("geo","geo_name")) %>% distinct()
-cat("Missing geographies:", nrow(missing_keys), "\n")
 
 if (nrow(missing_keys)) {
-  cat("\nFilling", nrow(missing_keys), "missing geographies...\n")
-  
-  # Sample of missing for debugging
-  if (nrow(missing_keys) > 5) {
-    cat("Sample of missing:\n")
-    print(head(missing_keys, 5))
-  }
-  
   backstop_vals <- missing_keys %>%
     mutate(agg = map2(geo, geo_name, agg_from_counties)) %>%
     unnest(agg)
-  
-  cat("Backstop values computed:", nrow(backstop_vals), "\n")
-  cat("Backstop CI range:", paste(round(range(backstop_vals$`Electricity Consumption Carbon Intensity (CO2eq/kWh)`, na.rm=TRUE), 2), collapse=" - "), "\n")
-  
   elec_grid <- elec_grid %>% bind_rows(backstop_vals)
 }
 
-# Add rankings
-cat("\nAdding rankings...\n")
+# Final tidy + ranks
 elec_grid <- elec_grid %>%
   group_by(geo) %>%
   mutate(
@@ -1916,56 +1786,32 @@ elec_grid <- elec_grid %>%
   ) %>% ungroup()
 
 # ---------------------------------
-# STEP 8: Final validation
+# 8) Hard guarantees / validations
 # ---------------------------------
-cat("\n==== STEP 8: FINAL VALIDATION ====\n")
-
-# Ensure we only have geographies in geo_long
-pre_filter <- nrow(elec_grid)
 elec_grid <- elec_grid %>% semi_join(target_key, by = c("geo","geo_name"))
-post_filter <- nrow(elec_grid)
-cat("Rows filtered out (not in geo_long):", pre_filter - post_filter, "\n")
 
-# Check for NA/NaN values
 key_na <- elec_grid %>%
   filter(is.na(`Electricity Consumption Carbon Intensity (CO2eq/kWh)`) |
            is.na(`Electricity Consumption Renewable Percentage`) |
            is.nan(`Electricity Consumption Carbon Intensity (CO2eq/kWh)`) |
            is.nan(`Electricity Consumption Renewable Percentage`))
+if (nrow(key_na)) stop("Post-backstop still has NA/NaN metrics. Investigate unexpected gaps.")
 
-if (nrow(key_na)) {
-  cat("[ERROR] Found", nrow(key_na), "rows with NA/NaN metrics:\n")
-  print(head(key_na))
-  stop("Post-backstop still has NA/NaN metrics. Investigate unexpected gaps.")
-}
-cat("[OK] No NA/NaN values in key metrics\n")
-
-# Check coverage completeness
 gap <- anti_join(target_key, elec_grid %>% select(geo, geo_name), by = c("geo","geo_name"))
-if (nrow(gap)) {
-  cat("[ERROR] Coverage gap of", nrow(gap), "geographies:\n")
-  print(head(gap, 10))
-  stop("Coverage gap remains after backstop (unexpected). Missing examples: ",
-       paste(utils::head(paste(gap$geo, gap$geo_name, sep = " = "), 10), collapse = "; "), " …")
-}
+if (nrow(gap)) stop("Coverage gap remains after backstop (unexpected). Missing examples: ",
+                    paste(utils::head(paste(gap$geo, gap$geo_name, sep = " = "), 10), collapse = "; "), " …")
 
-cat("\n[SUCCESS] 100% coverage of geo_long with zero NA/NaN in key metrics.\n")
+cat("\n[OK] 100% coverage of geo_long with zero NA/NaN in key metrics.\n")
+dbg(elec_grid, "elec_grid (final, 100% coverage)")
 
-# Final summary
-dbg_detailed(elec_grid, "elec_grid (FINAL)", list(
-  "Total rows" = function(x) nrow(x),
-  "Matches geo_long" = function(x) nrow(x) == nrow(geo_long),
-  "Geography breakdown" = function(x) {
-    counts <- x %>% count(geo) %>% arrange(geo)
-    paste(counts$geo, "=", counts$n, collapse=", ")
-  },
-  "CI range" = function(x) paste(round(range(x$`Electricity Consumption Carbon Intensity (CO2eq/kWh)`), 2), collapse=" - "),
-  "Renewable range" = function(x) paste(round(range(x$`Electricity Consumption Renewable Percentage`), 2), collapse=" - "),
-  "Mean CI" = function(x) round(mean(x$`Electricity Consumption Carbon Intensity (CO2eq/kWh)`), 2),
-  "Mean Renewable %" = function(x) round(mean(x$`Electricity Consumption Renewable Percentage`), 2)
-))
+================================================================================
+# END elec_grid.R
+================================================================================
 
-cat("\n==== PROCESSING COMPLETE ====\n")
+
+================================================================================
+# BEGIN gdp_by_industry.R
+================================================================================
 
 cat("Glimpse COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA:\n"); glimpse(COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA)
 cat("Glimpse geo:\n"); glimpse(geo)
@@ -2565,6 +2411,16 @@ if (length(cat_overlap)) {
   msg("[OK] All geo categories in geo_long are covered by aggregates.")
 }
 
+
+================================================================================
+# END gdp_by_industry.R
+================================================================================
+
+
+================================================================================
+# BEGIN property_values.R
+================================================================================
+
 # ---- Property Values ----
 county_property_values_raw <- suppressWarnings(
   read.csv(file.path(paths$raw_data, "county_property_values.csv"), check.names = FALSE)
@@ -2665,6 +2521,15 @@ prop_export <- prop %>% mutate(
 )
 
 dbg(prop, "prop (final)")
+
+================================================================================
+# END property_values.R
+================================================================================
+
+
+================================================================================
+# BEGIN manshare_manpay_geo.R
+================================================================================
 
 
 # =====================================================================
@@ -3317,6 +3182,14 @@ if (exists("dbg")) {
   dbg(manshare,   "manshare (final)")
 }
 
+================================================================================
+# END manshare_manpay_geo.R
+================================================================================
+
+
+================================================================================
+# BEGIN supplycurve_geo.R
+================================================================================
 
 solar_lcoe_county_raw <- suppressWarnings(
   read.csv(file.path(paths$raw_data, "solar_lcoe_county.csv"), check.names = FALSE)
@@ -3446,7 +3319,7 @@ lcoe_county_combined <- lcoe_county_combined %>%
 geo_min <- geo %>%
   transmute(
     fips = stringr::str_pad(fips, 5, pad = "0"),
-    State.Name, `CBSA Title`, PEA, GeoName,
+    State.Name, "CBSA Title", PEA, GeoName,
     state_abbr, state.fips
   ) %>%
   distinct()
@@ -3568,9 +3441,9 @@ supply_pea <- base_counties %>%
 
 # 4) Metro Areas (CBSA Title)
 supply_cbsa <- base_counties %>%
-  filter(!is.na(`CBSA Title`), `CBSA Title` != "") %>%
+  filter(!is.na("CBSA Title"), "CBSA Title" != "") %>%
   mutate(weight = 1) %>%
-  group_by(`CBSA Title`) %>%
+  group_by("CBSA Title") %>%
   summarize(
     solar_totallcoe        = .wavg(.data[[solar_lcoe_col]], .data[[solar_cap_col]] * weight),
     wind_totallcoe         = .wavg(.data[[wind_lcoe_col]],  .data[[wind_cap_col]]  * weight),
@@ -3582,7 +3455,7 @@ supply_cbsa <- base_counties %>%
   ) %>%
   transmute(
     geo = "Metro Area",
-    geo_name = `CBSA Title`,
+    geo_name = "CBSA Title",
     solar_totallcoe, wind_totallcoe, geothermal_totallcoe,
     solar_capacitymw_dc, wind_capacitymw, geothermal_capacityMW
   )
@@ -3654,6 +3527,15 @@ glimpse(supplycurve_geo)
 #   solar_capacitymw_dc, wind_capacitymw, geothermal_capacityMW,
 #   Solar_potential_rank, Wind_potential_rank, Geothermal_potential_rank,
 #   Solar_cost_rank, Wind_cost_rank, Geothermal_cost_rank
+
+================================================================================
+# END supplycurve_geo.R
+================================================================================
+
+
+================================================================================
+# BEGIN techpot_geo.R
+================================================================================
 
 # =========================== BOOT + INPUT GLIMPSES ===========================
 cat("Glimpse tigris_congressional_districts_2024_raw:\n"); glimpse(tigris_congressional_districts_2024_raw)
@@ -4382,6 +4264,15 @@ if (!is.null(xwalk)) {
 # tech_wide_all             : potentials wide (unique per geo)
 # tech_pot_geo              : FINAL table, aligned to geo_long (same row count)
 
+================================================================================
+# END techpot_geo.R
+================================================================================
+
+
+================================================================================
+# BEGIN fed_inv_geo.R
+================================================================================
+
 # ====================== PREP: Quick glances at input data already in memory ======================
 cat("Glimpse COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA:\n"); glimpse(COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA)
 cat("Glimpse geo:\n"); glimpse(geo)
@@ -4820,6 +4711,15 @@ if ("Metro Area" %in% fed_inv_geo$geo) {
     slice_head(n = 10) %>%
     dbg("Top 10 Metro Areas by total_bil_ira_grants (final)")
 }
+
+================================================================================
+# END fed_inv_geo.R
+================================================================================
+
+
+================================================================================
+# BEGIN demographics.R
+================================================================================
 
 ###############################################################
 # ACS 5-year 2023 Vitality + Life Expectancy — RIGOROUS & FLEXIBLE
@@ -5866,6 +5766,15 @@ cat("\n[SUMMARY]\n",
 cat("\n[SESSION INFO]\n")
 print(sessionInfo())
 # ------------------------------ End of Script ------------------------------
+
+================================================================================
+# END demographics.R
+================================================================================
+
+
+================================================================================
+# BEGIN innovation_geo.R
+================================================================================
 
 # ====================== PREP: Quick glances at input data already in memory ======================
 suppressPackageStartupMessages({
@@ -7022,6 +6931,1477 @@ innovation_geo <- innovation_geo %>%
 
 debug_ok("Script completed.")
 
+================================================================================
+# END innovation_geo.R
+================================================================================
+
+
+================================================================================
+# BEGIN feas.R
+================================================================================
+
+###############################################################################
+# ENHANCED FEASIBILITY PIPELINE - Fully Robust with Comprehensive Debugging
+# Version 2.0 - Complete rewrite with extensive validation and error handling
+###############################################################################
+
+cat("\n========================================================================\n")
+cat("FEASIBILITY PIPELINE v2.0 - STARTING", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
+cat("========================================================================\n")
+
+# ========================== 0) Libraries & Setup ==========================
+suppressPackageStartupMessages({
+  required_packages <- c("dplyr", "tidyr", "stringr", "purrr", "readr", 
+                         "janitor", "tibble", "rlang")
+  
+  for (pkg in required_packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(sprintf("Required package '%s' is not installed. Please install it first.", pkg))
+    }
+    library(pkg, character.only = TRUE, quietly = TRUE)
+  }
+  
+  # Optional parallel processing
+  if (!requireNamespace("multidplyr", quietly = TRUE)) {
+    message("[PARALLEL] Package 'multidplyr' not installed; using sequential processing")
+  } else {
+    library(multidplyr, quietly = TRUE)
+  }
+})
+
+# Set global options for better debugging
+options(
+  dplyr.summarise.inform = FALSE,
+  warn = 1,  # Print warnings as they occur
+  stringsAsFactors = FALSE
+)
+
+# ---- Enhanced Debug Helpers ----
+with_timing <- function(label, expr, verbose = TRUE) {
+  if (verbose) cat("\n[TIMING] START:", label, "at", format(Sys.time(), "%H:%M:%S"), "\n")
+  start_mem <- gc(reset = TRUE, full = FALSE)[2, 2]  # Used memory in MB
+  
+  t <- system.time({ 
+    res <- tryCatch(
+      force(expr),
+      error = function(e) {
+        cat("\n[ERROR] in", label, ":", conditionMessage(e), "\n")
+        stop(e)
+      }
+    )
+  })
+  
+  end_mem <- gc(full = FALSE)[2, 2]
+  mem_diff <- end_mem - start_mem
+  
+  if (verbose) {
+    cat(sprintf("[TIMING] END: %s | elapsed=%.2fs | mem_delta=%.1fMB\n",
+                label, t[["elapsed"]], mem_diff))
+  }
+  invisible(res)
+}
+
+mem_usage <- function() {
+  m <- gc(full = FALSE)
+  cat(sprintf("[MEMORY] Used: %.1f MB | Max: %.1f MB\n", 
+              m[2, 2], m[2, 6]))
+}
+
+# ---- Enhanced fix_df with validation ----
+fix_df <- function(df, name = "data") {
+  cat("[FIX_DF] Processing:", name, "\n")
+  
+  if (is.character(df) && length(df) == 1L) {
+    if (!file.exists(df)) {
+      stop(sprintf("File not found: %s", df))
+    }
+    cat("[FIX_DF] Reading from file:", df, "\n")
+    df <- readr::read_csv(df, show_col_types = FALSE, 
+                          name_repair = "unique_quiet",
+                          progress = FALSE, 
+                          guess_max = 100000)
+  }
+  
+  # Convert to tibble and clean names
+  df <- as_tibble(df)
+  orig_rows <- nrow(df)
+  orig_cols <- ncol(df)
+  
+  # Fix column names
+  nm <- names(df)
+  if (is.null(nm)) nm <- rep("", ncol(df))
+  empty <- which(is.na(nm) | trimws(nm) == "")
+  if (length(empty) > 0) {
+    nm[empty] <- paste0("col_", empty)
+    cat("[FIX_DF] Fixed", length(empty), "empty column names\n")
+  }
+  names(df) <- make.unique(nm, sep = "_")
+  
+  # Remove empty rows and columns
+  df <- janitor::remove_empty(df, c("rows", "cols"), quiet = FALSE)
+  
+  cat(sprintf("[FIX_DF] %s: %d→%d rows, %d→%d cols\n", 
+              name, orig_rows, nrow(df), orig_cols, ncol(df)))
+  
+  df
+}
+
+# ---- Enhanced dbg with more details ----
+dbg <- function(df, name = deparse(substitute(df)), show_sample = TRUE) {
+  cat("\n╔════════════════════════════════════════╗\n")
+  cat("║", sprintf("%-38s", paste("DEBUG:", name)), "║\n")
+  cat("╚════════════════════════════════════════╝\n")
+  
+  if (inherits(df, "data.frame")) {
+    cat(sprintf("• Dimensions: %d rows × %d columns\n", nrow(df), ncol(df)))
+    cat(sprintf("• Memory size: %s\n", format(object.size(df), units = "auto")))
+    
+    # Data types summary
+    type_summary <- table(sapply(df, class))
+    cat("• Column types:", paste(names(type_summary), type_summary, sep = ":", collapse = ", "), "\n")
+    
+    if (nrow(df) > 0 && ncol(df) > 0) {
+      # NA analysis
+      na_counts <- colSums(is.na(df))
+      na_pct <- round(100 * na_counts / nrow(df), 1)
+      high_na <- which(na_pct > 50)
+      if (length(high_na) > 0) {
+        cat("• High NA columns (>50%):\n")
+        for (i in head(high_na, 5)) {
+          cat(sprintf("  - %s: %.1f%%\n", names(df)[i], na_pct[i]))
+        }
+      }
+      
+      # Show sample
+      if (show_sample) {
+        cat("\n• Sample data:\n")
+        print(head(df, 3))
+      }
+      
+      # Check for duplicate rows
+      n_dups <- sum(duplicated(df))
+      if (n_dups > 0) {
+        cat(sprintf("\n⚠ WARNING: %d duplicate rows detected\n", n_dups))
+      }
+    }
+  } else {
+    str(df, max.level = 2)
+  }
+  
+  invisible(df)
+}
+
+# ---- Enhanced join diagnostics ----
+check_join <- function(x, y, by, nm_x = "x", nm_y = "y", 
+                       show_unmatched = 5, validate_keys = TRUE) {
+  cat("\n┌─ JOIN DIAGNOSTIC ─────────────────────┐\n")
+  cat(sprintf("│ Joining %s → %s\n", nm_x, nm_y))
+  cat(sprintf("│ By: %s\n", paste(names(by), by, sep = "=", collapse = ", ")))
+  cat(sprintf("│ Rows: %s=%d, %s=%d\n", nm_x, nrow(x), nm_y, nrow(y)))
+  
+  # Validate join keys exist
+  if (validate_keys) {
+    for (key in names(by)) {
+      if (!key %in% names(x)) {
+        stop(sprintf("Join key '%s' not found in %s", key, nm_x))
+      }
+    }
+    for (key in by) {
+      if (!key %in% names(y)) {
+        stop(sprintf("Join key '%s' not found in %s", key, nm_y))
+      }
+    }
+  }
+  
+  # Check for duplicate keys
+  x_keys <- x[names(by)]
+  y_keys <- y[by]
+  names(y_keys) <- names(by)
+  
+  x_dups <- sum(duplicated(x_keys))
+  y_dups <- sum(duplicated(y_keys))
+  
+  if (x_dups > 0) cat(sprintf("│ ⚠ %s has %d duplicate key combinations\n", nm_x, x_dups))
+  if (y_dups > 0) cat(sprintf("│ ⚠ %s has %d duplicate key combinations\n", nm_y, y_dups))
+  
+  # Perform join
+  result <- suppressWarnings(
+    left_join(x, y, by = by, relationship = "many-to-many")
+  )
+  
+  cat(sprintf("│ Result: %d rows (%.1fx)\n", 
+              nrow(result), nrow(result) / nrow(x)))
+  
+  # Analyze unmatched
+  unmatched <- suppressWarnings(anti_join(x, y, by = by))
+  n_unmatched <- nrow(unmatched)
+  pct_unmatched <- 100 * n_unmatched / nrow(x)
+  
+  cat(sprintf("│ Unmatched: %d rows (%.1f%%)\n", n_unmatched, pct_unmatched))
+  
+  if (n_unmatched > 0 && show_unmatched > 0) {
+    cat("│ Sample unmatched:\n")
+    sample_unmatched <- head(unmatched[names(by)], show_unmatched)
+    for (i in 1:nrow(sample_unmatched)) {
+      cat(sprintf("│   • %s\n", 
+                  paste(sample_unmatched[i,], collapse = " | ")))
+    }
+  }
+  
+  cat("└───────────────────────────────────────┘\n")
+  
+  invisible(result)
+}
+
+# ---- Safe weighted mean with validation ----
+wtd_mean <- function(x, w, na.rm = TRUE) {
+  if (length(x) != length(w)) {
+    stop("Length mismatch: x and w must have same length")
+  }
+  
+  if (all(is.na(x)) || all(is.na(w))) {
+    return(NA_real_)
+  }
+  
+  if (na.rm) {
+    ok <- !is.na(x) & !is.na(w) & w > 0
+    if (!any(ok)) return(NA_real_)
+    x <- x[ok]
+    w <- w[ok]
+  }
+  
+  if (sum(w) == 0) return(NA_real_)
+  
+  weighted.mean(x, w, na.rm = FALSE)
+}
+
+# ---- FIPS utilities with validation ----
+to_fips5 <- function(x) {
+  x <- as.character(x)
+  x <- gsub("[^0-9]", "", x)  # Remove non-numeric characters
+  
+  # Handle special cases
+  x[x == ""] <- NA_character_
+  
+  # Pad to 5 digits
+  result <- stringr::str_pad(x, width = 5, pad = "0", side = "left")
+  
+  # Validate
+  invalid <- !is.na(result) & !grepl("^[0-9]{5}$", result)
+  if (any(invalid)) {
+    warning(sprintf("Invalid FIPS codes detected: %s", 
+                   paste(head(result[invalid], 5), collapse = ", ")))
+  }
+  
+  result
+}
+
+# ---- Enhanced column resolver ----
+resolve_col <- function(df, col, stop_on_error = TRUE) {
+  # Direct match
+  if (col %in% names(df)) return(col)
+  
+  # Case-insensitive match
+  lower_match <- which(tolower(names(df)) == tolower(col))
+  if (length(lower_match) == 1) return(names(df)[lower_match])
+  
+  # Space/dot/underscore variations
+  variations <- c(
+    gsub(" ", ".", col, fixed = TRUE),
+    gsub("\\.", " ", col),
+    gsub("_", ".", col),
+    gsub("\\.", "_", col),
+    gsub(" ", "_", col),
+    gsub("_", " ", col),
+    gsub("[^A-Za-z0-9]", ".", col),
+    gsub("[^A-Za-z0-9]", "_", col)
+  )
+  
+  for (var in unique(variations)) {
+    if (var %in% names(df)) return(var)
+  }
+  
+  # Fuzzy matching as last resort
+  distances <- stringdist::stringdist(col, names(df), method = "jw")
+  if (min(distances) < 0.1) {
+    best_match <- names(df)[which.min(distances)]
+    warning(sprintf("Column '%s' not found, using fuzzy match: '%s'", 
+                   col, best_match))
+    return(best_match)
+  }
+  
+  if (stop_on_error) {
+    stop(sprintf("Column '%s' not found. Available columns: %s",
+                col, paste(head(names(df), 10), collapse = ", ")))
+  } else {
+    warning(sprintf("Column '%s' not found in dataframe", col))
+    return(NULL)
+  }
+}
+
+# ========================== 1) Data Loading & Validation ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 1: DATA LOADING & INITIAL VALIDATION\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Validate required objects exist
+required_objects <- c("COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA", "geo", "geo_long",
+                     "tigris_counties_2020_raw", "geocorr_county_2020_cd_119",
+                     "geocorr_ct_county_cd_119", "tigris_cbsa_2020_raw",
+                     "tigris_states_2024_raw", "tigris_congressional_districts_2024_raw")
+
+missing_objects <- required_objects[!sapply(required_objects, exists)]
+if (length(missing_objects) > 0) {
+  stop(sprintf("Required objects missing: %s", 
+              paste(missing_objects, collapse = ", ")))
+}
+
+# Load CGT data with validation
+if (!exists("cgt_county_raw")) {
+  if (!exists("DATA_DIR")) {
+    stop("DATA_DIR not defined. Please set the data directory path.")
+  }
+  
+  cgt_file <- file.path(DATA_DIR, "CGT_county_data", "cgt_county_data_08_29_2024.csv")
+  if (!file.exists(cgt_file)) {
+    stop(sprintf("CGT data file not found: %s", cgt_file))
+  }
+  
+  cgt_county_raw <- with_timing(
+    "Load CGT county data",
+    readr::read_csv(cgt_file, show_col_types = FALSE, 
+                   progress = TRUE, guess_max = 100000) %>%
+      fix_df("cgt_county_raw")
+  )
+}
+
+dbg(cgt_county_raw, "cgt_county_raw")
+mem_usage()
+
+# Load optional supplementary data
+if (exists("paths") && !is.null(paths$raw_data)) {
+  supp_files <- list(
+    cim_eco_eti = "CIM_eco_eti_invest_categories.csv",
+    eco_rmi_crosswalk = "eco_rmi_updated_crosswalk.csv", 
+    clean_industry_naics = "clean_industry_naics.csv"
+  )
+  
+  for (name in names(supp_files)) {
+    obj_name <- paste0(name, "_raw")
+    if (!exists(obj_name)) {
+      file_path <- file.path(paths$raw_data, supp_files[[name]])
+      if (file.exists(file_path)) {
+        assign(obj_name, fix_df(file_path, name), envir = .GlobalEnv)
+        cat(sprintf("✓ Loaded %s\n", name))
+      } else {
+        cat(sprintf("⚠ File not found: %s\n", supp_files[[name]]))
+      }
+    }
+  }
+}
+
+# Define geographies with validation
+if (!exists("geographies")) {
+  geographies <- c("State.Name", "cd_119", "PEA", "CBSA.Title", "GeoName")
+  cat("ℹ Using default geographies:", paste(geographies, collapse = ", "), "\n")
+}
+
+if (!exists("geographies_clean")) {
+  geographies_clean <- c("State Name", "cd_119", "PEA", "CBSA Title", "GeoName")
+  cat("ℹ Using default clean geography labels\n")
+}
+
+# ========================== 2) County Normalization ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 2: COUNTY FIPS NORMALIZATION (2018 → 2020)\n") 
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Prepare states reference
+states_2024 <- with_timing(
+  "Prepare states reference",
+  tigris_states_2024_raw %>%
+    as_tibble() %>%
+    transmute(
+      STATEFP = GEOID,
+      STUSPS,
+      STATE_NAME = NAME
+    ) %>%
+    filter(!is.na(STATEFP))
+)
+
+# Prepare counties reference with validation
+counties_2020 <- with_timing(
+  "Prepare counties 2020 reference",
+  tigris_counties_2020_raw %>%
+    as_tibble() %>%
+    select(STATEFP, COUNTYFP, GEOID, NAME, NAMELSAD) %>%
+    left_join(states_2024, by = "STATEFP") %>%
+    mutate(fips5 = GEOID) %>%
+    filter(!is.na(fips5)) %>%
+    select(fips5, STATEFP, COUNTYFP, STUSPS, STATE_NAME, NAME, NAMELSAD) %>%
+    distinct()
+)
+
+cat(sprintf("✓ Counties 2020 reference: %d counties\n", nrow(counties_2020)))
+
+# Manual FIPS recodes (legacy → 2020)
+manual_county_recode <- tribble(
+  ~from,  ~to,     ~note,
+  "51515", "51019", "Bedford city VA → Bedford County",
+  "02270", "02158", "Wade Hampton AK → Kusilvak Census Area", 
+  "46113", "46102", "Shannon SD → Oglala Lakota County",
+  "02261", "02063", "Valdez-Cordova AK → Chugach (split)",
+  "02261", "02066", "Valdez-Cordova AK → Copper River (split)"
+)
+
+# Process CGT county data with enhanced validation
+cgt_county <- with_timing(
+  "Process and normalize CGT county data",
+  {
+    df <- cgt_county_raw %>%
+      clean_names() %>%
+      mutate(
+        county_fips5_orig = to_fips5(county),
+        county_fips5 = county_fips5_orig
+      )
+    
+    # Apply manual recodes
+    cat("Applying manual FIPS recodes...\n")
+    for (i in 1:nrow(manual_county_recode)) {
+      from_code <- manual_county_recode$from[i]
+      to_code <- manual_county_recode$to[i]
+      note <- manual_county_recode$note[i]
+      
+      matches <- sum(df$county_fips5 == from_code, na.rm = TRUE)
+      if (matches > 0) {
+        df$county_fips5[df$county_fips5 == from_code] <- to_code
+        cat(sprintf("  • %s: %d rows updated\n", note, matches))
+      }
+    }
+    
+    # Extract state info from county_name
+    df <- df %>%
+      mutate(
+        # Extract state abbreviation from "County, ST" format
+        county_state_abbr = stringr::str_extract(county_name, ", ([A-Z]{2})$") %>%
+          stringr::str_remove(", "),
+        
+        # Clean county label
+        county_label = stringr::str_remove(county_name, ",\\s*[A-Z]{2}$") %>%
+          stringr::str_trim()
+      )
+    
+    # Special handling for Alaska split (Valdez-Cordova)
+    if ("02261" %in% unique(df$county_fips5_orig)) {
+      cat("\nSpecial case: Splitting Valdez-Cordova (02261)...\n")
+      
+      vc_rows <- df %>% filter(county_fips5_orig == "02261")
+      n_vc <- nrow(vc_rows)
+      
+      if (n_vc > 0) {
+        # Create Chugach records
+        vc_chugach <- vc_rows %>%
+          mutate(
+            county_fips5 = "02063",
+            county_name = "Chugach Census Area, AK",
+            county_label = "Chugach Census Area",
+            county_state_abbr = "AK"
+          )
+        
+        # Create Copper River records
+        vc_copper <- vc_rows %>%
+          mutate(
+            county_fips5 = "02066",
+            county_name = "Copper River Census Area, AK",
+            county_label = "Copper River Census Area",
+            county_state_abbr = "AK"
+          )
+        
+        # Remove original and add splits
+        df <- df %>%
+          filter(county_fips5_orig != "02261") %>%
+          bind_rows(vc_chugach, vc_copper)
+        
+        cat(sprintf("  • Split %d rows → %d Chugach + %d Copper River\n",
+                   n_vc, nrow(vc_chugach), nrow(vc_copper)))
+      }
+    }
+    
+    df
+  }
+)
+
+# Validation: Check unmatched counties
+unmatched_analysis <- with_timing(
+  "Analyze unmatched counties",
+  {
+    unmatched <- cgt_county %>%
+      filter(!county_fips5 %in% counties_2020$fips5) %>%
+      group_by(county_fips5, county_name, county_state_abbr) %>%
+      summarise(n_records = n(), .groups = "drop") %>%
+      arrange(desc(n_records))
+    
+    # Separate 999 codes (not reported) from real unmatched
+    not_reported <- unmatched %>% filter(grepl("999$", county_fips5))
+    real_unmatched <- unmatched %>% filter(!grepl("999$", county_fips5))
+    
+    cat(sprintf("\nUnmatched Analysis:\n"))
+    cat(sprintf("  • Not reported (XXX999): %d codes, %d total records\n",
+               nrow(not_reported), sum(not_reported$n_records)))
+    cat(sprintf("  • Real unmatched: %d codes, %d total records\n",
+               nrow(real_unmatched), sum(real_unmatched$n_records)))
+    
+    if (nrow(real_unmatched) > 0) {
+      cat("\n  Real unmatched counties (top 10):\n")
+      print(head(real_unmatched, 10))
+    }
+    
+    list(not_reported = not_reported, real_unmatched = real_unmatched)
+  }
+)
+
+# Try secondary matching by name for real unmatched
+if (nrow(unmatched_analysis$real_unmatched) > 0) {
+  cat("\nAttempting secondary matching by county name + state...\n")
+  
+  counties_2020_lookup <- counties_2020 %>%
+    mutate(
+      lookup_name = NAMELSAD,
+      lookup_state = STUSPS
+    ) %>%
+    select(fips5, lookup_name, lookup_state)
+  
+  remapping <- unmatched_analysis$real_unmatched %>%
+    left_join(
+      counties_2020_lookup,
+      by = c("county_label" = "lookup_name", 
+             "county_state_abbr" = "lookup_state")
+    ) %>%
+    filter(!is.na(fips5)) %>%
+    select(county_fips5, new_fips5 = fips5)
+  
+  if (nrow(remapping) > 0) {
+    cat(sprintf("  • Found %d remappings by name\n", nrow(remapping)))
+    
+    # Apply remappings
+    cgt_county <- cgt_county %>%
+      left_join(remapping, by = "county_fips5") %>%
+      mutate(county_fips5 = coalesce(new_fips5, county_fips5)) %>%
+      select(-new_fips5)
+  }
+}
+
+dbg(cgt_county, "cgt_county (normalized)")
+
+# ========================== 3) Geographic Keys & Mapping ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 3: BUILDING GEOGRAPHIC KEYS AND MAPPINGS\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Standardize geo column names
+geo_std <- with_timing(
+  "Standardize geo dataframe",
+  {
+    df <- geo
+    
+    # Handle both dotted and spaced versions
+    possible_renames <- list(
+      c("CBSA.Title", "CBSA Title"),
+      c("CBSA.Code", "CBSA Code"),
+      c("State.Name", "State Name")
+    )
+    
+    for (pair in possible_renames) {
+      target <- pair[1]
+      alternatives <- pair[-1]
+      
+      if (!target %in% names(df)) {
+        for (alt in alternatives) {
+          if (alt %in% names(df)) {
+            df <- df %>% rename(!!target := !!alt)
+            cat(sprintf("  • Renamed '%s' → '%s'\n", alt, target))
+            break
+          }
+        }
+      }
+    }
+    
+    df
+  }
+)
+
+# Build comprehensive geo keys
+geo_keys <- with_timing(
+  "Build geographic keys",
+  {
+    keys_list <- list(
+      # States
+      geo_std %>%
+        filter(!is.na(State.Name), !is.na(state.fips)) %>%
+        distinct(
+          geo_type = "State",
+          geo_name = State.Name,
+          geo_code = sprintf("%02d", as.integer(state.fips))
+        ),
+      
+      # Congressional Districts
+      geo_std %>%
+        filter(!is.na(cd_119), !is.na(GEOID_2)) %>%
+        distinct(
+          geo_type = "Congressional District",
+          geo_name = cd_119,
+          geo_code = GEOID_2
+        ),
+      
+      # Economic Areas
+      geo_std %>%
+        filter(!is.na(PEA), !is.na(FCC_PEA_Number)) %>%
+        distinct(
+          geo_type = "Economic Area",
+          geo_name = PEA,
+          geo_code = as.character(FCC_PEA_Number)
+        ),
+      
+      # Metro Areas
+      geo_std %>%
+        filter(!is.na(CBSA.Title), !is.na(CBSA.Code)) %>%
+        distinct(
+          geo_type = "Metro Area",
+          geo_name = CBSA.Title,
+          geo_code = CBSA.Code
+        ),
+      
+      # Counties
+      geo_std %>%
+        filter(!is.na(GeoName), !is.na(fips)) %>%
+        distinct(
+          geo_type = "County",
+          geo_name = GeoName,
+          geo_code = fips
+        )
+    )
+    
+    result <- bind_rows(keys_list) %>% distinct()
+    
+    # Validation
+    cat("\nGeo keys summary:\n")
+    result %>%
+      group_by(geo_type) %>%
+      summarise(
+        n = n(),
+        n_missing_code = sum(is.na(geo_code)),
+        .groups = "drop"
+      ) %>%
+      print()
+    
+    result
+  }
+)
+
+# ========================== 4) GDP Weights & County Geography ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 4: GDP WEIGHTS AND COUNTY GEOGRAPHY ENRICHMENT\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Build GDP weights with fallback
+gdp_weights <- with_timing(
+  "Build GDP weights",
+  {
+    # Primary GDP from geo
+    primary_gdp <- geo_std %>%
+      filter(!is.na(fips), !is.na(gdp)) %>%
+      distinct(county_fips5 = fips, gdp_primary = gdp)
+    
+    # Fallback GDP from crosswalk
+    fallback_gdp <- COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA %>%
+      transmute(
+        county_fips5 = COUNTY_GEOID,
+        gdp_fallback = COUNTY_GDP_2022
+      )
+    
+    # Combine with validation
+    weights <- primary_gdp %>%
+      full_join(fallback_gdp, by = "county_fips5") %>%
+      mutate(
+        gdp_weight = coalesce(gdp_primary, gdp_fallback),
+        # Zero weight for "not reported" counties
+        gdp_weight = if_else(grepl("999$", county_fips5), 0, gdp_weight),
+        gdp_weight = if_else(is.na(gdp_weight), 0, gdp_weight)
+      ) %>%
+      select(county_fips5, gdp_weight)
+    
+    # Validation
+    cat(sprintf("GDP weights summary:\n"))
+    cat(sprintf("  • Total counties: %d\n", nrow(weights)))
+    cat(sprintf("  • With positive weight: %d\n", sum(weights$gdp_weight > 0)))
+    cat(sprintf("  • Zero weight: %d\n", sum(weights$gdp_weight == 0)))
+    cat(sprintf("  • Total GDP: $%.1f trillion\n", 
+               sum(weights$gdp_weight, na.rm = TRUE) / 1e6))
+    
+    weights
+  }
+)
+
+# Build county geography enrichment
+county_geo <- with_timing(
+  "Build county geography",
+  geo_std %>%
+    select(
+      State.Name, state_abbr, state.fips,
+      GeoName, fips, 
+      PEA, FCC_PEA_Number,
+      CBSA.Title, CBSA.Code,
+      cd_119, GEOID_2, 
+      percent_district, gdp
+    ) %>%
+    rename(county_fips5 = fips) %>%
+    filter(!is.na(county_fips5))
+)
+
+# Congressional district allocation with Connecticut handling
+cd_alloc_all <- with_timing(
+  "Build CD allocation factors",
+  {
+    # Standard allocation
+    standard <- geocorr_county_2020_cd_119 %>%
+      transmute(
+        COUNTY_GEOID = COUNTY_GEOID,
+        CD119_GEOID = CD119_GEOID,
+        cd_to_county = `cd119-to-county allocation factor`
+      )
+    
+    # Connecticut special handling
+    ct_special <- geocorr_ct_county_cd_119 %>%
+      transmute(
+        COUNTY_GEOID = `County code`,
+        CD119_GEOID = paste0("09", `Congressional district code (119th Congress)`),
+        cd_to_county = `cd119-to-CTcounty allocation factor`
+      )
+    
+    # Combine (CT overrides standard)
+    result <- standard %>%
+      anti_join(ct_special, by = c("COUNTY_GEOID", "CD119_GEOID")) %>%
+      bind_rows(ct_special) %>%
+      filter(!is.na(cd_to_county), cd_to_county > 0)
+    
+    cat(sprintf("\nCD allocation summary:\n"))
+    cat(sprintf("  • Standard allocations: %d\n", nrow(standard)))
+    cat(sprintf("  • Connecticut overrides: %d\n", nrow(ct_special)))
+    cat(sprintf("  • Final allocations: %d\n", nrow(result)))
+    
+    result
+  }
+)
+
+# Join county geography with CD allocations
+county_geo_cd <- check_join(
+  county_geo, cd_alloc_all,
+  by = c("county_fips5" = "COUNTY_GEOID", "GEOID_2" = "CD119_GEOID"),
+  nm_x = "county_geo", nm_y = "cd_alloc"
+) %>%
+  mutate(
+    percent_district = coalesce(100 * cd_to_county, percent_district, 0)
+  )
+
+# ========================== 5) Main Feasibility Base ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 5: BUILD MAIN FEASIBILITY BASE TABLE\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+county_feas_base <- with_timing(
+  "Build county feasibility base",
+  {
+    # First join: CGT + county geography
+    temp1 <- check_join(
+      cgt_county, county_geo_cd,
+      by = "county_fips5",
+      nm_x = "cgt_county", nm_y = "county_geo_cd"
+    )
+    
+    # Second join: Add GDP weights
+    result <- check_join(
+      temp1, gdp_weights,
+      by = "county_fips5",
+      nm_x = "temp1", nm_y = "gdp_weights"
+    ) %>%
+      mutate(
+        gdp_weight = coalesce(gdp_weight, 0)
+      )
+    
+    # Validation
+    missing_all_geo <- result %>%
+      filter(
+        is.na(State.Name) & 
+        is.na(CBSA.Title) & 
+        is.na(PEA) & 
+        is.na(cd_119)
+      )
+    
+    cat(sprintf("\nGeography coverage:\n"))
+    cat(sprintf("  • Total records: %d\n", nrow(result)))
+    cat(sprintf("  • With State: %.1f%%\n", 
+               100 * mean(!is.na(result$State.Name))))
+    cat(sprintf("  • With CD: %.1f%%\n", 
+               100 * mean(!is.na(result$cd_119))))
+    cat(sprintf("  • With PEA: %.1f%%\n", 
+               100 * mean(!is.na(result$PEA))))
+    cat(sprintf("  • With CBSA: %.1f%%\n", 
+               100 * mean(!is.na(result$CBSA.Title))))
+    cat(sprintf("  • With County: %.1f%%\n", 
+               100 * mean(!is.na(result$GeoName))))
+    cat(sprintf("  • Missing all geography: %d (%.1f%%)\n",
+               nrow(missing_all_geo), 
+               100 * nrow(missing_all_geo) / nrow(result)))
+    
+    result
+  }
+)
+
+# Create slim version for aggregation
+county_feas_base_slim <- county_feas_base %>%
+  select(
+    State.Name, cd_119, PEA, CBSA.Title, GeoName,
+    aggregation_level, aggregation_level_desc,
+    industry_desc, industry_code, 
+    density, pci,
+    gdp_weight, percent_district
+  )
+
+mem_usage()
+
+# ========================== 6) Parallel Processing Setup ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 6: PARALLEL PROCESSING SETUP\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+HAS_MULTIDPLYR <- requireNamespace("multidplyr", quietly = TRUE)
+
+N_WORKERS <- {
+  override <- getOption("NCORES_OVERRIDE", default = NA)
+  env <- Sys.getenv("R_FUTURE_WORKERS", unset = NA)
+  n <- suppressWarnings(as.integer(if (!is.na(override)) override else env))
+  if (is.na(n) || n < 1L) n <- max(1L, parallel::detectCores() - 1L)
+  min(n, 7)  # Cap at 7 workers to avoid memory issues
+}
+
+cat(sprintf("System info:\n"))
+cat(sprintf("  • Hostname: %s\n", Sys.info()[["nodename"]]))
+cat(sprintf("  • Platform: %s\n", R.version$platform))
+cat(sprintf("  • Cores detected: %d\n", parallel::detectCores()))
+cat(sprintf("  • Workers to use: %d\n", N_WORKERS))
+cat(sprintf("  • multidplyr available: %s\n", HAS_MULTIDPLYR))
+
+# Cluster management
+CL <- NULL
+
+# ========================== 7) Aggregation Functions ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 7: DEFINE AGGREGATION FUNCTIONS\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Main feasibility aggregation
+agg_one_geog <- function(df, geog_col, try_multidplyr = FALSE, n_workers = N_WORKERS) {
+  geog_col <- resolve_col(df, geog_col)
+  gsym <- rlang::sym(geog_col)
+  
+  cat(sprintf("\n[AGG] Processing: %s\n", geog_col))
+  
+  # Filter to non-missing geography
+  base <- df %>% filter(!is.na(!!gsym))
+  
+  nrows <- nrow(base)
+  nuniq <- n_distinct(base[[geog_col]])
+  
+  cat(sprintf("  • Input: %s rows, %d unique groups\n", 
+             format(nrows, big.mark = ","), nuniq))
+  
+  # Pre-compute weights
+  if (geog_col == "cd_119") {
+    base <- base %>%
+      mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
+  } else {
+    base <- base %>%
+      distinct(
+        !!gsym, 
+        aggregation_level, aggregation_level_desc,
+        industry_desc, industry_code, 
+        density, pci, gdp_weight
+      )
+  }
+  
+  # Perform aggregation (sequential for stability)
+  cat("  • Aggregating (sequential)...")
+  
+  if (geog_col == "cd_119") {
+    result <- base %>%
+      group_by(!!gsym, aggregation_level, aggregation_level_desc, 
+               industry_desc, industry_code) %>%
+      summarise(
+        density = wtd_mean(density, .weight),
+        pci = wtd_mean(pci, .weight),
+        .groups = "drop"
+      )
+  } else {
+    result <- base %>%
+      group_by(!!gsym, aggregation_level, aggregation_level_desc,
+               industry_desc, industry_code) %>%
+      summarise(
+        density = wtd_mean(density, gdp_weight),
+        pci = wtd_mean(pci, gdp_weight),
+        .groups = "drop"
+      )
+  }
+  
+  cat(" done\n")
+  cat(sprintf("  • Output: %d rows\n", nrow(result)))
+  
+  result
+}
+
+# Strategic feasibility aggregation
+agg_one_geog_strat <- function(df, geog_col, try_multidplyr = FALSE, n_workers = N_WORKERS) {
+  geog_col <- resolve_col(df, geog_col)
+  gsym <- rlang::sym(geog_col)
+  
+  cat(sprintf("\n[AGG-STRAT] Processing: %s\n", geog_col))
+  
+  base <- df %>% filter(!is.na(!!gsym))
+  
+  nrows <- nrow(base)
+  nuniq <- n_distinct(base[[geog_col]])
+  
+  cat(sprintf("  • Input: %s rows, %d unique groups\n",
+             format(nrows, big.mark = ","), nuniq))
+  
+  # Pre-compute weights
+  if (geog_col == "cd_119") {
+    base <- base %>%
+      mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
+  } else {
+    base <- base %>%
+      distinct(!!gsym, clean_industry, production_phase, density, gdp_weight)
+  }
+  
+  # Aggregate
+  cat("  • Aggregating (sequential)...")
+  
+  if (geog_col == "cd_119") {
+    result <- base %>%
+      group_by(!!gsym, clean_industry, production_phase) %>%
+      summarise(
+        density = wtd_mean(density, .weight),
+        .groups = "drop"
+      )
+  } else {
+    result <- base %>%
+      group_by(!!gsym, clean_industry, production_phase) %>%
+      summarise(
+        density = wtd_mean(density, gdp_weight),
+        .groups = "drop"
+      )
+  }
+  
+  cat(" done\n")
+  cat(sprintf("  • Output: %d rows\n", nrow(result)))
+  
+  result
+}
+
+# ECI aggregation
+agg_one_geog_eci <- function(df, geog_col, try_multidplyr = FALSE, n_workers = N_WORKERS) {
+  geog_col <- resolve_col(df, geog_col)
+  gsym <- rlang::sym(geog_col)
+  
+  cat(sprintf("\n[AGG-ECI] Processing: %s\n", geog_col))
+  
+  base <- df %>% filter(!is.na(!!gsym))
+  
+  nrows <- nrow(base)
+  nuniq <- n_distinct(base[[geog_col]])
+  
+  cat(sprintf("  • Input: %s rows, %d unique groups\n",
+             format(nrows, big.mark = ","), nuniq))
+  
+  # Pre-compute weights
+  if (geog_col == "cd_119") {
+    base <- base %>%
+      mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
+  } else {
+    base <- base %>%
+      distinct(!!gsym, eci, gdp_weight)
+  }
+  
+  # Aggregate
+  cat("  • Aggregating (sequential)...")
+  
+  if (geog_col == "cd_119") {
+    result <- base %>%
+      group_by(!!gsym) %>%
+      summarise(
+        eci = wtd_mean(eci, .weight),
+        .groups = "drop"
+      )
+  } else {
+    result <- base %>%
+      group_by(!!gsym) %>%
+      summarise(
+        eci = wtd_mean(eci, gdp_weight),
+        .groups = "drop"
+      )
+  }
+  
+  cat(" done\n")
+  cat(sprintf("  • Output: %d rows\n", nrow(result)))
+  
+  result
+}
+
+# ========================== 8) Main Feasibility Aggregation ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 8: MAIN FEASIBILITY AGGREGATION\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+results_list <- list()
+
+for (geog in geographies) {
+  results_list[[geog]] <- with_timing(
+    sprintf("Aggregate feasibility for %s", geog),
+    agg_one_geog(county_feas_base_slim, geog, try_multidplyr = FALSE)
+  )
+}
+
+# Combine results
+county_feas <- with_timing(
+  "Combine feasibility results",
+  bind_rows(results_list, .id = "geog_col")
+)
+
+cat(sprintf("\n✓ Combined feasibility: %d rows\n", nrow(county_feas)))
+
+# Label and clean
+county_feas_labeled <- with_timing(
+  "Label feasibility results",
+  county_feas %>%
+    ungroup() %>%
+    mutate(
+      geo = case_when(
+        geog_col == "State.Name" ~ "State",
+        geog_col == "cd_119" ~ "Congressional District",
+        geog_col == "PEA" ~ "Economic Area",
+        geog_col == "GeoName" ~ "County",
+        geog_col == "CBSA.Title" ~ "Metro Area",
+        TRUE ~ "Unknown"
+      ),
+      geo_name = case_when(
+        geog_col == "State.Name" ~ State.Name,
+        geog_col == "cd_119" ~ cd_119,
+        geog_col == "PEA" ~ PEA,
+        geog_col == "GeoName" ~ GeoName,
+        geog_col == "CBSA.Title" ~ CBSA.Title,
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(geo_name), geo_name != "", !grepl("NA-NA", geo_name)) %>%
+    select(geo, geo_name, aggregation_level, aggregation_level_desc,
+           industry_desc, industry_code, density, pci)
+)
+
+# Calculate percentile ranks
+feas <- with_timing(
+  "Calculate percentile ranks",
+  county_feas_labeled %>%
+    group_by(geo, aggregation_level, industry_desc) %>%
+    mutate(
+      industry_feas_perc = percent_rank(density),
+      industry_feas_perc = round(industry_feas_perc, 4)
+    ) %>%
+    group_by(geo, geo_name, aggregation_level) %>%
+    mutate(
+      region_feas_rank = rank(-industry_feas_perc, ties.method = "first")
+    ) %>%
+    ungroup()
+)
+
+dbg(feas, "feas (final)", show_sample = FALSE)
+
+# ========================== 9) Strategic Feasibility ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 9: STRATEGIC FEASIBILITY\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Prepare clean industry NAICS mapping
+if (exists("clean_industry_naics_raw") || exists("eco_rmi_crosswalk_raw")) {
+  clean_industry_naics <- with_timing(
+    "Prepare clean industry mapping",
+    {
+      parts <- list()
+      
+      if (exists("clean_industry_naics_raw")) {
+        parts$clean <- clean_industry_naics_raw %>%
+          clean_names() %>%
+          rename_with(~gsub("x6_digit_code", "industry_code_6", .x)) %>%
+          select(any_of(c("clean_industry", "production_phase", 
+                         "industry_code_6", "naics_desc")))
+      }
+      
+      if (exists("eco_rmi_crosswalk_raw")) {
+        parts$eco <- eco_rmi_crosswalk_raw %>%
+          clean_names() %>%
+          rename_with(~gsub("x6[._]digit[._]code", "industry_code_6", .x)) %>%
+          select(any_of(c("clean_industry", "production_phase",
+                         "industry_code_6", "naics_desc")))
+      }
+      
+      result <- bind_rows(parts) %>%
+        distinct() %>%
+        mutate(industry_code_6 = as.integer(industry_code_6)) %>%
+        filter(!is.na(industry_code_6))
+      
+      cat(sprintf("  • Clean industries: %d\n", n_distinct(result$clean_industry)))
+      cat(sprintf("  • NAICS codes: %d\n", n_distinct(result$industry_code_6)))
+      
+      result
+    }
+  )
+  
+  # Build strategic feasibility base
+  county_feas_strategic_base <- with_timing(
+    "Build strategic feasibility base",
+    {
+      temp <- cgt_county %>%
+        mutate(industry_code_6 = as.integer(industry_code)) %>%
+        inner_join(
+          clean_industry_naics,
+          by = "industry_code_6",
+          relationship = "many-to-many"
+        )
+      
+      cat(sprintf("  • Matched records: %d\n", nrow(temp)))
+      
+      # Add geography
+      temp <- check_join(
+        temp, county_geo_cd,
+        by = "county_fips5",
+        nm_x = "cgt_strategic", nm_y = "county_geo_cd",
+        show_unmatched = 3
+      )
+      
+      # Add GDP weights
+      result <- check_join(
+        temp, gdp_weights,
+        by = "county_fips5",
+        nm_x = "temp", nm_y = "gdp_weights",
+        show_unmatched = 3
+      ) %>%
+        mutate(gdp_weight = coalesce(gdp_weight, 0))
+      
+      result
+    }
+  )
+  
+  # Create slim version
+  county_feas_strategic_base_slim <- county_feas_strategic_base %>%
+    select(
+      State.Name, cd_119, PEA, CBSA.Title, GeoName,
+      clean_industry, production_phase, density,
+      gdp_weight, percent_district
+    )
+  
+  # Aggregate strategic feasibility
+  results_list_strat <- list()
+  
+  for (geog in geographies) {
+    results_list_strat[[geog]] <- with_timing(
+      sprintf("Aggregate strategic for %s", geog),
+      agg_one_geog_strat(county_feas_strategic_base_slim, geog)
+    )
+  }
+  
+  # Process strategic results
+  feas_strategic <- with_timing(
+    "Process strategic feasibility",
+    {
+      combined <- bind_rows(results_list_strat, .id = "geog_col")
+      
+      result <- combined %>%
+        ungroup() %>%
+        mutate(
+          geo = case_when(
+            geog_col == "State.Name" ~ "State",
+            geog_col == "cd_119" ~ "Congressional District",
+            geog_col == "PEA" ~ "Economic Area",
+            geog_col == "GeoName" ~ "County",
+            geog_col == "CBSA.Title" ~ "Metro Area",
+            TRUE ~ "Unknown"
+          ),
+          geo_name = case_when(
+            geog_col == "State.Name" ~ State.Name,
+            geog_col == "cd_119" ~ cd_119,
+            geog_col == "PEA" ~ PEA,
+            geog_col == "GeoName" ~ GeoName,
+            geog_col == "CBSA.Title" ~ CBSA.Title,
+            TRUE ~ NA_character_
+          )
+        ) %>%
+        filter(!is.na(geo_name), geo_name != "", !grepl("NA-NA", geo_name)) %>%
+        mutate(
+          industry = case_when(
+            production_phase == "Manufacturing" ~ paste0(clean_industry, " Manufacturing"),
+            production_phase == "Operations" ~ clean_industry,
+            TRUE ~ NA_character_
+          )
+        ) %>%
+        filter(!is.na(industry)) %>%
+        select(geo, geo_name, industry, density) %>%
+        distinct() %>%
+        pivot_wider(
+          names_from = industry,
+          names_prefix = "Feasibility_",
+          values_from = density,
+          values_fill = NA
+        ) %>%
+        rowwise() %>%
+        mutate(
+          Strategic_Feasibility = mean(c_across(where(is.numeric)), na.rm = TRUE)
+        ) %>%
+        ungroup()
+      
+      cat(sprintf("  • Strategic feasibility: %d geographies\n", nrow(result)))
+      
+      result
+    }
+  )
+  
+  dbg(feas_strategic, "feas_strategic", show_sample = FALSE)
+} else {
+  cat("⚠ Skipping strategic feasibility (missing data files)\n")
+  feas_strategic <- NULL
+}
+
+# ========================== 10) Economic Complexity Index ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 10: ECONOMIC COMPLEXITY INDEX (ECI)\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Build ECI base
+county_eci_base <- with_timing(
+  "Build ECI base",
+  {
+    # Join CGT with geography
+    temp <- check_join(
+      cgt_county, county_geo_cd,
+      by = "county_fips5",
+      nm_x = "cgt_county", nm_y = "county_geo_cd",
+      show_unmatched = 3
+    )
+    
+    # Add GDP weights
+    result <- check_join(
+      temp, gdp_weights,
+      by = "county_fips5",
+      nm_x = "temp", nm_y = "gdp_weights",
+      show_unmatched = 3
+    ) %>%
+      mutate(gdp_weight = coalesce(gdp_weight, 0))
+    
+    result
+  }
+)
+
+# Create slim version for ECI
+county_eci_base_slim <- county_eci_base %>%
+  select(
+    State.Name, cd_119, PEA, CBSA.Title, GeoName,
+    eci, gdp_weight, percent_district
+  )
+
+# Aggregate ECI
+results_list_eci <- list()
+
+for (geog in geographies) {
+  results_list_eci[[geog]] <- with_timing(
+    sprintf("Aggregate ECI for %s", geog),
+    agg_one_geog_eci(county_eci_base_slim, geog)
+  )
+}
+
+# Process ECI results
+county_eci <- with_timing(
+  "Process ECI results",
+  {
+    combined <- bind_rows(results_list_eci, .id = "geog_col")
+    
+    result <- combined %>%
+      mutate(
+        geo = case_when(
+          geog_col == "State.Name" ~ "State",
+          geog_col == "cd_119" ~ "Congressional District",
+          geog_col == "PEA" ~ "Economic Area",
+          geog_col == "GeoName" ~ "County",
+          geog_col == "CBSA.Title" ~ "Metro Area",
+          TRUE ~ "Unknown"
+        ),
+        geo_name = case_when(
+          geog_col == "State.Name" ~ State.Name,
+          geog_col == "cd_119" ~ cd_119,
+          geog_col == "PEA" ~ PEA,
+          geog_col == "GeoName" ~ GeoName,
+          geog_col == "CBSA.Title" ~ CBSA.Title,
+          TRUE ~ NA_character_
+        )
+      ) %>%
+      filter(!is.na(geo_name), geo_name != "", !grepl("NA-NA", geo_name)) %>%
+      select(geo, geo_name, eci) %>%
+      rename(economic_complexity = eci)
+    
+    cat(sprintf("  • ECI results: %d geographies\n", nrow(result)))
+    
+    result
+  }
+)
+
+dbg(county_eci, "county_eci", show_sample = FALSE)
+
+# ========================== 11) Geo Code Mapping ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 11: ATTACH GEO CODES FOR MAPPING\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Enhanced mapping function
+attach_geo_codes <- function(df, geo_keys, geo_long, name = "data") {
+  cat(sprintf("\nMapping geo codes for %s...\n", name))
+  
+  # First pass: direct join with geo_keys
+  result <- df %>%
+    left_join(
+      geo_keys,
+      by = c("geo" = "geo_type", "geo_name" = "geo_name"),
+      relationship = "many-to-many"
+    )
+  
+  n_missing_1 <- sum(is.na(result$geo_code))
+  cat(sprintf("  • After geo_keys join: %d missing codes\n", n_missing_1))
+  
+  # Second pass: try geo_long as fallback
+  if (n_missing_1 > 0) {
+    result <- result %>%
+      left_join(
+        geo_long %>%
+          rename(gl_type = geo_type, gl_name = geo_name, gl_code = geo_code),
+        by = c("geo" = "gl_type", "geo_name" = "gl_name")
+      ) %>%
+      mutate(geo_code = coalesce(geo_code, gl_code)) %>%
+      select(-gl_code)
+    
+    n_missing_2 <- sum(is.na(result$geo_code))
+    cat(sprintf("  • After geo_long join: %d missing codes\n", n_missing_2))
+  }
+  
+  # Report any remaining unmapped
+  if (sum(is.na(result$geo_code)) > 0) {
+    unmapped <- result %>%
+      filter(is.na(geo_code)) %>%
+      distinct(geo, geo_name) %>%
+      head(10)
+    
+    cat("  ⚠ Sample unmapped:\n")
+    print(unmapped)
+  } else {
+    cat("  ✓ All records mapped successfully\n")
+  }
+  
+  result
+}
+
+# Map all outputs
+feas_long_mapped <- attach_geo_codes(feas, geo_keys, geo_long, "feasibility")
+
+if (!is.null(feas_strategic)) {
+  feas_strategic_long_mapped <- attach_geo_codes(
+    feas_strategic, geo_keys, geo_long, "strategic feasibility"
+  )
+} else {
+  feas_strategic_long_mapped <- NULL
+}
+
+eci_long_mapped <- attach_geo_codes(county_eci, geo_keys, geo_long, "ECI")
+
+# ========================== 12) Final Validation & Cleanup ==========================
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("STEP 12: FINAL VALIDATION AND CLEANUP\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+
+# Validate outputs
+validate_output <- function(df, name) {
+  cat(sprintf("\nValidating %s:\n", name))
+  cat(sprintf("  • Rows: %d\n", nrow(df)))
+  cat(sprintf("  • Columns: %d\n", ncol(df)))
+  cat(sprintf("  • Unique geographies: %d\n", n_distinct(df$geo_name)))
+  cat(sprintf("  • Missing geo_codes: %d\n", sum(is.na(df$geo_code))))
+  
+  # Check for duplicates
+  key_cols <- c("geo", "geo_name")
+  if ("aggregation_level" %in% names(df)) {
+    key_cols <- c(key_cols, "aggregation_level", "industry_desc")
+  }
+  
+  n_dups <- df %>%
+    group_by(across(all_of(key_cols))) %>%
+    filter(n() > 1) %>%
+    nrow()
+  
+  if (n_dups > 0) {
+    cat(sprintf("  ⚠ Duplicate keys: %d\n", n_dups))
+  } else {
+    cat("  ✓ No duplicate keys\n")
+  }
+}
+
+validate_output(feas_long_mapped, "feasibility")
+if (!is.null(feas_strategic_long_mapped)) {
+  validate_output(feas_strategic_long_mapped, "strategic feasibility")
+}
+validate_output(eci_long_mapped, "ECI")
+
+# Clean up cluster if created
+if (!is.null(CL)) {
+  try(parallel::stopCluster(CL), silent = TRUE)
+  cat("\n✓ Parallel cluster stopped\n")
+}
+
+# Final memory report
+cat("\n")
+mem_usage()
+
+# Summary
+cat("\n╔════════════════════════════════════════════════════════════════════╗\n")
+cat("║                     PIPELINE COMPLETE                               ║\n")
+cat("╚════════════════════════════════════════════════════════════════════╝\n")
+
+cat("\nFinal outputs:\n")
+cat(sprintf("  • feas_long_mapped: %d rows\n", nrow(feas_long_mapped)))
+if (!is.null(feas_strategic_long_mapped)) {
+  cat(sprintf("  • feas_strategic_long_mapped: %d rows\n", 
+             nrow(feas_strategic_long_mapped)))
+}
+cat(sprintf("  • eci_long_mapped: %d rows\n", nrow(eci_long_mapped)))
+cat(sprintf("\nCompleted at %s\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+
+# Display final glimpse
+cat("\n═══════════════════════════════════════════════════════════════════\n")
+cat("FINAL OUTPUT GLIMPSE - COUNTY ECI\n")
+cat("═══════════════════════════════════════════════════════════════════\n")
+glimpse(county_eci)
+
+================================================================================
+# END feas.R
+================================================================================
+
+
+================================================================================
+# BEGIN geo_credits.R
+================================================================================
+
 # -------------------------------------------------------------------------------------------------
 # FIXED GEO_CREDITS SECTION - Tax Credit Allocations
 # -------------------------------------------------------------------------------------------------
@@ -7376,6 +8756,15 @@ cli_msg("45 total allocated: $%.1fM (%.0f geos)",
 cli_msg("30D total allocated: $%.1fM (%.0f geos)", 
         summary_stats$local_30d_total, summary_stats$local_30d_nonzero)
 
+================================================================================
+# END geo_credits.R
+================================================================================
+
+
+================================================================================
+# BEGIN politics.R
+================================================================================
+
 # ================================================
 # Robust Alaska (AK) ED -> County/Borough Mapping
 # and CBS County-level Output (with AK fixed)
@@ -7680,7 +9069,6 @@ ak_alloc_long <- cbs_ak_ed %>%
 
 safe_glimpse(ak_alloc_long, "ak_alloc_long (post-join and weighted)"); log_dim(ak_alloc_long, "ak_alloc_long")
 require_cols(ak_alloc_long, c("COUNTY_GEOID","COUNTY_NAME","weight"), "ak_alloc_long")
-
 ak_county_alloc <- ak_alloc_long %>%
   group_by(COUNTY_GEOID) %>%
   summarise(
@@ -7717,16 +9105,15 @@ ak_county_alloc <- ak_alloc_long %>%
     leader_margin_safe = leader_margin,
     leader_margin_abs  = abs(leader_margin),
     at_least_20pct_in  = "20pctExpVoteIn",
-    ak_district        = NA_character_
+    ak_district        = NA_character_,
+    ts_pretty          = as.character(timeStamp)  # ADD THIS LINE HERE
   ) %>%
   select(
     state, totalExpVote, pctExpVote, totalVote, timeStamp,
     vote_Harris, vote_Trump, NAME, vote_Other, pctExpVote_NEW,
-    pct_Harris, pct_Trump,
-    ts_pretty = timeStamp,  # keep same field; upstream may rewrite pretty string
+    pct_Harris, pct_Trump, ts_pretty,  # SIMPLIFIED: just select ts_pretty
     fips, leader, at_least_20pct_in, leader_margin, leader_margin_safe, leader_margin_abs, ak_district
   )
-
 safe_glimpse(ak_county_alloc, "ak_county_alloc (allocated AK counties)"); log_dim(ak_county_alloc, "ak_county_alloc")
 
 # -------------------------
@@ -8192,6 +9579,15 @@ if(nrow(dup_check) > 0) {
 
 # Peek a few
 safe_glimpse(pres2024, "pres2024 (final, aligned to geo_long)")
+
+================================================================================
+# END politics.R
+================================================================================
+
+
+================================================================================
+# BEGIN state_variables.R
+================================================================================
 
 # ======================================================================
 # state_variables.R  — consolidated, defensive, ~350+ lines with debugging
@@ -8668,830 +10064,15 @@ gjf_statetotal_2020_24 <- gjf_unified %>%
   coerce_num_na_bad()
 dbg(gjf_statetotal_2020_24, "gjf_statetotal_2020_24")
 
-###############################################################################
-# FEASIBILITY PIPELINE — robust + debug-heavy (2018→2020 FIPS, geo_long codes)
-# Change: remove future.apply group-parallel (caused 3.7+ GiB globals export).
-# Aggregations now default to in-place dplyr::summarise() (sequential, fast).
-# If multidplyr truly works on your system, we’ll use it; otherwise sequential.
-# Timing + memory logs, and detailed join/coverage diagnostics throughout.
-###############################################################################
+================================================================================
+# END state_variables.R
+================================================================================
 
-# ========================== 0) Libraries & helpers ==========================
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(tidyr)
-  library(stringr)
-  library(purrr)
-  library(readr)
-  library(janitor)
-  library(tibble)
-  library(rlang)
-  # Optional parallel helpers
-  if (!requireNamespace("multidplyr", quietly = TRUE)) {
-    message("[parallel] Package 'multidplyr' not installed; will run sequential aggregation.")
-  } else {
-    library(multidplyr)
-  }
-})
 
-# ---- Debug helpers ----
-with_timing <- function(label, expr) {
-  cat("\n[TIME] START:", label, "\n")
-  t <- system.time({ res <- force(expr) })
-  cat(sprintf("[TIME] END  : %s  | elapsed=%.2fs user=%.2fs sys=%.2fs\n",
-              label, t[["elapsed"]], t[["user.self"]], t[["sys.self"]]))
-  invisible(res)
-}
-mem <- function(obj, name = deparse(substitute(obj))) {
-  sz <- tryCatch(object.size(obj), error = function(e) NA)
-  cat(sprintf("[MEM] %s size: %s\n", name, if (is.na(sz)) "unknown" else format(sz, units = "auto")))
-}
+================================================================================
+# APPENDED END SECTION (GLANCES + DATA FRAME CHECK)
+================================================================================
 
-# ---- Robust fix_df(): repairs names & drops empty rows/cols ----
-fix_df <- function(df) {
-  if (is.character(df) && length(df) == 1L && file.exists(df)) {
-    df <- readr::read_csv(df, show_col_types = FALSE, name_repair = "unique_quiet",
-                          progress = FALSE, guess_max = 100000)
-  } else {
-    df <- as.data.frame(df, stringsAsFactors = FALSE)
-    nm <- names(df); if (is.null(nm)) nm <- rep("", ncol(df))
-    empty <- which(is.na(nm) | trimws(nm) == "")
-    if (length(empty)) nm[empty] <- paste0("col_", empty)
-    names(df) <- make.unique(nm, sep = "_")
-    df <- tibble::as_tibble(df, .name_repair = "minimal")
-  }
-  janitor::remove_empty(df, c("rows", "cols"))
-}
-
-# ---- dbg(): compact structure + NA counts + head ----
-if (!exists("dbg")) {
-  dbg <- function(df, name = deparse(substitute(df))) {
-    cat("\n====", name, "====\n")
-    if (inherits(df, "data.frame")) {
-      cat("Rows:", nrow(df), "  | Cols:", ncol(df), "\n")
-      mem(df, name)
-      if (nrow(df) > 0) {
-        na_ct <- sort(colSums(is.na(df)), decreasing = TRUE)
-        if (length(na_ct)) {
-          cat("\n---- NA counts (top 20) ----\n")
-          print(head(na_ct[na_ct > 0], 20))
-        }
-        cat("\nHead:\n")
-        print(suppressWarnings(dplyr::as_tibble(df)) %>% head(5))
-      }
-    } else {
-      str(df)
-    }
-    invisible(df)
-  }
-}
-
-# ---- Utility: left join with coverage report ----
-check_join <- function(x, y, by, nm_x="x", nm_y="y", show = 8) {
-  cat("\n[check_join] left_join(", nm_x, " -> ", nm_y, ") by: ",
-      paste(names(by), by, sep="=", collapse=", "), "\n", sep="")
-  cat("[check_join] nrow(", nm_x, ")=", nrow(x), " | nrow(", nm_y, ")=", nrow(y), "\n", sep="")
-  out <- suppressWarnings(left_join(x, y, by = by, relationship = "many-to-many"))
-  cat("[check_join] post-join rows:", nrow(out), "\n")
-  aj <- suppressWarnings(anti_join(x, y, by = by))
-  cat("[check_join] unmatched in ", nm_x, ": ", nrow(aj), "\n", sep="")
-  if (nrow(aj) > 0) print(head(aj, show))
-  invisible(out)
-}
-
-# ---- Utility: safe weighted mean ----
-wtd_mean <- function(x, w) {
-  ok <- !is.na(x) & !is.na(w)
-  if (!any(ok)) return(NA_real_)
-  weighted.mean(x[ok], w[ok], na.rm = TRUE)
-}
-
-# ---- Utility: 5-digit county FIPS as character ----
-to_fips5 <- function(x) stringr::str_pad(as.integer(x), width = 5, pad = "0")
-
-options(dplyr.summarise.inform = FALSE)
-
-# ------------------------- 0a) Parallel policy (diagnostic only) --------------
-HAS_MULTIDPLYR <- requireNamespace("multidplyr", quietly = TRUE)
-
-N_WORKERS <- {
-  override <- getOption("NCORES_OVERRIDE", default = NA)
-  env      <- Sys.getenv("R_FUTURE_WORKERS", unset = NA)
-  n <- suppressWarnings(as.integer(if (!is.na(override)) override else env))
-  if (is.na(n) || n < 1L) n <- max(1L, parallel::detectCores() - 1L)
-  n
-}
-
-cat(sprintf("[parallel] Hostname=%s | R pid=%s | detected cores=%s | workers (if used)=%d\n",
-            tryCatch(Sys.info()[["nodename"]], error=function(e) "unknown"),
-            Sys.getpid(),
-            tryCatch(parallel::detectCores(), error=function(e) NA_integer_),
-            N_WORKERS))
-
-# Optional multidplyr cluster — only created when we actually use it later
-CL <- NULL
-.can_use_multidplyr_partition <- function(df, col_sym, cluster = NULL) {
-  if (!HAS_MULTIDPLYR) return(FALSE)
-  if (is.null(cluster)) return(FALSE)
-  ok <- FALSE
-  try({
-    tmp <- head(df, 1)
-    invisible(tmp %>% multidplyr::partition(!!col_sym, cluster = cluster))
-    ok <- TRUE
-  }, silent = TRUE)
-  ok
-}
-
-# ====================== 0b) (Re)Load raw CSVs (robust) ========================
-# Expect cgt_county_raw, geo, geo_long, tigris_*_raw, geocorr_* to be in memory,
-# but re-read major file if missing. Also define 'geographies' if absent.
-
-if (!exists("cgt_county_raw")) {
-  stopifnot(exists("DATA_DIR"))
-  cgt_county_raw <- with_timing(
-    "read CGT county CSV",
-    readr::read_csv(
-      file.path(DATA_DIR, "CGT_county_data", "cgt_county_data_08_29_2024.csv"),
-      show_col_types = FALSE, progress = FALSE, guess_max = 100000
-    ) %>% fix_df()
-  )
-}
-dbg(cgt_county_raw, "cgt_county_raw")
-
-if (!exists("cim_eco_eti_raw") && exists("paths") && !is.null(paths$raw_data)) {
-  cim_eco_eti_raw <- fix_df(file.path(paths$raw_data, "CIM_eco_eti_invest_categories.csv"))
-  dbg(cim_eco_eti_raw, "cim_eco_eti_raw")
-}
-if (!exists("eco_rmi_crosswalk_raw") && exists("paths") && !is.null(paths$raw_data)) {
-  eco_rmi_crosswalk_raw <- fix_df(file.path(paths$raw_data, "eco_rmi_updated_crosswalk.csv"))
-  dbg(eco_rmi_crosswalk_raw, "eco_rmi_crosswalk_raw")
-}
-if (!exists("clean_industry_naics_raw") && exists("paths") && !is.null(paths$raw_data)) {
-  clean_industry_naics_raw <- fix_df(file.path(paths$raw_data, "clean_industry_naics.csv"))
-  dbg(clean_industry_naics_raw, "clean_industry_naics_raw")
-}
-
-if (!exists("geographies")) {
-  geographies <- c("State.Name", "cd_119", "PEA", "CBSA.Title", "GeoName")
-  cat("[info] 'geographies' not found in workspace; using default:",
-      paste(geographies, collapse = ", "), "\n")
-}
-if (!exists("geographies_clean")) {
-  geographies_clean <- c("State Name", "cd_119", "PEA", "CBSA Title", "GeoName")
-  cat("[info] 'geographies_clean' not found; using default cleaned labels.\n")
-}
-
-# =================== 1) Normalize county keys (2018 -> 2020) =================
-states_2024 <- tigris_states_2024_raw %>%
-  as_tibble() %>%
-  transmute(STATEFP = GEOID, STUSPS, STATE_NAME = NAME)
-
-counties_2020 <- tigris_counties_2020_raw %>%
-  as_tibble() %>%
-  select(STATEFP, COUNTYFP, GEOID, NAME, NAMELSAD) %>%
-  left_join(states_2024, by = "STATEFP") %>%
-  mutate(fips5 = GEOID) %>%
-  select(fips5, STATEFP, COUNTYFP, STUSPS, STATE_NAME, NAME, NAMELSAD) %>%
-  distinct()
-dbg(counties_2020, "counties_2020 (index)")
-
-# Known 1->1 recodes (legacy -> 2020)
-manual_county_recode <- tribble(
-  ~from,  ~to,     ~note,
-  "51515","51019", "Bedford city (VA) dissolved 2013 -> Bedford County",
-  "02270","02158", "AK Wade Hampton Census Area -> Kusilvak Census Area",
-  "46113","46102", "SD Shannon County -> Oglala Lakota County"
-)
-
-# Prepare CGT county base
-cgt_county <- cgt_county_raw %>%
-  clean_names() %>%
-  mutate(
-    county_fips5 = to_fips5(county),
-    county_fips5 = if_else(county_fips5 %in% manual_county_recode$from,
-                           manual_county_recode$to[match(county_fips5, manual_county_recode$from)],
-                           county_fips5),
-    # From "X County, ST"
-    county_state_abbr = stringr::str_match(county_name, ",\\s*([A-Z]{2})$")[,2],
-    county_label      = stringr::str_remove(county_name, ",\\s*[A-Z]{2}$")
-  )
-dbg(cgt_county, "cgt_county (normalized)")
-
-# ---- Special AK split: 02261 -> 02063 & 02066 ----
-if ("02261" %in% unique(cgt_county$county_fips5)) {
-  cat("\n[split] Splitting Valdez-Cordova (02261) into Chugach (02063) and Copper River (02066)...\n")
-  vc_rows <- cgt_county %>% filter(county_fips5 == "02261")
-  vc_chugach <- vc_rows %>%
-    mutate(
-      county_fips5 = "02063",
-      county_name  = "Chugach Census Area, AK",
-      county_label = "Chugach Census Area",
-      county_state_abbr = "AK"
-    )
-  vc_copper <- vc_rows %>%
-    mutate(
-      county_fips5 = "02066",
-      county_name  = "Copper River Census Area, AK",
-      county_label = "Copper River Census Area",
-      county_state_abbr = "AK"
-    )
-  cgt_county <- cgt_county %>%
-    filter(county_fips5 != "02261") %>%
-    bind_rows(vc_chugach, vc_copper)
-  cat("[split] Completed. Rows added:", nrow(vc_chugach) + nrow(vc_copper), "\n")
-}
-cat("\n[check] counts in counties_2020 for 02063/02066: ",
-    sum(counties_2020$fips5 %in% c("02063","02066")), "\n", sep = "")
-if (exists("geo")) {
-  cat("[check] counts in geo for 02063/02066: ",
-      sum(geo$fips %in% c("02063","02066"), na.rm = TRUE), "\n", sep = "")
-}
-
-# Unmatched codes vs 2020 index (after recodes/split)
-cgt_unmatched <- cgt_county %>%
-  filter(!county_fips5 %in% counties_2020$fips5)
-dbg(cgt_unmatched, "cgt_unmatched (not in 2020 index after recodes/split)")
-
-# Secondary name+state match for remaining unmatched
-if (nrow(cgt_unmatched) > 0) {
-  counties_2020_name_std <- counties_2020 %>% mutate(name_std = NAMELSAD, st = STUSPS)
-  cgt_county <- cgt_county %>%
-    left_join(
-      cgt_unmatched %>%
-        select(county_fips5, county_label, county_state_abbr) %>%
-        distinct() %>%
-        left_join(counties_2020_name_std,
-                  by = c("county_label" = "name_std", "county_state_abbr" = "st")) %>%
-        filter(!is.na(fips5)) %>%
-        select(county_fips5, fips5) %>%
-        rename(remapped_fips5 = fips5),
-      by = "county_fips5"
-    ) %>%
-    mutate(county_fips5 = coalesce(remapped_fips5, county_fips5)) %>%
-    select(-remapped_fips5)
-}
-
-# Final validation (999 "not reported" will remain; we'll weight them 0)
-still_unmatched <- setdiff(unique(cgt_county$county_fips5), counties_2020$fips5)
-if (length(still_unmatched)) {
-  warning("Some county FIPS still do not match 2020 index: ",
-          paste(head(still_unmatched, 25), collapse = ", "),
-          ifelse(length(still_unmatched) > 25, " ...", ""))
-}
-
-# ================= 2) Build geo keys for clean mapping / codes =================
-# Accept both dotted and spaced CBSA headers; normalize to dotted form.
-geo_std <- geo %>%
-  rename(
-    CBSA.Title = any_of(c("CBSA.Title", "CBSA Title")),
-    CBSA.Code  = any_of(c("CBSA.Code",  "CBSA Code"))
-  )
-cat("\n[geo_std] Column names snapshot:\n")
-print(intersect(names(geo_std),
-                c("CBSA.Title","CBSA.Code","GEOID_2","cd_119","fips","PEA","FCC_PEA_Number","State.Name",
-                  "GeoName","state.fips","state_abbr","gdp","percent_district")))
-
-geo_keys <- bind_rows(
-  geo_std %>%
-    distinct(geo_type = "State",
-             geo_name = State.Name,
-             geo_code = sprintf("%02d", state.fips)) %>%
-    filter(!is.na(geo_name)),
-  geo_std %>%
-    distinct(geo_type = "Congressional District",
-             geo_name = cd_119,
-             geo_code = GEOID_2) %>%
-    filter(!is.na(geo_name)),
-  geo_std %>%
-    distinct(geo_type = "Economic Area",
-             geo_name = PEA,
-             geo_code = as.character(FCC_PEA_Number)) %>%
-    filter(!is.na(geo_name)),
-  geo_std %>%
-    distinct(geo_type = "Metro Area",
-             geo_name = CBSA.Title,
-             geo_code = CBSA.Code) %>%
-    filter(!is.na(geo_name)),
-  geo_std %>%
-    distinct(geo_type = "County",
-             geo_name = GeoName,
-             geo_code = fips) %>%
-    filter(!is.na(geo_name))
-) %>% distinct()
-dbg(geo_keys, "geo_keys (name->code)")
-
-# ============ 3) Enrich county-level table for weighting & geographies ============
-county_gdp <- geo_std %>% distinct(fips, gdp) %>% rename(county_fips5 = fips)
-county_gdp_fallback <- COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA %>%
-  transmute(county_fips5 = COUNTY_GEOID, gdp_fallback = COUNTY_GDP_2022)
-
-gdp_weights <- county_gdp %>%
-  full_join(county_gdp_fallback, by = "county_fips5") %>%
-  mutate(
-    gdp_weight = coalesce(gdp, gdp_fallback),
-    gdp_weight = if_else(str_detect(county_fips5, "999$"), 0, gdp_weight)
-  ) %>%
-  select(county_fips5, gdp_weight)
-dbg(gdp_weights, "gdp_weights")
-
-county_geo <- geo_std %>%
-  select(State.Name, state_abbr, state.fips,
-         GeoName, fips, PEA, FCC_PEA_Number,
-         CBSA.Title, CBSA.Code, cd_119, GEOID_2, percent_district, gdp) %>%
-  rename(county_fips5 = fips)
-
-# cd_119 allocation from geocorr (with CT override)
-cd_alloc <- geocorr_county_2020_cd_119 %>%
-  transmute(
-    COUNTY_GEOID = COUNTY_GEOID,
-    CD119_GEOID  = CD119_GEOID,
-    cd_to_county = `cd119-to-county allocation factor`
-  )
-ct_alloc <- geocorr_ct_county_cd_119 %>%
-  transmute(
-    COUNTY_GEOID = `County code`,
-    CD119_GEOID  = paste0("09", `Congressional district code (119th Congress)`),
-    cd_to_county = `cd119-to-CTcounty allocation factor`
-  )
-cd_alloc_all <- cd_alloc %>%
-  anti_join(ct_alloc, by = c("COUNTY_GEOID","CD119_GEOID")) %>%
-  bind_rows(ct_alloc)
-dbg(cd_alloc_all, "cd_alloc_all (county->cd allocation)")
-
-county_geo_cd <- county_geo %>%
-  left_join(cd_alloc_all,
-            by = c("county_fips5" = "COUNTY_GEOID", "GEOID_2" = "CD119_GEOID")) %>%
-  mutate(percent_district = if_else(!is.na(cd_to_county),
-                                    100 * cd_to_county, percent_district))
-dbg(county_geo_cd, "county_geo_cd (joined)")
-
-county_feas_base <- with_timing(
-  "Join CGT + county_geo_cd + gdp_weights",
-  cgt_county %>%
-    left_join(county_geo_cd, by = c("county_fips5"), relationship = "many-to-many") %>%
-    left_join(gdp_weights, by = "county_fips5") %>%
-    mutate(gdp_weight = coalesce(gdp_weight, 0))
-)
-dbg(county_feas_base, "county_feas_base (CGT + geo + GDP)")
-
-missing_geo <- county_feas_base %>%
-  filter(is.na(State.Name) & is.na(CBSA.Title) & is.na(PEA) & is.na(cd_119))
-dbg(missing_geo, "Records with no geography after joins")
-
-county_feas_base_slim <- county_feas_base %>%
-  select(State.Name, cd_119, PEA, CBSA.Title, GeoName,
-         aggregation_level, aggregation_level_desc,
-         industry_desc, industry_code, density, pci,
-         gdp_weight, percent_district)
-mem(county_feas_base_slim, "county_feas_base_slim")
-
-# ================== 4) Aggregate feasibility across geographies =================
-# NOTE: No future.apply here. We either:
-#  - Use multidplyr::partition() when it actually works, or
-#  - Fall back to single-process dplyr::summarise() (fast, memory-safe).
-
-agg_one_geog <- function(df, geog_col, try_multidplyr = TRUE, n_workers = N_WORKERS) {
-  gsym <- rlang::sym(geog_col)
-  cat("\n[AGG] Aggregating for geography:", geog_col, "\n")
-  base <- df %>% filter(!is.na(!!gsym))
-  
-  nrows <- nrow(base); nunq <- dplyr::n_distinct(base[[geog_col]])
-  cat(sprintf("[AGG] %s: rows=%s | unique groups=%s\n",
-              geog_col, format(nrows, big.mark=","), nunq))
-  
-  # Pre-compute weights & distinctness
-  if (geog_col == "cd_119") {
-    base <- base %>% mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
-  } else {
-    base <- base %>%
-      distinct(!!gsym, aggregation_level, aggregation_level_desc,
-               industry_desc, industry_code, density, pci, gdp_weight)
-  }
-  
-  # 1) Try multidplyr if explicitly allowed and available
-  if (try_multidplyr && HAS_MULTIDPLYR && nunq > 1L) {
-    # Lazily create cluster if not yet created
-    if (is.null(CL)) {
-      cat("[AGG] Creating multidplyr cluster with", n_workers, "workers...\n")
-      CL <<- tryCatch(multidplyr::new_cluster(n_workers), error = function(e) {
-        cat("[AGG] new_cluster failed:", conditionMessage(e), " -> using sequential summarise.\n")
-        NULL
-      })
-      if (!is.null(CL)) {
-        try(multidplyr::cluster_library(CL, c("dplyr","tibble","tidyr","stringr","rlang")), silent = TRUE)
-        try(parallel::clusterExport(CL, varlist = c("wtd_mean"), envir = environment()), silent = TRUE)
-        try({
-          ids <- multidplyr::cluster_call(CL, Sys.getpid())
-          cat("[AGG] Worker PIDs:", paste(unlist(ids), collapse = ", "), "\n")
-        }, silent = TRUE)
-      }
-    }
-    if (!is.null(CL) && .can_use_multidplyr_partition(base, gsym, CL)) {
-      cat("[AGG] Using multidplyr::partition().\n")
-      party <- base %>% multidplyr::partition(!!gsym, cluster = CL)
-      out <- party %>%
-        group_by(!!gsym, aggregation_level, aggregation_level_desc, industry_desc, industry_code) %>%
-        summarise(
-          density = if (geog_col == "cd_119") wtd_mean(density, .weight) else wtd_mean(density, gdp_weight),
-          pci     = if (geog_col == "cd_119") wtd_mean(pci,     .weight) else wtd_mean(pci,     gdp_weight),
-          .groups = "drop_last"
-        ) %>%
-        multidplyr::collect() %>% ungroup()
-      return(out)
-    } else {
-      cat("[AGG] multidplyr partition not available/compatible; using sequential summarise.\n")
-    }
-  } else {
-    cat("[AGG] Running sequential summarise (no parallel).\n")
-  }
-  
-  # 2) Robust sequential summarise
-  if (geog_col == "cd_119") {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>%
-        group_by(!!gsym, aggregation_level, aggregation_level_desc, industry_desc, industry_code) %>%
-        summarise(
-          density = wtd_mean(density, .weight),
-          pci     = wtd_mean(pci,     .weight),
-          .groups = "drop"
-        )
-    )
-  } else {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>%
-        group_by(!!gsym, aggregation_level, aggregation_level_desc, industry_desc, industry_code) %>%
-        summarise(
-          density = wtd_mean(density, gdp_weight),
-          pci     = wtd_mean(pci,     gdp_weight),
-          .groups = "drop"
-        )
-    )
-  }
-  out
-}
-
-# ---- Run the aggregation for all geographies ----
-results_list <- vector("list", length(geographies))
-names(results_list) <- geographies
-for (geog in geographies) {
-  results_list[[geog]] <- with_timing(
-    paste0("aggregate feasibility for ", geog),
-    agg_one_geog(county_feas_base_slim, geog, try_multidplyr = TRUE, n_workers = N_WORKERS)
-  )
-  cat(sprintf("[AGG] %s -> rows=%s, cols=%s\n", geog,
-              format(nrow(results_list[[geog]]), big.mark=","), ncol(results_list[[geog]])))
-  dbg(results_list[[geog]] %>% head(10), paste0("sample agg_", geog))
-}
-
-county_feas <- bind_rows(results_list, .id = "geog_col")
-dbg(county_feas, "county_feas (all geogs)")
-
-county_feas_labeled <- county_feas %>%
-  ungroup() %>%
-  mutate(
-    geo = case_when(
-      geog_col == "State.Name" ~ "State",
-      geog_col == "cd_119"     ~ "Congressional District",
-      geog_col == "PEA"        ~ "Economic Area",
-      geog_col == "GeoName"    ~ "County",
-      geog_col == "CBSA.Title" ~ "Metro Area",
-      TRUE                     ~ "Unknown"
-    ),
-    geo_name = case_when(
-      geog_col == "State.Name" ~ `State.Name`,
-      geog_col == "cd_119"     ~ cd_119,
-      geog_col == "PEA"        ~ PEA,
-      geog_col == "GeoName"    ~ GeoName,
-      geog_col == "CBSA.Title" ~ `CBSA.Title`,
-      TRUE                     ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
-  select(geo, geo_name, aggregation_level, aggregation_level_desc,
-         industry_desc, industry_code, density, pci)
-dbg(county_feas_labeled, "county_feas_labeled")
-
-feas <- with_timing(
-  "percent ranks + within-region rank",
-  county_feas_labeled %>%
-    group_by(geo, aggregation_level, industry_desc) %>%
-    mutate(industry_feas_perc = percent_rank(density)) %>%
-    group_by(geo, geo_name, aggregation_level, .add = TRUE) %>%
-    mutate(region_feas_rank = rank(-industry_feas_perc, ties.method = "first")) %>%
-    ungroup()
-)
-dbg(feas, "feas (final feasibility)")
-
-# ================= 5) Strategic Feasibility (investing sectors) ================
-clean_industry_naics <- NULL
-if (exists("clean_industry_naics_raw")) {
-  clean_industry_naics <- clean_industry_naics_raw %>% clean_names()
-}
-if (exists("eco_rmi_crosswalk_raw")) {
-  eco_rmi_norm <- eco_rmi_crosswalk_raw %>%
-    clean_names() %>%
-    rename(x6_digit_code = any_of(c("x6_digit_code","x6.digit.code"))) %>%
-    select(clean_industry, production_phase, x6_digit_code, naics_desc = any_of(c("naics_desc"))) %>%
-    distinct()
-  if (is.null(clean_industry_naics)) {
-    clean_industry_naics <- eco_rmi_norm
-  } else {
-    clean_industry_naics <- bind_rows(
-      clean_industry_naics %>% rename(x6_digit_code = any_of(c("x6_digit_code","x6.digit.code"))),
-      eco_rmi_norm
-    ) %>% distinct()
-  }
-}
-if (exists("cim_eco_eti_raw")) {
-  cim_norm <- cim_eco_eti_raw %>% clean_names()
-  dbg(cim_norm, "cim_eco_eti_raw (cleaned)")
-}
-
-clean_industry_naics <- clean_industry_naics %>%
-  rename(industry_code_6 = x6_digit_code) %>%
-  mutate(industry_code_6 = as.integer(industry_code_6))
-dbg(clean_industry_naics, "clean_industry_naics (union)")
-
-county_feas_strategic_base <- cgt_county %>%
-  mutate(industry_code_6 = as.integer(industry_code)) %>%
-  inner_join(clean_industry_naics, by = c("industry_code_6" = "industry_code_6")) %>%
-  left_join(county_geo_cd, by = c("county_fips5"), relationship = "many-to-many") %>%
-  left_join(gdp_weights, by = "county_fips5") %>%
-  mutate(gdp_weight = coalesce(gdp_weight, 0))
-dbg(county_feas_strategic_base, "county_feas_strategic_base")
-
-county_feas_strategic_base_slim <- county_feas_strategic_base %>%
-  select(State.Name, cd_119, PEA, CBSA.Title, GeoName,
-         clean_industry, production_phase, density, gdp_weight, percent_district)
-mem(county_feas_strategic_base_slim, "county_feas_strategic_base_slim")
-
-agg_one_geog_strat <- function(df, geog_col, try_multidplyr = TRUE, n_workers = N_WORKERS) {
-  gsym <- rlang::sym(geog_col)
-  cat("\n[AGG_STRAT] Aggregating strategic for geography:", geog_col, "\n")
-  base <- df %>% filter(!is.na(!!gsym))
-  
-  nrows <- nrow(base); nunq <- dplyr::n_distinct(base[[geog_col]])
-  cat(sprintf("[AGG_STRAT] %s: rows=%s | unique groups=%s\n",
-              geog_col, format(nrows, big.mark=","), nunq))
-  
-  if (geog_col == "cd_119") {
-    base <- base %>% mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
-  } else {
-    base <- base %>%
-      distinct(!!gsym, clean_industry, production_phase, density, gdp_weight)
-  }
-  
-  # multidplyr attempt
-  if (try_multidplyr && HAS_MULTIDPLYR && nunq > 1L) {
-    if (is.null(CL)) {
-      cat("[AGG_STRAT] Creating multidplyr cluster with", n_workers, "workers...\n")
-      CL <<- tryCatch(multidplyr::new_cluster(n_workers), error = function(e) {
-        cat("[AGG_STRAT] new_cluster failed:", conditionMessage(e), " -> using sequential summarise.\n")
-        NULL
-      })
-      if (!is.null(CL)) {
-        try(multidplyr::cluster_library(CL, c("dplyr","tibble","tidyr","stringr","rlang")), silent = TRUE)
-        try(parallel::clusterExport(CL, varlist = c("wtd_mean"), envir = environment()), silent = TRUE)
-      }
-    }
-    if (!is.null(CL) && .can_use_multidplyr_partition(base, gsym, CL)) {
-      cat("[AGG_STRAT] Using multidplyr::partition().\n")
-      out <- base %>% multidplyr::partition(!!gsym, cluster = CL) %>%
-        group_by(!!gsym, clean_industry, production_phase) %>%
-        summarise(density = if (geog_col == "cd_119")
-          wtd_mean(density, .weight) else wtd_mean(density, gdp_weight),
-          .groups = "drop_last") %>%
-        multidplyr::collect() %>% ungroup()
-      return(out)
-    } else {
-      cat("[AGG_STRAT] multidplyr partition not available/compatible; using sequential summarise.\n")
-    }
-  } else {
-    cat("[AGG_STRAT] Running sequential summarise (no parallel).\n")
-  }
-  
-  # sequential summarise
-  if (geog_col == "cd_119") {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>%
-        group_by(!!gsym, clean_industry, production_phase) %>%
-        summarise(density = wtd_mean(density, .weight), .groups = "drop")
-    )
-  } else {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>%
-        group_by(!!gsym, clean_industry, production_phase) %>%
-        summarise(density = wtd_mean(density, gdp_weight), .groups = "drop")
-    )
-  }
-  out
-}
-
-results_list_strat <- vector("list", length(geographies))
-names(results_list_strat) <- geographies
-for (geog in geographies) {
-  results_list_strat[[geog]] <- with_timing(
-    paste0("aggregate strategic feasibility for ", geog),
-    agg_one_geog_strat(county_feas_strategic_base_slim, geog, try_multidplyr = TRUE, n_workers = N_WORKERS)
-  )
-  cat(sprintf("[AGG_STRAT] %s -> rows=%s, cols=%s\n", geog,
-              format(nrow(results_list_strat[[geog]]), big.mark=","), ncol(results_list_strat[[geog]])))
-  dbg(results_list_strat[[geog]] %>% head(10), paste0("sample agg_strategic_", geog))
-}
-county_feas_strategic <- bind_rows(results_list_strat, .id = "geog_col")
-dbg(county_feas_strategic, "county_feas_strategic (long)")
-
-feas_strategic <- county_feas_strategic %>%
-  ungroup() %>%
-  mutate(
-    geo = case_when(
-      geog_col == "State.Name" ~ "State",
-      geog_col == "cd_119"     ~ "Congressional District",
-      geog_col == "PEA"        ~ "Economic Area",
-      geog_col == "GeoName"    ~ "County",
-      geog_col == "CBSA.Title" ~ "Metro Area",
-      TRUE                     ~ "Unknown"
-    ),
-    geo_name = case_when(
-      geog_col == "State.Name" ~ `State.Name`,
-      geog_col == "cd_119"     ~ cd_119,
-      geog_col == "PEA"        ~ PEA,
-      geog_col == "GeoName"    ~ GeoName,
-      geog_col == "CBSA.Title" ~ `CBSA.Title`,
-      TRUE                     ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
-  mutate(industry = ifelse(production_phase == "Manufacturing",
-                           paste0(clean_industry, " Manufacturing"),
-                           ifelse(production_phase == "Operations", clean_industry, NA_character_))) %>%
-  filter(!is.na(industry)) %>%
-  select(geo, geo_name, industry, density) %>%
-  distinct() %>%
-  pivot_wider(names_from = industry, names_prefix = "Feasibility_", values_from = density) %>%
-  rowwise() %>%
-  mutate(Strategic_Feasibility = mean(c_across(where(is.numeric)), na.rm = TRUE)) %>%
-  ungroup()
-dbg(feas_strategic, "feas_strategic (wide)")
-
-# ====================== 6) Economic Complexity Index (ECI) =====================
-county_eci_base <- cgt_county %>%
-  left_join(county_geo_cd, by = "county_fips5", relationship = "many-to-many") %>%
-  left_join(gdp_weights, by = "county_fips5")
-dbg(county_eci_base, "county_eci_base")
-
-county_eci_base_slim <- county_eci_base %>%
-  select(State.Name, cd_119, PEA, CBSA.Title, GeoName,
-         eci, gdp_weight, percent_district)
-mem(county_eci_base_slim, "county_eci_base_slim")
-
-agg_one_geog_eci <- function(df, geog_col, try_multidplyr = TRUE, n_workers = N_WORKERS) {
-  gsym <- rlang::sym(geog_col)
-  cat("\n[AGG_ECI] Aggregating ECI for geography:", geog_col, "\n")
-  base <- df %>% filter(!is.na(!!gsym))
-  
-  nrows <- nrow(base); nunq <- dplyr::n_distinct(base[[geog_col]])
-  cat(sprintf("[AGG_ECI] %s: rows=%s | unique groups=%s\n",
-              geog_col, format(nrows, big.mark=","), nunq))
-  
-  if (geog_col == "cd_119") {
-    base <- base %>% mutate(.weight = gdp_weight * coalesce(percent_district, 0) / 100)
-  } else {
-    base <- base %>% distinct(!!gsym, eci, gdp_weight)
-  }
-  
-  # multidplyr attempt
-  if (try_multidplyr && HAS_MULTIDPLYR && nunq > 1L) {
-    if (is.null(CL)) {
-      cat("[AGG_ECI] Creating multidplyr cluster with", n_workers, "workers...\n")
-      CL <<- tryCatch(multidplyr::new_cluster(n_workers), error = function(e) {
-        cat("[AGG_ECI] new_cluster failed:", conditionMessage(e), " -> using sequential summarise.\n")
-        NULL
-      })
-      if (!is.null(CL)) {
-        try(multidplyr::cluster_library(CL, c("dplyr","tibble","tidyr","stringr","rlang")), silent = TRUE)
-        try(parallel::clusterExport(CL, varlist = c("wtd_mean"), envir = environment()), silent = TRUE)
-      }
-    }
-    if (!is.null(CL) && .can_use_multidplyr_partition(base, gsym, CL)) {
-      cat("[AGG_ECI] Using multidplyr::partition().\n")
-      out <- base %>% multidplyr::partition(!!gsym, cluster = CL) %>%
-        group_by(!!gsym) %>%
-        summarise(eci = if (geog_col == "cd_119")
-          wtd_mean(eci, .weight) else wtd_mean(eci, gdp_weight),
-          .groups = "drop_last") %>%
-        multidplyr::collect() %>% ungroup()
-      return(out)
-    } else {
-      cat("[AGG_ECI] multidplyr partition not available/compatible; using sequential summarise.\n")
-    }
-  } else {
-    cat("[AGG_ECI] Running sequential summarise (no parallel).\n")
-  }
-  
-  # sequential summarise
-  if (geog_col == "cd_119") {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>% group_by(!!gsym) %>% summarise(eci = wtd_mean(eci, .weight), .groups = "drop")
-    )
-  } else {
-    out <- with_timing(
-      paste0("sequential summarise for ", geog_col),
-      base %>% group_by(!!gsym) %>% summarise(eci = wtd_mean(eci, gdp_weight), .groups = "drop")
-    )
-  }
-  out
-}
-
-results_list_eci <- vector("list", length(geographies))
-names(results_list_eci) <- geographies
-for (geog in geographies) {
-  results_list_eci[[geog]] <- with_timing(
-    paste0("aggregate ECI for ", geog),
-    agg_one_geog_eci(county_eci_base_slim, geog, try_multidplyr = TRUE, n_workers = N_WORKERS)
-  )
-  cat(sprintf("[AGG_ECI] %s -> rows=%s, cols=%s\n", geog,
-              format(nrow(results_list_eci[[geog]]), big.mark=","), ncol(results_list_eci[[geog]])))
-  dbg(results_list_eci[[geog]] %>% head(10), paste0("sample agg_eci_", geog))
-}
-county_eci <- bind_rows(results_list_eci, .id = "geog_col") %>%
-  mutate(
-    geo = case_when(
-      geog_col == "State.Name" ~ "State",
-      geog_col == "cd_119"     ~ "Congressional District",
-      geog_col == "PEA"        ~ "Economic Area",
-      geog_col == "GeoName"    ~ "County",
-      geog_col == "CBSA.Title" ~ "Metro Area",
-      TRUE                     ~ "Unknown"
-    ),
-    geo_name = case_when(
-      geog_col == "State.Name" ~ `State.Name`,
-      geog_col == "cd_119"     ~ cd_119,
-      geog_col == "PEA"        ~ PEA,
-      geog_col == "GeoName"    ~ GeoName,
-      geog_col == "CBSA.Title" ~ `CBSA.Title`,
-      TRUE                     ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(geo_name), geo_name != "", geo_name != "NA-NA") %>%
-  select(geo, geo_name, eci) %>%
-  rename(economic_complexity = eci)
-dbg(county_eci, "county_eci (final)")
-
-# ============ 7) Attach geo_code via geo_long (for mapping) ====================
-feas_with_code <- feas %>% left_join(geo_keys, by = c("geo" = "geo_type", "geo_name" = "geo_name"))
-feas_strategic_with_code <- feas_strategic %>% left_join(geo_keys, by = c("geo" = "geo_type", "geo_name" = "geo_name"))
-eci_with_code <- county_eci %>% left_join(geo_keys, by = c("geo" = "geo_type", "geo_name" = "geo_name"))
-
-cat("\n[geo_code coverage] feas missing:", sum(is.na(feas_with_code$geo_code)),
-    " | strategic missing:", sum(is.na(feas_strategic_with_code$geo_code)),
-    " | eci missing:", sum(is.na(eci_with_code$geo_code)), "\n")
-
-feas_long_mapped <- feas_with_code %>%
-  left_join(geo_long %>% rename(gl_type = geo_type, gl_name = geo_name, gl_code = geo_code),
-            by = c("geo" = "gl_type", "geo_name" = "gl_name")) %>%
-  mutate(geo_code = coalesce(gl_code, geo_code)) %>%
-  select(-gl_code)
-feas_strategic_long_mapped <- feas_strategic_with_code %>%
-  left_join(geo_long %>% rename(gl_type = geo_type, gl_name = geo_name, gl_code = geo_code),
-            by = c("geo" = "gl_type", "geo_name" = "gl_name")) %>%
-  mutate(geo_code = coalesce(gl_code, geo_code)) %>%
-  select(-gl_code)
-eci_long_mapped <- eci_with_code %>%
-  left_join(geo_long %>% rename(gl_type = geo_type, gl_name = geo_name, gl_code = geo_code),
-            by = c("geo" = "gl_type", "geo_name" = "gl_name")) %>%
-  mutate(geo_code = coalesce(gl_code, geo_code)) %>%
-  select(-gl_code)
-
-dbg(feas_long_mapped, "feas_long_mapped (with geo_code)")
-dbg(feas_strategic_long_mapped, "feas_strategic_long_mapped (with geo_code)")
-dbg(eci_long_mapped, "eci_long_mapped (with geo_code)")
-
-report_mapping_gaps <- function(df, nm) {
-  miss <- df %>% filter(is.na(geo_code)) %>% distinct(geo, geo_name)
-  if (nrow(miss)) {
-    cat("\n[WARN]", nm, ": unmapped to geo_long, examples:\n")
-    print(head(miss, 15))
-  } else {
-    cat("\n[OK]", nm, ": fully mapped to geo_long.\n")
-  }
-}
-report_mapping_gaps(feas_long_mapped, "feas_long_mapped")
-report_mapping_gaps(feas_strategic_long_mapped, "feas_strategic_long_mapped")
-report_mapping_gaps(eci_long_mapped, "eci_long_mapped")
-
-# ------------------------- 7a) Cleanup parallel resources ----------------------
-if (!is.null(CL)) {
-  try(parallel::stopCluster(CL), silent = TRUE)
-  cat("[parallel] multidplyr cluster stopped.\n")
-}
-
-cat("\n[DONE] Feasibility pipeline completed (sequential aggregation by default; no large globals exported).\n")
 
 # ====================== PREP: Quick glances at input data already in memory ======================
 cat("Glimpse COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA:\n"); glimpse(COUNTY_CROSSWALK_SUPPLEMENT_GDP_PEA)
@@ -9500,15 +10081,14 @@ cat("Glimpse geo_long:\n"); glimpse(geo_long)
 cat("Glimpse tigris_counties_2020_raw:\n"); glimpse(tigris_counties_2020_raw)
 cat("Glimpse geocorr_county_2020_cd_119: \n"); glimpse(geocorr_county_2020_cd_119)
 cat("Glimpse geocorr_ct_county_cd_119: \n"); glimpse(geocorr_ct_county_cd_119)
-cat("Glimpse tigris_cbsa_2020_raw"); glimpse(tigris_cbsa_2020_raw)
+cat("Glimpse tigris_cbsa_2020_raw\n"); glimpse(tigris_cbsa_2020_raw)
 cat("Glimpse tigris_states_2024_raw:\n"); glimpse(tigris_states_2024_raw)
-cat("Glimpse tigris_congressional_districts_2024_raw"); glimpse(tigris_congressional_districts_2024_raw)
-cat("Glimpse geographies"); glimpse(geographies)
-cat("Glimpse geographies_clean"); glimpse(geographies_clean)
-cat("Glimpse ct_fips_changes_raw"); glimpse(ct_fips_changes_raw)
+cat("Glimpse tigris_congressional_districts_2024_raw\n"); glimpse(tigris_congressional_districts_2024_raw)
+cat("Glimpse geographies\n"); glimpse(geographies)
+cat("Glimpse geographies_clean\n"); glimpse(geographies_clean)
+cat("Glimpse ct_fips_changes_raw\n"); glimpse(ct_fips_changes_raw)
 
-
-# One big list of all data frames
+# Content data frames
 data_frames_all <- c(
   "rengen", "facilities_all", "geo_credits", "fed_inv_geo", 
   "elec_grid", "supplycurve_geo", "tech_pot_geo", "county_gdp_ind", 
