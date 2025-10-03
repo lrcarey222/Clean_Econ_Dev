@@ -1,3 +1,5 @@
+#LAST UPDATED: October 3, 2025.
+
 # ACRE Pipeline — Q2 2025 (prep through geo_long + ALL raw loads + GEO coverage checks with names)
 # Updated: 2025-09-28 | Full, start-to-finish script (nothing omitted) | Extra debugging throughout
 # Coverage checks report MISSING geographies *with names* wherever possible
