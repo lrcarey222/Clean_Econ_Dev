@@ -1,68 +1,103 @@
-# ================================
-# Queued vs Operating Capacity (%)
-# By State and By Census Region
-# Scope: Continental US (48 states)
-# ================================
+# ============================================================
+# In-Queue vs. Operational Capacity (%), by State & by Region
+# Source A: LBNL "Queued Up 2025" (Active = In-Queue)
+# Source B: EIA-860/EIA-860M "Operating" (denominator)
+# Geography: Contiguous U.S. (48 states; excludes AK & HI)
+# Output: queued_pct_by_state, queued_pct_by_region
+# Debugging: extensive messages, checks, and summaries
+# ============================================================
 
-# --- Libraries ---
+# --- Libraries ---------------------------------------------------------------
 suppressPackageStartupMessages({
   library(dplyr)
-  library(readxl)
   library(tidyr)
   library(readr)
-  library(tigris)
-  library(sf)
+  library(readxl)
   library(stringr)
-  library(rlang)
+  library(sf)
+  library(tigris)
 })
 
-options(stringsAsFactors = FALSE)
 options(tigris_use_cache = TRUE)
+options(dplyr.summarise.inform = FALSE)
 
-# --- Helper: debug printer ---
-dbg <- function(..., .sep = " ") {
-  msg <- paste0("[DEBUG ", format(Sys.time(), "%H:%M:%S"), "] ", paste(..., collapse = .sep))
+# --- Helper utilities --------------------------------------------------------
+
+dbg <- function(...) {
+  msg <- paste0("[DEBUG ", format(Sys.time(), "%H:%M:%S"), "] ", paste(..., collapse = " "))
   message(msg)
 }
 
-# --- File paths (EDIT if needed) ---
-path_lbnl <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/LBNL Queued Up 2025.xlsx"
-path_eia  <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/august_generator2025 (3).xlsx"
+require_cols <- function(df, cols, df_name = "data.frame") {
+  missing <- setdiff(cols, names(df))
+  if (length(missing) > 0) stop(df_name, " is missing required columns: ", paste(missing, collapse = ", "))
+}
 
-# --- Continental US state set (48) ---
-continental_states <- setdiff(state.abb, c("AK", "HI"))
-dbg("Continental states count:", length(continental_states))
-stopifnot(length(continental_states) == 48)
+# Excel date cleaner (accepts serials or dates)
+clean_excel_date <- function(x) {
+  suppressWarnings({
+    as.Date(as.numeric(x), origin = "1899-12-30")
+  })
+}
 
-# ==========================
-# 1) LBNL: Load + Clean
-# ==========================
-dbg("Loading LBNL queued-up workbook...")
+# Coalesce numeric safely
+num_coalesce <- function(...) {
+  suppressWarnings(as.numeric(dplyr::coalesce(...)))
+}
+
+# Normalize 2-letter state codes (also handles full names if ever present)
+normalize_state <- function(x) {
+  x <- trimws(x)
+  # If already 2-letter uppercase, keep
+  keep <- nchar(x) == 2 & grepl("^[A-Z]{2}$", x)
+  out <- x
+  # Convert full names to abbreviations if needed
+  if (any(!keep)) {
+    nm2abb <- setNames(state.abb, state.name)
+    nm2abb <- c(nm2abb, "District of Columbia" = "DC")
+    out[!keep] <- nm2abb[out[!keep]]
+  }
+  toupper(out)
+}
+
+# --- File paths (edit if needed) ---------------------------------------------
+LBNL_PATH <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/LBNL Queued Up 2025.xlsx"
+EIA_OPERATING_PATH <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/august_generator2025 (3).xlsx"
+
+if (!file.exists(LBNL_PATH)) stop("LBNL file not found: ", LBNL_PATH)
+if (!file.exists(EIA_OPERATING_PATH)) stop("EIA-860M file not found: ", EIA_OPERATING_PATH)
+
+# --- Define geography: Contiguous U.S. (CONUS) -------------------------------
+CONUS_STATES <- setdiff(state.abb, c("AK", "HI"))
+dbg("CONUS (48 states): ", paste(CONUS_STATES, collapse = ", "))
+
+# --- Load LBNL: raw & codebook ----------------------------------------------
+dbg("Reading LBNL 'Queued Up 2025' (raw + codebook)...")
 LBNL_Queued_Up_2025_Raw <- read_excel(
-  path_lbnl,
+  LBNL_PATH,
   sheet = "03. Complete Queue Data",
-  skip  = 1
+  skip = 1
 )
 
-dbg("Loading LBNL codebook...")
 LBNL_Queued_Up_2025_Codebook <- read_excel(
-  path_lbnl,
+  LBNL_PATH,
   sheet = "04. Data Codebook",
-  skip  = 1
+  skip = 1
 )
 
-# Build mapping old name -> full description (only those present)
+# Validate codebook columns
+require_cols(LBNL_Queued_Up_2025_Codebook, c("Field Name", "Description"), "LBNL Codebook")
+
+# --- Build mapping and rename LBNL columns -----------------------------------
 rename_map <- LBNL_Queued_Up_2025_Codebook %>%
-  dplyr::select(`Field Name`, Description) %>%
-  dplyr::filter(`Field Name` %in% names(LBNL_Queued_Up_2025_Raw)) %>%
+  select(`Field Name`, Description) %>%
+  filter(`Field Name` %in% names(LBNL_Queued_Up_2025_Raw)) %>%
   tibble::deframe()
 
-dbg("Columns before rename:", paste(names(LBNL_Queued_Up_2025_Raw), collapse = ", "))
 LBNL_Queued_Up_2025 <- LBNL_Queued_Up_2025_Raw %>%
-  dplyr::rename_with(~ rename_map[.x], .cols = intersect(names(.), names(rename_map)))
-dbg("Columns after rename:", paste(names(LBNL_Queued_Up_2025), collapse = ", "))
+  rename_with(~ rename_map[.x], .cols = intersect(names(.), names(rename_map)))
 
-# Fix dates + coerce years
+# --- Fix LBNL dates & numeric coercions --------------------------------------
 date_cols <- c(
   "interconnection request date (date project entered queue)",
   "proposed online date from interconnection application",
@@ -71,27 +106,19 @@ date_cols <- c(
   "date of signed interconnection agreement (if applicable)"
 )
 
-dbg("Coercing Excel date serials (if any) and year fields...")
 LBNL_Queued_Up_2025 <- LBNL_Queued_Up_2025 %>%
-  dplyr::mutate(
-    dplyr::across(
-      tidyselect::any_of(date_cols),
-      ~ as.Date(suppressWarnings(as.numeric(.x)), origin = "1899-12-30")
-    ),
-    `year project entered queue` =
-      suppressWarnings(as.integer(`year project entered queue`)),
+  mutate(
+    across(all_of(date_cols), clean_excel_date),
+    `year project entered queue` = suppressWarnings(as.integer(`year project entered queue`)),
     `proposed online year from interconnection application` =
       suppressWarnings(as.integer(`proposed online year from interconnection application`))
   )
 
-# Clean resource types + capacities
+# Resource & capacity fields -> clean
 to_missing <- function(x) ifelse(is.na(x) | x == "NA" | x == "", NA, x)
 
-cap_cols <- c("capacity of type 1 (MW)", "capacity of type 2 (MW)", "capacity of type 3 (MW)")
-dbg("Ensuring capacity columns numeric:", paste(cap_cols, collapse = ", "))
-
 LBNL_Queued_Up_2025 <- LBNL_Queued_Up_2025 %>%
-  dplyr::mutate(
+  mutate(
     `resource type 1` = to_missing(`resource type 1`),
     `resource type 2` = to_missing(`resource type 2`),
     `resource type 3` = to_missing(`resource type 3`),
@@ -100,29 +127,21 @@ LBNL_Queued_Up_2025 <- LBNL_Queued_Up_2025 %>%
     `capacity of type 3 (MW)` = suppressWarnings(as.numeric(to_missing(`capacity of type 3 (MW)`)))
   )
 
-# Filter to ACTIVE queue status (in-queue = active)
+# --- Filter LBNL to ACTIVE queue entries (in-queue = "active") ----------------
 status_col <- "current queue status (active, withdrawn, suspended, or operational)"
-stopifnot(status_col %in% names(LBNL_Queued_Up_2025))
-dbg("Filtering to ACTIVE queue records...")
+if (!status_col %in% names(LBNL_Queued_Up_2025)) {
+  stop("Expected LBNL status column not found: ", status_col)
+}
+
 df_active_gen <- LBNL_Queued_Up_2025 %>%
-  dplyr::filter(tolower(.data[[status_col]]) == "active")
+  filter(tolower(.data[[status_col]]) == "active")
 
-dbg("Active queue rows:", nrow(df_active_gen))
+dbg("LBNL active rows: ", nrow(df_active_gen), " / original: ", nrow(LBNL_Queued_Up_2025))
 
-# Keep only continental US states (match LBNL scope to EIA scope)
-state_col_lbnl <- "state where project is located"
-stopifnot(state_col_lbnl %in% names(df_active_gen))
-df_active_gen <- df_active_gen %>%
-  dplyr::filter(.data[[state_col_lbnl]] %in% continental_states)
-
-dbg("Active queue rows after continental filter:", nrow(df_active_gen))
-dbg("Unique queue states:", paste(sort(unique(df_active_gen[[state_col_lbnl]])), collapse = ", "))
-
-# Long-ify resource/capacity pairs
-dbg("Pivoting resource/capacity pairs to long format...")
+# --- Long-ify resource/capacity pairs ----------------------------------------
 by_state_resource_long <- df_active_gen %>%
-  dplyr::transmute(
-    state    = .data[[state_col_lbnl]],
+  transmute(
+    state    = normalize_state(`state where project is located`),
     req_year = `year project entered queue`,
     rt1      = `resource type 1`, cap1 = `capacity of type 1 (MW)`,
     rt2      = `resource type 2`, cap2 = `capacity of type 2 (MW)`,
@@ -133,188 +152,176 @@ by_state_resource_long <- df_active_gen %>%
     names_to = c(".value", "slot"),
     names_pattern = "([a-z]+)([123])"
   ) %>%
-  dplyr::rename(resource_type = rt, capacity_mw = cap) %>%
-  dplyr::filter(!is.na(state), !is.na(resource_type), !is.na(capacity_mw), capacity_mw > 0)
+  rename(resource_type = rt, capacity_mw = cap) %>%
+  filter(!is.na(state), !is.na(resource_type), !is.na(capacity_mw), capacity_mw > 0)
 
-dbg("Rows in long queue table:", nrow(by_state_resource_long))
+dbg("Unique LBNL resource types (active): ", paste(sort(unique(by_state_resource_long$resource_type)), collapse = ", "))
+dbg("Unique LBNL states (pre-CONUS): ", paste(sort(unique(by_state_resource_long$state)), collapse = ", "))
 
-# Summaries in MW (keep MW for % calc vs EIA MW)
-dbg("Summarizing queued capacity (MW) by state...")
-queued_by_state_mw <- by_state_resource_long %>%
-  dplyr::group_by(state) %>%
-  dplyr::summarise(queued_mw = sum(capacity_mw, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(state)
+# --- Restrict LBNL to CONUS ---------------------------------------------------
+by_state_resource_long <- by_state_resource_long %>%
+  filter(state %in% CONUS_STATES)
 
-dbg("Queue MW totals — sample:")
-print(head(queued_by_state_mw, 10))
+dbg("LBNL (active, CONUS) rows: ", nrow(by_state_resource_long))
+dbg("LBNL states (CONUS): ", paste(sort(unique(by_state_resource_long$state)), collapse = ", "))
 
-# ==========================
-# 2) EIA: Load + Clean
-# ==========================
-dbg("Loading EIA 860/860M Operating sheet...")
-eia_opgen <- read_excel(path_eia, sheet = "Operating", skip = 2)
+# --- Summaries (LBNL) ---------------------------------------------------------
+capacity_by_state_resource <- by_state_resource_long %>%
+  group_by(state, resource_type) %>%
+  summarise(total_capacity_mw = sum(capacity_mw, na.rm = TRUE), .groups = "drop") %>%
+  arrange(state, desc(total_capacity_mw))
 
-dbg("EIA columns:", paste(names(eia_opgen), collapse = ", "))
+capacity_by_state_total_queued <- capacity_by_state_resource %>%
+  group_by(state) %>%
+  summarise(queued_total_mw = sum(total_capacity_mw, na.rm = TRUE), .groups = "drop") %>%
+  mutate(queued_total_gw = queued_total_mw / 1000)
 
-# Basic sanity: require columns
-req_eia_cols <- c("Plant State", "Nameplate Capacity (MW)", "Status")
-missing_eia <- setdiff(req_eia_cols, names(eia_opgen))
-if (length(missing_eia) > 0) {
-  stop("Missing required EIA columns: ", paste(missing_eia, collapse = ", "))
-}
+dbg("Check LBNL queued totals (first 10):")
+print(head(capacity_by_state_total_queued, 10), row.names = FALSE)
 
-# Keep plausible numeric capacity and non-missing state
-dbg("Filtering EIA rows to valid state/capacity...")
-eia_opgen <- eia_opgen %>%
-  dplyr::filter(!is.na(`Plant State`),
-                !is.na(`Nameplate Capacity (MW)`),
-                `Nameplate Capacity (MW)` >= 0)
+# --- EIA-860M: Operating sheet (denominator) ----------------------------------
+dbg("Reading EIA-860/860M 'Operating' worksheet...")
+eia_opgen <- read_excel(EIA_OPERATING_PATH, sheet = "Operating", skip = 2)
 
-dbg("EIA rows after NA/>=0 filter:", nrow(eia_opgen))
+# Validate key columns exist
+eia_req_cols <- c(
+  "Plant State", "Status",
+  "Nameplate Capacity (MW)", "Net Summer Capacity (MW)"
+)
+require_cols(eia_opgen, eia_req_cols, "EIA Operating")
 
-# Restrict to continental US (48); exclude DC & territories explicitly
-dbg("Restricting EIA to continental US (48 states only)...")
-eia_opgen_contig <- eia_opgen %>%
-  dplyr::filter(`Plant State` %in% continental_states)
+# Clean & restrict to CONUS, keep OP + SB statuses only
+dbg("Unique EIA status examples (first 10): ", paste(utils::head(unique(eia_opgen$Status), 10), collapse = " | "))
 
-dbg("EIA rows after continental filter:", nrow(eia_opgen_contig))
-dbg("Unique EIA states:", paste(sort(unique(eia_opgen_contig$`Plant State`)), collapse = ", "))
+eia_conus <- eia_opgen %>%
+  mutate(
+    PlantState = normalize_state(`Plant State`),
+    status_code = toupper(stringr::str_match(Status, "^\\(([A-Za-z]+)\\)")[,2]),
+    # Use Net Summer (AC) when available; fallback to Nameplate
+    denom_capacity_mw = num_coalesce(`Net Summer Capacity (MW)`, `Nameplate Capacity (MW)`)
+  ) %>%
+  filter(
+    PlantState %in% CONUS_STATES,
+    status_code %in% c("OP", "SB"),                 # Operating + Standby
+    !is.na(denom_capacity_mw),
+    denom_capacity_mw > 0
+  ) %>%
+  select(PlantState, status_code, denom_capacity_mw)
 
-# (Optional) If you need to further restrict to true operating status codes, you can filter here.
-# The "Operating" sheet should already reflect operating units; we maintain all rows on this tab.
-# Example (commented):
-# eia_opgen_contig <- eia_opgen_contig %>%
-#   dplyr::filter(str_detect(Status, regex("OP|Operating", ignore_case = TRUE)))
+dbg("EIA rows after CONUS + status filter: ", nrow(eia_conus))
+dbg("Statuses kept (counts):")
+print(as.data.frame(table(eia_conus$status_code)))
 
-# Summarize operating capacity by state (Nameplate MW)
-dbg("Summarizing operating (Nameplate MW) by state...")
-operating_by_state_mw <- eia_opgen_contig %>%
-  dplyr::group_by(state = `Plant State`) %>%
-  dplyr::summarise(operating_mw = sum(`Nameplate Capacity (MW)`, na.rm = TRUE), .groups = "drop") %>%
-  dplyr::arrange(state)
+operational_by_state <- eia_conus %>%
+  group_by(state = PlantState) %>%
+  summarise(operational_total_mw = sum(denom_capacity_mw, na.rm = TRUE), .groups = "drop") %>%
+  mutate(operational_total_gw = operational_total_mw / 1000)
 
-dbg("Operating MW totals — sample:")
-print(head(operating_by_state_mw, 10))
+dbg("Check EIA operational totals (first 10):")
+print(head(operational_by_state, 10), row.names = FALSE)
 
-# ==========================
-# 3) Align to Regions
-# ==========================
-dbg("Fetching Census regions and states from tigris (2024)...")
+# --- Harmonize & compute % by state ------------------------------------------
+# Ensure we evaluate across the same set of states (CONUS), and fill missing with zeros
+state_frame <- tibble(state = CONUS_STATES)
+
+queued_state <- state_frame %>%
+  left_join(capacity_by_state_total_queued, by = "state") %>%
+  mutate(queued_total_mw = coalesce(queued_total_mw, 0),
+         queued_total_gw = queued_total_mw / 1000)
+
+oper_state <- state_frame %>%
+  left_join(operational_by_state, by = "state") %>%
+  mutate(operational_total_mw = coalesce(operational_total_mw, 0),
+         operational_total_gw = operational_total_mw / 1000)
+
+queued_pct_by_state <- queued_state %>%
+  left_join(select(oper_state, state, operational_total_mw, operational_total_gw), by = "state") %>%
+  mutate(
+    queued_to_operational_pct = dplyr::if_else(
+      operational_total_mw > 0,
+      100 * queued_total_mw / operational_total_mw,
+      NA_real_
+    )
+  ) %>%
+  arrange(state)
+
+dbg("Sanity check: states with zero denominator (operational_total_mw == 0): ",
+    paste(queued_pct_by_state$state[queued_pct_by_state$operational_total_mw == 0], collapse = ", "))
+
+dbg("Preview: queued_pct_by_state (first 10):")
+print(head(queued_pct_by_state, 10), row.names = FALSE)
+
+# --- Map states -> Census regions --------------------------------------------
+dbg("Fetching Census regions & states (tigris 2024)...")
 regions <- tigris::regions(year = 2024) %>%
-  sf::st_drop_geometry() %>%
+  st_drop_geometry() %>%
   transmute(
     REGION_GEOID = as.character(GEOID),
     CENSUS_REGION_NAME = NAMELSAD
   )
 
 states_tbl <- tigris::states(year = 2024, cb = FALSE) %>%
-  sf::st_drop_geometry() %>%
+  st_drop_geometry() %>%
   mutate(REGION = as.character(REGION)) %>%
-  # keep exactly the 50 states, then reduce to 48 in a moment:
-  filter(STUSPS %in% state.abb) %>%
+  filter(STUSPS %in% CONUS_STATES) %>%           # **CONUS filter here**
   rename(STATE_NAME = NAME) %>%
-  select(STUSPS, STATE_NAME, STATEFP, REGION)
-
-# Now reduce to 48 continental for consistent joining
-states_tbl <- states_tbl %>% filter(STUSPS %in% continental_states)
-dbg("tigris states kept (should be 48):", nrow(states_tbl))
-stopifnot(nrow(states_tbl) == 48)
-
-# Attach region names
-states_with_regions <- states_tbl %>%
+  select(STUSPS, STATE_NAME, STATEFP, REGION) %>%
   left_join(regions, by = c("REGION" = "REGION_GEOID"))
 
-dbg("States with regions — sample:")
-print(head(states_with_regions, 10))
+require_cols(states_tbl, c("STUSPS", "CENSUS_REGION_NAME"), "tigris states join")
 
-# ==========================
-# 4) Build % Tables
-# ==========================
-dbg("Joining queued and operating totals by state...")
-state_totals <- states_with_regions %>%
-  select(state = STUSPS, CENSUS_REGION_NAME) %>%
-  left_join(queued_by_state_mw,    by = "state") %>%
-  left_join(operating_by_state_mw, by = "state")
+dbg("Census regions present: ", paste(unique(states_tbl$CENSUS_REGION_NAME), collapse = " | "))
 
-# Replace NAs with 0 where appropriate
-state_totals <- state_totals %>%
-  mutate(
-    queued_mw    = coalesce(queued_mw, 0),
-    operating_mw = coalesce(operating_mw, 0)
-  )
+# Attach region to state-level % table
+queued_pct_by_state <- queued_pct_by_state %>%
+  left_join(states_tbl %>% select(STUSPS, CENSUS_REGION_NAME), by = c("state" = "STUSPS")) %>%
+  relocate(CENSUS_REGION_NAME, .after = state)
 
-# Sanity: states with zero operating capacity would create Inf/NaN. Guard:
-zero_ops <- state_totals %>% filter(operating_mw <= 0)
-if (nrow(zero_ops) > 0) {
-  warning("States with zero or missing operating capacity: ",
-          paste(zero_ops$state, collapse = ", "), ". Percentages set to NA.")
-}
-
-inqueue_share_by_state <- state_totals %>%
-  mutate(
-    inqueue_share_pct = dplyr::if_else(operating_mw > 0,
-                                       100 * queued_mw / operating_mw,
-                                       NA_real_)
-  ) %>%
-  arrange(state)
-
-dbg("Final by-state rows:", nrow(inqueue_share_by_state))
-dbg("By-state totals (queued MW sum / operating MW sum): ",
-    sum(inqueue_share_by_state$queued_mw, na.rm = TRUE), "/",
-    sum(inqueue_share_by_state$operating_mw, na.rm = TRUE))
-
-dbg("Creating region-level table (capacity sums across states, then %)...")
-region_totals <- inqueue_share_by_state %>%
+# --- Aggregate to Census regions ---------------------------------------------
+# Regional numerator & denominator are sums of state totals (GW and MW provided)
+queued_pct_by_region <- queued_pct_by_state %>%
   group_by(CENSUS_REGION_NAME) %>%
   summarise(
-    queued_mw    = sum(queued_mw, na.rm = TRUE),
-    operating_mw = sum(operating_mw, na.rm = TRUE),
+    queued_total_mw       = sum(queued_total_mw, na.rm = TRUE),
+    operational_total_mw  = sum(operational_total_mw, na.rm = TRUE),
+    queued_total_gw       = sum(queued_total_gw, na.rm = TRUE),
+    operational_total_gw  = sum(operational_total_gw, na.rm = TRUE),
+    queued_to_operational_pct =
+      ifelse(operational_total_mw > 0, 100 * queued_total_mw / operational_total_mw, NA_real_),
     .groups = "drop"
-  ) %>%
-  mutate(
-    inqueue_share_pct = dplyr::if_else(operating_mw > 0,
-                                       100 * queued_mw / operating_mw,
-                                       NA_real_)
   ) %>%
   arrange(CENSUS_REGION_NAME)
 
-inqueue_share_by_region <- region_totals
+dbg("Preview: queued_pct_by_region:")
+print(queued_pct_by_region, row.names = FALSE)
 
-dbg("Final by-region rows:", nrow(inqueue_share_by_region))
-dbg("By-region totals (queued MW sum / operating MW sum): ",
-    sum(inqueue_share_by_region$queued_mw, na.rm = TRUE), "/",
-    sum(inqueue_share_by_region$operating_mw, na.rm = TRUE))
+# --- Optional: resource-wide tables you already had (now CONUS-scoped) -------
+# Wide (GW) by state × resource (CONUS only)
+capacity_by_state_resource_wide <- capacity_by_state_resource %>%
+  mutate(total_capacity_gw = total_capacity_mw / 1000) %>%
+  select(-total_capacity_mw) %>%
+  tidyr::pivot_wider(
+    names_from  = resource_type,
+    values_from = total_capacity_gw,
+    values_fill = 0
+  ) %>%
+  arrange(state) %>%
+  mutate(Total = rowSums(select(., -state), na.rm = TRUE))
 
-# ==========================
-# 5) Optional: Inspect / Export
-# ==========================
-dbg("Glimpse (by state):")
-glimpse(inqueue_share_by_state)
+# --- Exports (optional) -------------------------------------------------------
+readr::write_csv(queued_pct_by_state,  "queued_percent_by_state_conus.csv")
+readr::write_csv(queued_pct_by_region, "queued_percent_by_region_conus.csv")
+readr::write_csv(capacity_by_state_resource_wide, "capacity_by_state_resource_wide_gw_conus.csv")
 
-dbg("Head (by region):")
-print(inqueue_share_by_region)
+# --- Final debug summaries ----------------------------------------------------
+dbg("Final rows: queued_pct_by_state = ", nrow(queued_pct_by_state),
+    " (expect 48), queued_pct_by_region = ", nrow(queued_pct_by_region), " (expect 4)")
 
-# Optional CSV exports
-# readr::write_csv(inqueue_share_by_state,  "inqueue_share_by_state.csv")
-# readr::write_csv(inqueue_share_by_region, "inqueue_share_by_region.csv")
+dbg("Total queued (GW, CONUS): ",
+    round(sum(queued_pct_by_state$queued_total_gw, na.rm = TRUE), 3))
 
-# ==========================
-# 6) Extra Diagnostics
-# ==========================
-# Cross-check that the states listed in the LBNL active set are a subset of the 48:
-lbnl_states <- sort(unique(df_active_gen[[state_col_lbnl]]))
-if (!all(lbnl_states %in% continental_states)) {
-  warning("Some LBNL states not in continental set: ",
-          paste(setdiff(lbnl_states, continental_states), collapse = ", "))
-} else {
-  dbg("All LBNL states are within the continental set.")
-}
+dbg("Total operational (GW, CONUS): ",
+    round(sum(queued_pct_by_state$operational_total_gw, na.rm = TRUE), 3))
 
-# Cross-check: any continental states missing in queued or operating tables?
-missing_in_queue   <- setdiff(continental_states, queued_by_state_mw$state)
-missing_in_oper    <- setdiff(continental_states, operating_by_state_mw$state)
-if (length(missing_in_queue)) dbg("States with NO queued capacity:", paste(missing_in_queue, collapse = ", "))
-if (length(missing_in_oper))  dbg("States with NO operating capacity:", paste(missing_in_oper,  collapse = ", "))
-
-dbg("Script complete. Objects ready:",
-    "inqueue_share_by_state, inqueue_share_by_region")
+dbg("All done. Objects available in workspace:",
+    "queued_pct_by_state, queued_pct_by_region, capacity_by_state_resource_wide")
