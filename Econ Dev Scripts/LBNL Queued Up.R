@@ -1,3 +1,5 @@
+#Chart product to edit: https://www.datawrapper.de/_/ZAFRe/
+
 # --- Libraries ---
 library(dplyr)
 library(readxl)
@@ -187,7 +189,8 @@ region_resource_summary <- state_region_resource %>%
   select(-Total) %>%
   group_by(REGION, CENSUS_REGION_NAME) %>%
   summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = "drop") %>%
-  arrange(REGION, CENSUS_REGION_NAME)
+  arrange(REGION, CENSUS_REGION_NAME) %>%
+  select(-REGION)
 glimpse(region_resource_summary)
 
 #Export region_resource_summary as CSV
