@@ -4,7 +4,7 @@ library(tigris)
 
 options(tigris_use_cache = TRUE)
 
-#Policy Intent
+#Policy Intent------------------
 
 #Econ Dev Incentives----------------
 
@@ -20,6 +20,42 @@ gjf_statetotal_1924<-gjf %>%
   mutate(incent_gdp=subs_m/X2022*100,
          incent_gdp_rank = rank(-subs_m/X2022))
 
+
+gjf_electrotech <- gjf %>%
+  filter(Major.Industry.of.Parent %in% c(
+    "miscellaneous energy products and systems",
+    "industrial equipment",
+    "electrical and electronic equipment",
+    "motor vehicles",
+    "information technology",
+    "utilities and power generation",
+    "automotive parts",
+    "telecommunications"
+  ),
+  Year > 2020,
+  !grepl("media",Specific.Industry.of.Parent),
+  Specific.Industry.of.Parent != "computers") %>%
+  arrange(desc(subs_m))
+
+top_electrotech <- gjf_electrotech %>%
+  slice_max(order_by=subs_m, n= 25)
+write.csv(top_electrotech,"Downloads/top_electrotech.csv")
+
+electrotech_state<-gjf_electrotech %>%
+  group_by(Location) %>% 
+  summarize(subs_m=sum(subs_m,na.rm=T)) 
+
+gjf_electrotech_programs <- gjf_electrotech %>%
+  group_by(Location, Program.Name,Awarding.Agency,Type.of.Subsidy) %>% 
+  summarize(subs_m=sum(subs_m,na.rm=T)) %>%
+  filter(Program.Name != "multiple")
+
+gjf_all_programs <- gjf %>%
+  filter(Year>2020) %>%
+  group_by(Location, Program.Name,Awarding.Agency,Type.of.Subsidy) %>% 
+  summarize(subs_m=sum(subs_m,na.rm=T)) %>%
+  arrange(desc(subs_m))
+  
 
 #SPOT Index Score
 spot<-spot
@@ -307,7 +343,7 @@ feas_state<-feas %>%
                    na.rm = TRUE))
 
 
-#Economic Dynamism
+#Economic Dynamism--------
 url <- "https://eig.org/state-dynamism-2025/assets/Downloadable-Data-EIG-Index-of-State-Dynamism-2022.xlsx"
 
 tf <- tempfile(fileext = ".xlsx")
@@ -702,6 +738,9 @@ write.csv(electrotech %>%
             arrange(desc(electrotech_index)) %>%
             slice_max(electrotech_index,n=20),"Downloads/electrotech.csv")
 
+
+
+
 electrotech_div <- electrotech %>%
   left_join(census_divisions,by=c("State"="State.Code")) %>%
   group_by(Division) %>%
@@ -713,16 +752,8 @@ elec_price<- electrotech %>%
 num_vars <- elec_price %>%
   dplyr::select(where(is.numeric))
 
-# compute correlation matrix
-cor_matrix <- cor(num_vars, use = "pairwise.complete.obs", method = "pearson")
 
-# view
-cor_matrix
-
-
-#ELectrotech Facilities Chart
-
-
+#ELectrotech Facilities Chart------------------------------
 median_scurve <- function(x, gamma = 0.5) {
   # 1) turn raw x into a [0,1] percentile
   r <- dplyr::percent_rank(x)
