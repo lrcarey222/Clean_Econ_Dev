@@ -1334,7 +1334,27 @@ hs_codes<-hs_codes %>%
   mutate(code_10=substr(HTS.Code,1,10),
          code_6=substr(HTS.Code,1,6),
          code_4=substr(HTS.Code,1,4)) %>%
-  select(-Start.Year.Valid,-End.Year.Valid)
+  select(-Start.Year.Valid,-End.Year.Valid) %>%
+  filter(code_10 != "2710124545",
+         code_10 !="2710194545")
+
+ev_codes <- tibble(
+  HTS.Code = c(
+    "870380--CARS BEVS",
+    "870360--CARS PHEVS",
+    "870370--CARS PHEVS",
+    "871160--TWO WHEELERS BEVS",
+    "870240--BUSES BEVS",
+    "870460--TRUCKS BEVS",
+    "870124--TRACTORS BEVS"
+  ),
+  Sector = "Electric Vehicles",
+  Sub.Sector = "EV Midstream",
+  code_10 = NA_character_,
+  code_6 = c("870380", "870360", "870370", "871160", "870240", "870460", "870124"),
+  code_4 = substr(c("870380", "870360", "870370", "871160", "870240", "870460", "870124"), 1, 4),
+  industry = "Electric Vehicles Midstream"
+)
 
 sectors <- hs_codes %>%
   mutate(
@@ -1351,7 +1371,7 @@ sectors <- hs_codes %>%
         "Motor Fuel", "Fuel Oils: Other"
       )                                          ~ "Oil Upstream",
       Sector == "Thermal Power" & Sub.Sector %in% c("Internal Combustion Generating\nSets","Generators") ~ "Oil Midstream",
-      Sector == "Thermal Power" & Sub.Sector== "Steam (Coal, Nuclear,\nGeothermal, Combined Cycle\nGas, Etc.)" ~ "Coal Midstream; Gas Midstream; Nuclear Midstream",
+      Sector == "Thermal Power" & Sub.Sector %in% c("Gas","Steam (Coal, Nuclear,\nGeothermal, Combined Cycle\nGas, Etc.)") ~ "Coal Midstream; Gas Midstream; Nuclear Midstream",
       Sub.Sector == "Crude Oils"                 ~ "Oil Upstream",
       Sub.Sector %in% c("Gas","Ethylene", "Propylene", "Butylene", "Butadiene")
       ~ "Gas Midstream",
@@ -1369,7 +1389,7 @@ sectors <- hs_codes %>%
   separate_rows(industry, sep = "\\s*;\\s*") %>%
   mutate(industry = str_squish(industry))
 
-
+sectors <- bind_rows(sectors, ev_codes)
 # Inspect the result
 glimpse(sectors)
 
@@ -1382,8 +1402,7 @@ energy_codes<-rbind(sectors %>%
                       rename(product=nameShortEn) %>%
                       select(industry,code,product)) %>%
   distinct() %>%
-  mutate(industry=str_replace_all(industry," NA"," Upstream"),
-         industry=str_replace_all(industry,"Battery","Batteries"),
+  mutate(industry=str_replace_all(industry,"Battery","Batteries"),
          industry=str_replace_all(industry,"Nuclear Power","Nuclear"),
          industry=str_replace_all(industry,"Critical Minerals","Batteries")) %>%
   mutate(code6 = stringr::str_extract(product, "^\\d{6}"))
@@ -3912,11 +3931,11 @@ fossil_xwalk <- read_excel(file.path(raw_data, "fossil_industry_naics.xlsx"), sh
 
 all_xwalk    <- bind_rows(fossil_xwalk, clean_xwalk) %>%
   mutate(supply_chain=case_when(
-    supply_chain=="Input" ~ "Upstream",
-    supply_chain=="Midstream" ~ "Midstream",
-    supply_chain %in% c("Operations",
-                        "Transport_Handling",
-                        "Design_Engineering","Construction") ~ "Downstream"
+    Production.Phase=="Input" ~ "Upstream",
+    Production.Phase=="Manufacturing" ~ "Midstream",
+    Production.Phase %in% c("Operations",
+                        "Transport_Handling","Design_Engineering",
+                        "Construction") ~ "Downstream"
   ))
 
 # 3.  eGRID emissions  --------------------------------------------------
@@ -4097,7 +4116,7 @@ ems_fuel<-read.csv(paste0(raw_data,"ghg_ems_fossil_combustion_fuel.csv")) %>%
   mutate(supply_chain=case_when(
     Sector %in% c("Residential","Transportation") ~ "Downstream"
   ),
-  co2e=as.numeric(X2022)*1000000) %>%
+  co2e=as.numeric(X2022)*1000000)  %>%
   select(industry=Fuel,supply_chain,co2e) %>%
   group_by(industry,supply_chain) %>%
   summarize(`Carbon Dioxide`=sum(co2e,na.rm=T)) %>%
@@ -4150,6 +4169,56 @@ enviro_index<-industry_phase %>%
 write.csv(enviro_index %>%
             rename(tech=industry) %>%
             mutate(industry=paste0(tech,": ",supply_chain)),"Downloads/enviro_index.csv")
+
+#Enviro Compared to Job Growth
+enviro_ind <- available_USdata %>%
+  mutate(
+    industry_code = as.numeric(industry_code),
+    year = as.integer(year)
+  ) %>%
+  # limit to codes we have in the crosswalk (without mangling codes)
+  semi_join(all_xwalk, by = c("industry_code" = "X6.Digit.Code")) %>%
+  filter(year %in% c(2019, 2024)) %>%
+  # if you have multiple rows per code-year, aggregate first
+  group_by(industry_code, year) %>%
+  summarize(empl = sum(annual_avg_emplvl, na.rm = TRUE), .groups = "drop") %>%
+  # get 2019 and 2024 into columns
+  pivot_wider(names_from = year, values_from = empl, names_prefix = "y") %>%
+  # avoid divide-by-zero and missing baselines
+  filter(!is.na(y2019), !is.na(y2024), y2019 > 0) %>%
+  mutate(growth = (y2024 / y2019) - 1) %>%
+  # bring in industry / supply_chain labels
+  left_join(all_xwalk, by = c("industry_code" = "X6.Digit.Code")) %>%
+  group_by(industry, supply_chain) %>%
+  # weight the growth by baseline employment (or pick y2024, your call)
+  summarize(growth = weighted.mean(growth, w = y2019, na.rm = TRUE), .groups = "drop") %>%
+  left_join(enviro_index %>%
+              select(industry,supply_chain,enviro_index),by=c("industry","supply_chain")) %>%
+  rename(tech=industry) %>%
+  mutate(industry=paste0(tech,": ",supply_chain)) %>%
+  filter(tech != "Green Hydrogen",
+         tech != "Geothermal") 
+
+enviro_ind2 <- available_USdata %>%
+  mutate(
+    industry_code = as.numeric(industry_code),
+    year = as.integer(year)
+  ) %>%
+  # limit to codes we have in the crosswalk (without mangling codes)
+  inner_join(all_xwalk, by = c("industry_code" = "X6.Digit.Code")) %>%
+  filter(year %in% c(2024),
+         industry_code != "541330",
+         industry_code !="541715") %>%
+  select(industry,supply_chain,naics_desc,industry_code,annual_avg_emplvl) %>%
+  # if you have multiple rows per code-year, aggregate first
+  group_by(industry,supply_chain) %>%
+  summarize(empl = sum(annual_avg_emplvl, na.rm = TRUE), .groups = "drop") 
+
+
+ggplot(data=enviro_ind,aes(x=enviro_index,y=growth,label=industry))+geom_point()+  geom_text(check_overlap = TRUE, vjust = -0.5) +
+  scale_x_log10() +      theme_minimal()
+write.csv(enviro_ind %>%
+            left_join(enviro_ind2,by=c("tech"="industry","supply_chain")),"Downloads/enviro_ind.csv")
 
 # OPTION B: average total CO₂-e by INDUSTRY only
 industry_CO2 <- facility_totals %>% 

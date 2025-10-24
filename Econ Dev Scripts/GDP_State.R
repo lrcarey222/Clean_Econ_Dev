@@ -33,7 +33,7 @@ temp_dir <- tempdir()
 unzip(temp_zip, exdir = temp_dir)
 files <- list.files(temp_dir, full.names = TRUE)
 
-gdp_ind_q <- read.csv(files[grepl("SQGDP9__ALL_AREAS_2005_2024.csv", files)], stringsAsFactors = FALSE)
+gdp_ind_q <- read.csv(files[grepl("SQGDP9__ALL_AREAS_2005_2025.csv", files)], stringsAsFactors = FALSE)
 
 #Make relevant columns numeric and add GDP growth variable
 years <- 1997:2023

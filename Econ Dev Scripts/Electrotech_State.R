@@ -42,8 +42,22 @@ top_electrotech <- gjf_electrotech %>%
 write.csv(top_electrotech,"Downloads/top_electrotech.csv")
 
 electrotech_state<-gjf_electrotech %>%
-  group_by(Location) %>% 
-  summarize(subs_m=sum(subs_m,na.rm=T)) 
+  group_by(Location,Specific.Industry.of.Parent) %>% 
+  summarize(subs_m=sum(subs_m,na.rm=T)) %>%
+  ungroup() %>%
+  inner_join(state_gdp, by=c("Location"="GeoName")) %>%
+  mutate(incent_gdp=subs_m/X2022*100,
+         incent_gdp_rank = rank(-subs_m/X2022))
+
+electrostate_wide <- electrotech_state %>%
+  select(Location,Specific.Industry.of.Parent,subs_m) %>%
+  group_by(Location) %>%
+  slice_max(order_by=subs_m,n=1) %>%
+  arrange(desc(subs_m)) %>%
+  filter(Location %in% c("New York","Michigan","Georgia","South Carolina","Ohio","North Carolina","Kansas","Tennessee","Indiana","Texas")) %>%
+  mutate(Specific.Industry.of.Parent=str_to_title(Specific.Industry.of.Parent)) %>%
+  pivot_wider(names_from=Location,values_from=subs_m) %>%
+  write.csv("Downloads/electro_incents.csv")
 
 gjf_electrotech_programs <- gjf_electrotech %>%
   group_by(Location, Program.Name,Awarding.Agency,Type.of.Subsidy) %>% 
@@ -133,13 +147,16 @@ leg_index <- climate_leg %>%
 
 #Policy Intent Index-----------------------
 
-policy_intent <-gjf_statetotal_1924 %>%
+policy_intent <-electrotech_state %>%
   select(Location,incent_gdp) %>%
-  left_join(spot,by=c("Location"="State")) %>%
+  left_join(spot %>%
+              rename(spot_electricity_score=Policy_Index),by=c("Location"="State")) %>%
   left_join(dsire_count %>%
-              rename(dsire=n),by=c("Location"="state")) %>%
-  left_join(climate_dev_pol_sum,by=c("Location"="State")) %>%
-  left_join(leg_index,by=c("Location"="statename")) %>%
+              rename(dsire_policy_count=n),by=c("Location"="state")) %>%
+  left_join(climate_dev_pol_sum %>%
+              rename(economic_development_policy_count=Program_Name),by=c("Location"="State")) %>%
+  left_join(leg_index %>%
+              rename(electrotech_legislation_index=leg_index),by=c("Location"="statename")) %>%
   mutate(across(
     where(is.numeric),
     ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
@@ -357,16 +374,52 @@ dynamism <- read_excel(tf, sheet = 1)  # or sheet = "Index 2022" (example)
 dynamism <- janitor::clean_names(dynamism) %>%
   filter(year=="2022")
 
+metrics <- c("combined_score",
+  "core_startup_rate_percent",
+  "share_of_workers_at_firms_5_years_old_percent",
+  "unique_inventors_per_1_000_residents",
+  "housing_permits_per_1_000_residents",
+  "reallocation_rate",
+  "growth_in_total_firms_percent"
+)
+
+dyn0 <- dynamism %>%
+  filter(state_abbreviation != "DC") %>%
+  select(state_abbreviation, all_of(metrics))
+
+# Build a tidy top-10 per metric, rank within each metric, then pivot wide
+top10_league <- dyn0 %>%
+  pivot_longer(cols = all_of(metrics), names_to = "metric", values_to = "value") %>%
+  group_by(metric) %>%
+  arrange(desc(value), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  slice_head(n = 5) %>%
+  ungroup() %>%
+  mutate(label = str_glue("{state_abbreviation} ({round(value, 2)})")) %>%
+  select(metric, rank, label) %>%
+  pivot_wider(names_from = metric, values_from = label) %>%
+  arrange(rank)
+
+names(top10_league) <- names(top10_league) |>
+  str_replace_all("_", " ") |>
+  str_to_title()
+
+write.csv(top10_league,"Downloads/dynamism.csv")
+
 #Econ Capabilities Index-----------------------------------
 econ_index <- bundle_lq %>%
   select(state_abbr,LQ_bundle) %>%
+  rename(electrotech_employment_specialization=LQ_bundle) %>%
   left_join(states_simple %>%
               select(abbr,full),by=c("state_abbr"="abbr")) %>%
   left_join(gdp_man_index %>%
-              select(GeoName,gdp_index),by=c("full"="GeoName")) %>%
-  left_join(feas_state,by=c("full"="geo_name")) %>%
+              select(GeoName,gdp_index) %>%
+              rename(electrotech_GDP_growth_index=gdp_index),by=c("full"="GeoName")) %>%
+  left_join(feas_state %>%
+              rename(electrotech_feasibility_index=industry_feas_perc),by=c("full"="geo_name")) %>%
   left_join(dynamism %>%
-              select(state_abbreviation,combined_score),by=c("state_abbr"="state_abbreviation")) %>%
+              select(state_abbreviation,combined_score) %>%
+              rename(economic_dynamism=combined_score),by=c("state_abbr"="state_abbreviation")) %>%
   mutate(across(
     where(is.numeric),
     ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
@@ -489,19 +542,22 @@ cnbc<-cnbc %>%
 #Infrastructure Index----------------------
 
 # 1) Decide polarity (edit these as you see fit)
-positive <- c("ren_index", "ev_stations_cap", "price_index")   # higher = better
-negative <- c("q_share","infrastructure")         # higher = worse
+positive <- c("renewable_potential", "ev_stations_cap", "electricity_price")   # higher = better
+negative <- c("interconnection_queue","cnbc_rank")         # higher = worse
 
 # (Optional) weights; omit if you want a simple average
-weights <- c(ren_index = 0.2, ev_stations_cap = 0.2, q_share = 0.2, price_index = 0.2,infrastructure=0.2)
+weights <- c(renewable_potential = 0.2, ev_stations_cap = 0.2, interconnection_queue = 0.2, electricity_price = 0.2,cnbc_rank=0.2)
 
 # 2) Build the table (your joins), then scale by polarity and score
 infrastructure_index <- renpotential_state %>%
   select(geo_name, ren_index) %>%
+  rename(renewable_potential=ren_index) %>%
   left_join(states_simple %>% select(abbr, full),             by = c("geo_name" = "full")) %>%
   left_join(ev_stations_state %>% select(State, ev_stations_cap), by = c("geo_name" = "State")) %>%
-  left_join(queue %>% select(state, q_share),                  by = c("abbr" = "state")) %>%
-  left_join(ind_price %>% select(State, price_index),          by = c("abbr" = "State")) %>%
+  left_join(queue %>% select(state, q_share) %>%
+              rename(interconnection_queue=q_share),                  by = c("abbr" = "state")) %>%
+  left_join(ind_price %>% select(State, price_index) %>%
+              rename(electricity_price=price_index),          by = c("abbr" = "State")) %>%
   left_join(cnbc,          by = c("geo_name" = "state")) %>%
   # Clean infinities
   mutate(across(all_of(c(positive, negative)),
@@ -535,7 +591,7 @@ states_gen <- op_gen %>%
 states_rengen <- op_gen %>%
   group_by(`Plant State`,`Operating Year`,Technology) %>%
   summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
-  left_join(census_divisions,by=c("Plant State"="State.Code")) %>%
+  left_join(census_divisions,by=c("Plant State"="State.Code")) %>%filter(Status=="(OP) Operating") %>%
   filter(Technology %in% c("Conventional Hydroelectric",
                                                      "Onshore Wind Turbine",
                                                      "Batteries",
@@ -554,7 +610,35 @@ states_rengen <- op_gen %>%
   mutate(cum_cap = cumsum(`Nameplate Capacity (MW)`)) %>%
   group_by(Division,State) %>%
   mutate(cap_index_22 = 100*cum_cap/cum_cap[Year=="2022-01-01"]) %>%
-  mutate(rengrowth_22_25 = cum_cap - cum_cap[Year=="2022-01-01"]) %>%
+  mutate(rengrowth_22_25 = cum_cap - cum_cap[Year=="2022-01-01"]) 
+
+states_rengen_total <- op_gen %>%
+  group_by(`Plant State`,`Operating Year`) %>%
+  filter(Status=="(OP) Operating") %>%
+  summarize_at(vars(`Nameplate Capacity (MW)`),sum,na.rm=T) %>%
+  complete(`Operating Year` = 1900:2025, fill = list(`Nameplate Capacity (MW)` = 0)) %>%
+  mutate(Year = make_date(`Operating Year`)) %>%
+  mutate(cum_cap = cumsum(`Nameplate Capacity (MW)`)) %>%
+  ungroup() %>%
+  filter(State %in% top_states$State,
+         `Operating Year`>2012) %>%
+  arrange(`Operating Year`) %>%
+
+top_states <- states_rengen %>%
+  filter(`Operating Year`==2025) %>%
+  ungroup() %>%
+  slice_max(order_by=rengrowth_22_25,n=10) 
+
+rengen_chart <- states_rengen %>%
+  ungroup() %>%
+  filter(State %in% top_states$State,
+         `Operating Year`>2012) %>%
+  arrange(`Operating Year`) %>%
+  select(State,cum_cap,`Operating Year`) %>%
+  pivot_wider(names_from=State,values_from=cum_cap)
+write.csv(rengen_chart,"Downloads/rengen_chart.csv")
+
+states_rengen <- states_rengen %>%
   filter(`Operating Year`==2025) %>%
   ungroup() %>%
   select(State,cum_cap,cap_index_22,rengrowth_22_25) %>%
@@ -616,6 +700,7 @@ datacenters<- BNEF_WITH_STATE %>%
 
 datacenter_index<-datacenters %>%
   ungroup() %>%
+  select(STATE,committed_mw,datacenter_share) %>%
   mutate(across(
     where(is.numeric),
     ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
@@ -631,15 +716,19 @@ socioeconomics_data_path <- 'OneDrive - RMI/Documents - US Program/6_Projects/Cl
 socioecon <- read.csv(socioeconomics_data_path, skip=5)
 
 investment_state <- investment %>%
-  filter(Technology %in% c("Batteries","Storage","Solar","Wind","Critical Minerals","Heat Pumps","Nuclear","Zero Emission Vehicles")) %>%
-  group_by(State,Segment) %>%
+  filter(Technology %in% c("Batteries","Solar","Nuclear","Zero Emission Vehicles")) %>%
+  mutate(
+    tech = if_else(Segment == "Manufacturing",
+                   paste(Technology, Segment),
+                   Technology)) %>%
+  group_by(State,tech) %>%
   summarize(inv=sum(Estimated_Actual_Quarterly_Expenditure,na.rm=T )) %>%
   left_join(socioecon %>%
               filter(quarter=="2025-Q2"),by=c("State"="State"))%>%
   mutate(inv_gdp=inv/real_gdp) %>%
-  select(State,Segment,inv_gdp) %>%
-  pivot_wider(names_from="Segment",values_from="inv_gdp") %>%
-  mutate(Manufacturing=ifelse(is.na(Manufacturing),0,Manufacturing)) %>%
+  select(State,tech,inv_gdp) %>%
+  pivot_wider(names_from="tech",values_from="inv_gdp") %>%
+  #mutate(Manufacturing=ifelse(is.na(Manufacturing),0,Manufacturing)) %>%
   ungroup() %>%
   mutate(across(
     where(is.numeric),
@@ -652,7 +741,7 @@ investment_state <- investment %>%
 
 # ---- 7.1 Semiconductor Manufacturing Investment ----------------------------
 library(leaflet)
-#MORE HERE: https://www.semiconductors.org/chip-supply-chain-investments/ 
+  #MORE HERE: https://www.semiconductors.org/chip-supply-chain-investments/ 
 SEMICONDUCTOR_MANUFACTURING_INVESTMENT <- read.csv(paste0(raw_data,"semiconductor_man.csv"))
 
 library(readr)
@@ -685,14 +774,18 @@ deployment_index<-investment_state %>%
   left_join(states_simple %>%
               select(full,abbr),by=c("State"="abbr")) %>%
   select(State,full,investment_index) %>%
+  rename(clean_tech_investment=investment_index) %>%
   left_join(datacenter_index %>%
               select(STATE,datacenter_index),by=c("full"="STATE")) %>%
   left_join(states_rengen_index %>%
-              select(State,capacity_index),by=c("full"="State")) %>%
+              select(State,capacity_index) %>%
+              rename(electric_capacity_growth=capacity_index),by=c("full"="State")) %>%
   left_join(semi_man %>%
-              select(State,semi_gdp),by=c("State")) %>%
+              select(State,semi_gdp) %>%
+              rename(semiconductor_investment=semi_gdp),by=c("State")) %>%
   left_join(evs_state %>%
-              select(State,ev_cap),by=c("full"="State")) %>%
+              select(State,ev_cap) %>%
+              rename(evs_per_capita=ev_cap),by=c("full"="State")) %>%
   ungroup() %>%
   mutate(across(
     where(is.numeric),
@@ -702,11 +795,11 @@ deployment_index<-investment_state %>%
   ungroup() %>%
   mutate(deployment_index = rowMeans(across(where(is.numeric)), na.rm = TRUE)) 
 
-
+write.csv(deployment_index,"Downloads/deployment.csv")
 
 
 #ElectroTech Index -----------------------
-weights <- c(deployment_index = 0.3, infra_index = 0.2, econ_index = 0.3, intent_index = 0.2)
+weights <- c(deployment_index = 0.3, infra_index = 0.15, econ_index = 0.15, intent_index = 0.2,cluster_index=0.2)
 
 electrotech <- deployment_index %>%
   select(State,full,deployment_index) %>%
@@ -716,6 +809,7 @@ electrotech <- deployment_index %>%
               select(state_abbr,econ_index),by=c("State"="state_abbr")) %>%
   left_join(policy_intent %>%
               select(Location,intent_index),by=c("full"="Location")) %>%
+  left_join(cluster_state %>%select(state,cluster_index),by=c("State"="state")) %>%
   ungroup() %>%
   mutate(across(
     where(is.numeric),
@@ -735,11 +829,47 @@ electrotech <- deployment_index %>%
   arrange(desc(electrotech_index))
 
 write.csv(electrotech %>%
-            arrange(desc(electrotech_index)) %>%
-            slice_max(electrotech_index,n=20),"Downloads/electrotech.csv")
+            arrange(desc(electrotech_index)),"Downloads/electrotech.csv")
 
 
+df <- electrotech %>%
+  select(State, full, intent_index, deployment_index, econ_index, infra_index) %>%
+  mutate(across(c(intent_index, deployment_index, econ_index, infra_index),
+                ~ pmin(pmax(.x, 0), 1))) %>%  # clamp to [0,1] just in case
+  drop_na(intent_index, deployment_index)
 
+# 1) Medians (use quantiles instead if you prefer 60/40 splits)
+m_intent  <- median(df$intent_index, na.rm = TRUE)
+m_deploy  <- median(df$deployment_index, na.rm = TRUE)
+
+# (Optional) quantile thresholds:
+# hi_intent <- quantile(df$intent_index, 0.6, na.rm = TRUE)
+# hi_deploy <- quantile(df$deployment_index, 0.6, na.rm = TRUE)
+
+# 2) Archetypes by medians
+electro_df <- df %>%
+  mutate(
+    archetype = case_when(
+      intent_index  >= m_intent & deployment_index >= m_deploy ~ "Builders (High Intent . High Deployment)",
+      intent_index  >= m_intent & deployment_index <  m_deploy ~ "Declarers (High Intent . Low Deployment)",
+      intent_index  <  m_intent & deployment_index >= m_deploy ~ "Doers (Low Intent . High Deployment)",
+      TRUE ~ "Draggers (Low Intent . Low Deployment)"
+    ) %>% factor(levels = c(
+      "Builders (High Intent . High Deployment)",
+      "Declarers (High Intent . Low Deployment)",
+      "Doers (Low Intent . High Deployment)",
+      "Draggers (Low Intent . Low Deployment)"
+    )),
+    # Gap metric for labeling: who is over-/under-performing execution vs. policy?
+    rank_intent  = dense_rank(desc(intent_index)),
+    rank_deploy  = dense_rank(desc(deployment_index)),
+    gap_deploy_vs_intent = rank_deploy - rank_intent,             # >0 = executes better than it declares
+    abs_gap = abs(gap_deploy_vs_intent)
+  ) %>%
+  left_join(states_simple %>%
+              mutate(region=str_to_sentence(region)),by=c("State"="abbr"))
+
+write.csv(electro_df,"Downloads/electro_df.csv")
 
 electrotech_div <- electrotech %>%
   left_join(census_divisions,by=c("State"="State.Code")) %>%
@@ -751,6 +881,140 @@ elec_price<- electrotech %>%
 # select only numeric columns
 num_vars <- elec_price %>%
   dplyr::select(where(is.numeric))
+
+
+# Multi-sheet Excel export of Electrotech indices & components
+# ------------------------------------------------------------
+# Requires: openxlsx, dplyr, stringr (and your previously built data frames)
+# Tabs written:
+#  - Policy_Intent
+#  - Deployment
+#  - Economic_Capabilities
+#  - Infrastructure
+#  - Electrotech_Combined
+
+library(openxlsx)
+library(dplyr)
+library(stringr)
+
+# Helper: put likely state-ID columns first, index columns last
+reorder_cols <- function(df, index_cols = character(),
+                         id_candidates = c("State","state","STATE",
+                                           "Location","full","GeoName",
+                                           "state_abbr","state_fips",
+                                           "abbr","geo_name")) {
+  existing_ids   <- intersect(id_candidates, names(df))
+  existing_index <- intersect(index_cols, names(df))
+  middle         <- setdiff(names(df), c(existing_ids, existing_index))
+  df[, c(existing_ids, middle, existing_index), drop = FALSE]
+}
+
+# Helper: add a sheet if the object exists
+add_index_sheet <- function(wb, obj_name, sheet_name, index_cols) {
+  if (!exists(obj_name, inherits = TRUE)) {
+    message(sprintf("Skipping %s - object '%s' not found.", sheet_name, obj_name))
+    return(invisible(NULL))
+  }
+  df <- get(obj_name, inherits = TRUE)
+  # Ensure it's a data.frame (tibble ok)
+  df <- as.data.frame(df)
+  
+  # Reorder columns (IDs first, then inputs, then index columns)
+  df_out <- reorder_cols(df, index_cols = index_cols)
+  
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet = sheet_name, x = df_out)
+  
+  # Freeze header and first row
+  freezePane(wb, sheet = sheet_name, firstRow = TRUE)
+}
+
+# Create workbook
+wb <- createWorkbook()
+
+# 1) Policy Intent tab
+#    Common index column name: intent_index
+add_index_sheet(wb,
+                obj_name  = "policy_intent",
+                sheet_name = "Policy_Intent",
+                index_cols = c("intent_index"))
+
+# 2) Deployment tab
+#    Common index column name: deployment_index
+add_index_sheet(wb,
+                obj_name  = "deployment_index",
+                sheet_name = "Deployment",
+                index_cols = c("deployment_index"))
+
+# 3) Economic Capabilities tab
+#    Common index column name: econ_index
+add_index_sheet(wb,
+                obj_name  = "econ_index",
+                sheet_name = "Economic_Capabilities",
+                index_cols = c("econ_index"))
+
+# 4) Infrastructure tab
+#    Common index columns: infra_index (and, if present, infra_index_w)
+infra_idx_cols <- c("infra_index","infra_index_w")
+add_index_sheet(wb,
+                obj_name  = "infrastructure_index",
+                sheet_name = "Infrastructure",
+                index_cols = infra_idx_cols)
+
+# 4) Infrastructure tab
+#    Common index columns: infra_index (and, if present, infra_index_w)
+add_index_sheet(wb,
+                obj_name  = "cluster_state",
+                sheet_name = "Top Cluster",
+                index_cols = c("cluster_index"))
+
+# 5) Electrotech (combined) tab
+#    Common index columns: electrotech_index and electrotech_index_w
+add_index_sheet(wb,
+                obj_name  = "electrotech",
+                sheet_name = "Electrotech_Combined",
+                index_cols = c("electrotech_index","electrotech_index_w",
+                               # keep the sub-indexes grouped at the end if present
+                               "deployment_index","infra_index","econ_index","intent_index","cluster_index"))
+
+# (Optional) a README tab with brief notes pulled from the column names
+if (exists("electrotech", inherits = TRUE)) {
+  notes <- data.frame(
+    Sheet = c("Policy_Intent","Deployment","Economic_Capabilities","Infrastructure","Electrotech_Combined"),
+    Index_Column = c("intent_index","deployment_index","econ_index","infra_index (+ infra_index_w)","electrotech_index (+ electrotech_index_w)"),
+    Notes = c(
+      "Built from incentives-to-GDP, SPOT, active dev-policy counts, and energy/clean-tech legislation progress (all 0-1).",
+      "Built from investment/GDP, renewable capacity growth/share, data-center IT MW, semiconductor inv/GDP, EVs per capita (0-1).",
+      "Built from composite LQs, manufacturing GDP index, feasibility, and state dynamism (0-1).",
+      "Built from renewable potential, EV charging per capita, interconnection queue health (rev.), industrial price index (inv.), and CNBC infra (rev.).",
+      "Weighted blend: deployment (0.3), infrastructure (0.2), economic capabilities (0.3), policy intent (0.2)."
+    ),
+    stringsAsFactors = FALSE
+  )
+  addWorksheet(wb, "README")
+  writeData(wb, "README", notes)
+  freezePane(wb, "README", firstRow = TRUE)
+}
+
+# Save workbook
+out_path <- file.path(getwd(), "Downloads/Electrotech_Index_Tables.xlsx")
+saveWorkbook(wb, out_path, overwrite = TRUE)
+
+message(sprintf("Wrote Excel to: %s", out_path))
+
+
+
+
+#ELectrotech v Growth
+econ_risk<-read.csv("Downloads/state_business_cycle_status.csv")
+
+electrotech_econ <- electrotech %>%
+  select(State,full,electrotech_index,electrotech_index_w) %>%
+  left_join(econ_risk,by=c("full"="State"))
+
+
+ggplot(data=electrotech_econ,aes(x=Risk,y=electrotech_index,size=`Share.of.U.S..GDP...`))+geom_point()+theme_minimal()
+
 
 
 #ELectrotech Facilities Chart------------------------------
@@ -1269,7 +1533,7 @@ cluster<-EA_elecman %>%
   left_join(facilities_cim_electro_EA,by=c("FCC_PEA_Name")) %>%
   rename(economic_area=FCC_PEA_Name,
          electrostack_manufacturing_workforce_share=elecman_share,
-         workforce_growth_2225=growth,
+         workforce_growth_2225=growth_pop,
          industry_feasibility=industry_feas_perc,
          clean_electric_capacity=cum_cap,
          clean_electric_capacity_growth=rengrowth_22_25,
@@ -1295,29 +1559,52 @@ write.csv(cluster,"Downloads/cluster.csv")
   
 
 
-# 1) Decide polarity (edit these as you see fit)
-positive <- c("elecman_share", "growth_pop","industry_feas_perc",
-              "rengrowth_22_25","datacenter_mw","datacenter_count",
-              "project_size_usd","Batteries","Solar","Electric Vehicle")   # higher = better
-negative <- c("price")         # higher = worse
+# 1) Identify the five "anchor" vars and the rest
+anchor_vars <- c("datacenter_mw",
+                 "semiconductor_manufacturing",
+                 "battery_manufacturing",
+                 "solar_manufacturing",
+                 "EV_manufacturing")
 
+positive <- c("electrostack_manufacturing_workforce_share", "workforce_growth_2225","industry_feasibility",
+              "clean_electric_capacity_growth", anchor_vars)   # higher = better
+negative <- c("industrial_electricity_price")                 # higher = worse
 
-# 2) Build the table (your joins), then scale by polarity and score
+# All non-anchor inputs to average directly
+base_cols <- c(setdiff(positive, anchor_vars), negative)
+base_n    <- length(base_cols)  # for the mean denominator
+
 cluster_index <- cluster %>%
-  # Clean infinities
-  mutate(across(all_of(c(positive, negative)),
-                ~ replace(.x, !is.finite(.x), NA_real_))) %>%
-  mutate(across(where(is.numeric), ~ replace_na(.x, 0))) %>%
+  # Clean infinities and NAs before scaling
+  mutate(across(all_of(c(positive, negative)), ~ replace(.x, !is.finite(.x), NA_real_))) %>%
+  mutate(across(all_of(c(positive, negative)), ~ tidyr::replace_na(.x, 0))) %>%
   # Scale: positives 0???1, negatives 1???0
   mutate(across(all_of(positive), ~ rescale(.x, to = c(0, 1), na.rm = TRUE))) %>%
   mutate(across(all_of(negative), ~ rescale(.x, to = c(1, 0), na.rm = TRUE))) %>%
-  # 3a) Unweighted index (simple average)
-  mutate(cluster_index = rowMeans(pick(all_of(c(positive, negative))), na.rm = TRUE),
-         cluster_index=rescale(cluster_index)) %>%
+  # Row-wise: take the max across the five anchors
+  rowwise() %>%
+  mutate(max_anchor = max(c_across(all_of(anchor_vars)), na.rm = TRUE)) %>%
+  ungroup() %>%
+  # Mean = (sum of all base cols + max(anchor set)) / (num base cols + 1)
+  mutate(
+    base_sum      = rowSums(across(all_of(base_cols)), na.rm = TRUE),
+    cluster_index = (base_sum + max_anchor) / (base_n + 1),
+    cluster_index = rescale(cluster_index, to = c(0, 1), na.rm = TRUE)
+  ) %>%
   arrange(desc(cluster_index)) %>%
-  mutate(cluter_top=ifelse(cluster_index>0.5,FCC_PEA_Name,""))
+  mutate(cluster_top = ifelse(cluster_index > 0.5, economic_area, "")) %>%
+  select(-base_sum) %>%  # cleanup 
+  arrange(desc(cluster_index)) %>%
+  mutate(cluster_top=ifelse(cluster_index>0.5,economic_area,""))
 
 write.csv(cluster_index,"Downloads/cluster_index.csv")
+
+cluster_state <- cluster_index %>%
+  mutate(state = str_sub(as.character(economic_area), -2)) %>%
+  group_by(state) %>%
+  slice_max(order_by=cluster_index,n=1) %>%
+  select(state,cluster_index,economic_area,positive,negative) %>%
+  arrange(desc(cluster_index))
 
 
 

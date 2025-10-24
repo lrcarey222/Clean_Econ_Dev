@@ -35,7 +35,7 @@ install_github('mikeasilva/blsAPI')
 state_fips<-states_simple %>%
   filter(abbr==state_abbreviation) 
 
-years<-2014:2023
+years<-2020:2025
 
 all_years_data <- list()
 for (yr in years){
@@ -48,7 +48,21 @@ NM_combined_data <- do.call(rbind, all_years_data)
 
 available_NMdata <- NM_combined_data %>% filter(disclosure_code != "N",
                                       own_code == 5)
-USdata <- blsQCEW('Area', year=yr, quarter='a', area='US000')
+
+
+years<-2019:2024
+
+all_years_data <- list()
+for (yr in years){
+  USdata <- blsQCEW('Area', year=yr, quarter='a', area='US000')
+  
+  all_years_data[[yr]]<-USdata
+}
+US_combined_data <- do.call(rbind, all_years_data)
+
+available_USdata <- US_combined_data %>% filter(disclosure_code != "N",
+                                                own_code == 5)
+
 
 #Annual, County-level
 

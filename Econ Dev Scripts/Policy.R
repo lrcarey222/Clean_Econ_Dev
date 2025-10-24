@@ -777,8 +777,8 @@ library(bea.R)
 library(tidyverse)
 
 
-state_budgets<-read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",1)
-state_budg_key<-read_excel("C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",2)
+state_budgets<-read_excel("OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",1)
+state_budg_key<-read_excel("OneDrive - RMI/Documents/Data/Raw Data/1991-2022 State Expenditure Report Data.xlsm",2)
 
 state_key_TOT<-state_budg_key %>%
   filter(grepl("_TOT",`COLUMN HEADING`))
@@ -794,7 +794,7 @@ state_budg_1222 <- state_budget %>%
   pivot_longer(ELSED_TOT:OTHCP_TOT,names_to="key",values_to="value") %>%
   inner_join(state_key_TOT,by=c("key"="COLUMN HEADING")) %>%
   mutate(share=round(value/sum(value)*100,2)) %>%
-  write.csv("C:/Users/LCarey.RMI/Downloads/state_budget_spending_1222.csv")
+  write.csv("Downloads/state_budget_spending_1222.csv")
 
 #Capital Spending by State
 state_key_cap<-state_budg_key %>%
@@ -802,7 +802,8 @@ state_key_cap<-state_budg_key %>%
 
 state_cap_spend<-state_budgets %>%
   rename(state="...2") %>%
-  select(YEAR,state, TOTAL_CAP) 
+  select(YEAR,state, TOTAL_CAP,`TOTAL REV`) %>%
+  mutate(cap_share=TOTAL_CAP/`TOTAL REV`)
 
 #GDP by Industry by State
 library(bea.R)
@@ -846,9 +847,9 @@ stategdp_long<-result %>%
   mutate(year = as.numeric(substr(year, nchar(year)-3, nchar(year)))) 
 
 state_cap_spend_1722<-state_cap_spend %>%
-  filter(YEAR>2016) %>%
-  inner_join(stategdp_long %>% select(GeoName,year,gdp),by=c("state"="GeoName","YEAR"="year")) %>%
-  mutate(cap_gdp = TOTAL_CAP/gdp*100)
+  filter(YEAR=="2022") %>%
+  left_join(gdp_state_total %>% select(GeoName,X2022),by=c("state"="GeoName")) %>%
+  mutate(cap_gdp = TOTAL_CAP/X2022*100)
 
 write.csv(state_cap_spend_1722 ,"C:/Users/LCarey.RMI/OneDrive - RMI/Documents/Data/Raw Data/state_cap_spend_1722.csv")
 
@@ -930,6 +931,152 @@ mountain_stc_1823<-stc_1823 %>%
   pivot_longer(cols=c(property_tax_gdp,sales_tax_gdp,fuel_tax_gdp,corp_inc_tax_gdp,ind_income_tax_gdp,severance_tax_gdp)) %>%
   pivot_wider(names_from=state_abbr,values_from=value) %>%
   write.csv("Downloads/mountain_taxes.csv")
+
+
+#State Government Employment-----------------------
+# install.packages("censusapi") # if needed
+library(censusapi)
+
+# 1) Add your key (recommended)
+#   Option A (session only):
+# Sys.setenv(CENSUS_KEY = "YOUR_API_KEY")
+#   Option B (persist): censusapi::get_api_key()  # then restart R
+
+# ASPEP lives under the Public Sector timeseries API:
+#   name = "timeseries/govs"
+# Within it, the employment/payroll groups are:
+#   GS00EP01 = State & Local Government (combined)
+#   GS00EP02 = State Government only
+#   GS00EP03 = Local Government only
+
+# Helper to fetch a full variable group for 2024 at state level
+pull_aspep_2024 <- function(group = c("GS00EP02","GS00EP01","GS00EP03")) {
+  group <- match.arg(group)
+  getCensus(
+    name   = "timeseries/govs",
+    vars   = paste0("group(", group, ")"),
+    region = "state:*",
+    time   = 2024,
+    show_call = FALSE
+  )
+}
+
+# Examples:
+aspep_state_2024 <- pull_aspep_2024("GS00EP02")  # state gov only
+aspep_local_2024 <- pull_aspep_2024("GS00EP03")  # local gov only
+aspep_total_2024 <- pull_aspep_2024("GS00EP01")  # state + local combined
+
+# If you want a lean subset (names + core metrics) for state government:
+aspep_state_thin_2024 <- getCensus(
+  name   = "timeseries/govs",
+  vars   = c("NAME","FT_EMP","PT_EMP","FTE","FT_PAY","PT_HRS","PT_PAY"),
+  region = "state:*",
+  time   = 2024
+)
+
+# (Optional) quick cleanup of numeric columns if needed
+num_cols <- c("FT_EMP","PT_EMP","FTE","FT_PAY","PT_HRS","PT_PAY")
+aspep_state_thin_2024[num_cols] <- lapply(aspep_state_thin_2024[num_cols], as.numeric) 
+aspep_state_thin_2024<- as.data.frame(aspep_state_thin_2024) %>%
+  left_join(pop %>%
+              filter(geo=="State") %>%
+              select(geo_name,pop),by=c("NAME"="geo_name")) %>%
+  mutate(gov_emp_share=(FTE/pop)) %>%
+  arrange(desc(gov_emp_share))
+
+# Peek
+head(aspep_state_thin_2024)
+
+# install.packages(c("censusapi","dplyr","tidyr","stringr","readr","rvest","janitor","purrr"))
+library(censusapi)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(readr)
+library(rvest)
+library(janitor)
+library(purrr)
+
+## ---- 0) Keys (recommended)
+# Sys.setenv(CENSUS_KEY = "YOUR_CENSUS_API_KEY")
+
+## ---- 1) Public servant pay (ASPEP 2024, state government only)
+# Uses Public Sector time series API: name = "timeseries/govs"
+aspep_state_2024 <- getCensus(
+  name   = "timeseries/govs",
+  vars   = c("NAME","FT_EMP","PT_EMP","FTE","FT_PAY","PT_PAY"),
+  region = "state:*",
+  time   = 2024
+) %>%
+  mutate(across(c(FT_EMP, PT_EMP, FTE, FT_PAY, PT_PAY), as.numeric),
+         avg_monthly_pay_per_fte = (FT_PAY + PT_PAY) / FTE) %>%
+  transmute(state = NAME,
+            aspep_fte = FTE,
+            public_servant_pay_monthly = avg_monthly_pay_per_fte) %>%
+  filter(state %in% state.name)  # keep 50 states only
+
+## ---- 2) Fiscal capacity proxy (ACS 1-year 2024 per-capita income)
+acs_income_2024 <- getCensus(
+  name    = "acs/acs1",
+  vintage = 2024,
+  vars    = c("NAME","B19301_001E"),   # Per capita income in the past 12 months (2024 dollars)
+  region  = "state:*"
+) %>%
+  transmute(state = NAME,
+            fiscal_capacity_pc_income = as.numeric(B19301_001E)) %>%
+  filter(state %in% state.name)
+
+## ---- 3) Legislative professionalization proxy (base salary)
+# Scrape the comparison table from Ballotpedia (base legislator salary by state)
+bp_url <- "https://ballotpedia.org/Comparison_of_state_legislative_salaries"
+bp_tables <- read_html(bp_url) %>% html_elements("table") %>% html_table()
+
+# Find the first table that has both a State column and a Salary column
+leg_salary_raw <- bp_tables %>%
+  keep(~ any(grepl("state", names(.), ignore.case = TRUE)) &&
+         any(grepl("salary", names(.), ignore.case = TRUE))) %>%
+  .[[1]] %>%
+  clean_names()
+
+# Identify the salary column dynamically (it may be named 'base_salary' or 'salary')
+salary_col <- names(leg_salary_raw)[which.max(grepl("salary", names(leg_salary_raw), ignore.case = TRUE))]
+
+leg_prof_salary <- leg_salary_raw %>%
+  rename(state = 1, salary = all_of(salary_col)) %>%
+  mutate(
+    state = str_replace(state, "\\s*\\(.*\\)$", ""),      # drop footnotes like "(varies)"
+    state = str_trim(state),
+    legislator_salary_usd = readr::parse_number(salary)
+  ) %>%
+  select(state, legislator_salary_usd) %>%
+  filter(state %in% state.name)
+
+## ---- 3b) (Optional) Use Squire Index instead of salary proxy
+# If you have a CSV with columns: state, squire_index (0-1), uncomment and join this instead:
+# squire <- read_csv("path/to/squire_index.csv") %>% select(state, squire_index)
+# leg_prof <- squire
+# Otherwise use salary proxy:
+leg_prof <- leg_prof_salary
+
+## ---- 4) Combine all three metrics into one 50-state dataset
+state_capacity_2024 <- leg_prof %>%
+  full_join(aspep_state_2024, by = "state") %>%
+  full_join(acs_income_2024,   by = "state") %>%
+  arrange(state)
+
+## ---- 5) (Optional) Create normalized versions for easy visualization
+scale01 <- function(x) (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+state_capacity_2024 <- state_capacity_2024 %>%
+  mutate(
+    leg_prof_norm   = scale01(legislator_salary_usd),      # or squire_index if using that
+    pay_norm        = scale01(public_servant_pay_monthly),
+    fiscal_cap_norm = scale01(fiscal_capacity_pc_income)
+  )
+
+# Peek
+print(dplyr::glimpse(state_capacity_2024))
+# View(head(state_capacity_2024))
+
 
 
 #SPOT Analysis---------------------------------
@@ -1147,4 +1294,7 @@ fe_model <- feols(
   cluster = "State"
 )
 summary(fe_model)
+
+
+
 

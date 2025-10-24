@@ -113,6 +113,43 @@ trio_opportunity <- trio_scatter %>%
   
   
 #Trade
+#All Energy Trade
+country_info_iso <- country_info %>%
+  filter(!iso3c %in% c("ASM", "CHI", "GUM", "IMN", "LIE", "MAF", "MCO", "PRI", "XKX"))
+
+# 1) Clean & prep the HS6 codes
+codes <- sectors$code_6 %>%
+  as.character() %>%
+  str_replace_all("\\D", "") %>%        # keep digits only, just in case
+  str_pad(width = 6, side = "left", pad = "0") %>%
+  na.omit() %>%
+  unique()
+
+# 2) Split into chunks by max characters allowed in the commodity_code param
+split_by_nchar <- function(x, max_chars = 2500) {
+  chunks <- list(); cur <- character(); cur_len <- 0
+  for (code in x) {
+    add_len <- nchar(code) + ifelse(length(cur) == 0, 0, 1) # comma if not first
+    if (cur_len + add_len > max_chars) {
+      chunks[[length(chunks) + 1]] <- cur
+      cur <- code
+      cur_len <- nchar(code)
+    } else {
+      cur <- c(cur, code)
+      cur_len <- cur_len + add_len
+    }
+  }
+  if (length(cur)) chunks[[length(chunks) + 1]] <- cur
+  chunks
+}
+
+code_chunks <- split_by_nchar(codes, max_chars = 2500)  # conservative margin under 4096
+
+# 3) Pull each chunk (add a tiny pause to be polite to the API)
+safe_ct <- purrr::possibly(ct_get_data, otherwise = NULL)
+
+
+
   #Allies
   res_list_aus<- purrr::map(code_chunks, ~{
     Sys.sleep(0.4)  # adjust if you hit rate limits
