@@ -1,7 +1,5 @@
-#LAST UPDATED: October 3, 2025.
-
 # ACRE Pipeline — Q2 2025 (prep through geo_long + ALL raw loads + GEO coverage checks with names)
-# Updated: 2025-09-28 | Full, start-to-finish script (nothing omitted) | Extra debugging throughout
+# Updated: October 16, 2025 | Full, start-to-finish script (nothing omitted) | Extra debugging throughout
 # Coverage checks report MISSING geographies *with names* wherever possible
 
 suppressPackageStartupMessages({
@@ -1216,7 +1214,6 @@ cat("\nFacilities_all rows with missing/blank gdp:\n"); print(missing_gdp_facili
 # END Facilities.R
 
 
-
 # BEGIN Rengen.R
 
 # EIA 860M (latest)
@@ -1231,7 +1228,30 @@ get_latest_eia860m <- function(lookback_months=3, timeout_sec=30){
   }
   NA_character_
 }
-eia860m_path <- get_latest_eia860m(3); eia860m_raw <- if(!is.na(eia860m_path)) tryCatch(readxl::read_excel(eia860m_path, sheet=1, skip=2), error=function(e) tibble()) else tibble(); eia860m_raw <- fix_df(eia860m_raw)
+#eia860m_path <- get_latest_eia860m(3); eia860m_raw <- if(!is.na(eia860m_path)) tryCatch(readxl::read_excel(eia860m_path, sheet=1, skip=2), error=function(e) tibble()) else tibble(); eia860m_raw <- fix_df(eia860m_raw)
+
+library(httr)
+library(readxl)
+
+url <- "https://www.eia.gov/electricity/data/eia860m/archive/xls/august_generator2025.xlsx"
+path <- tempfile(fileext = ".xlsx")
+
+resp <- RETRY(
+  "GET", url,
+  user_agent("Mozilla/5.0 (compatible; R httr)"),
+  write_disk(path, overwrite = TRUE),
+  timeout(60)
+)
+
+stop_for_status(resp)
+
+# sanity check: XLSX (zip) files start with "PK"
+if (!identical(rawToChar(readBin(path, "raw", 2L)), "PK")) {
+  stop("Downloaded file is not an XLSX (likely HTML). URL may have redirected.")
+}
+
+eia860m_raw <- read_excel(path, sheet = 1, skip = 2)
+cat("rows:", nrow(eia860m_raw), "cols:", ncol(eia860m_raw), "\n")
 
 # geocode
 eia_860m_geocoded <- eia860m_raw %>% filter(!is.na(Latitude), !is.na(Longitude)) %>%
@@ -10118,6 +10138,7 @@ suppressPackageStartupMessages({
   library(readr)
   library(purrr)
   library(rlang)
+  library(tibble)
 })
 
 # ====================== DEBUG / UTILS ======================
@@ -10127,9 +10148,80 @@ timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 
 hdr <- function(x) cat("\n", strrep("-", 80), "\n", x, "\n", strrep("-", 80), "\n", sep = "")
 
+# --- Additional debug helpers: NA/blank/zero audits by geo (REPEATED AT EACH STEP) ---
+.is_zeroish_char <- function(v) {
+  vt <- trimws(as.character(v))
+  vnum <- suppressWarnings(as.numeric(vt))
+  is_blank <- is.na(vt) | vt == "" | vt %in% c("NA","N/A","NaN","na","null","NULL")
+  is_zero  <- !is.na(vnum) & vnum == 0
+  is_blank | is_zero
+}
+
+.is_bad_numeric <- function(v) {
+  v <- suppressWarnings(as.numeric(v))
+  is.na(v) | v == 0
+}
+
+dbg_na0_by_geo <- function(df, label, exclude_cols = c("geo","geo_name","geo_code"), top_n = 10) {
+  if (!is.data.frame(df) || !"geo" %in% names(df)) {
+    cat("⏭️  Skipping sparsity audit for ", label, " (no 'geo' column)\n", sep="")
+    return(invisible(NULL))
+  }
+  cols <- setdiff(names(df), exclude_cols)
+  if (length(cols) == 0) {
+    cat("⏭️  Skipping sparsity audit for ", label, " (no columns to check)\n", sep="")
+    return(invisible(NULL))
+  }
+  try({
+    long_bad <- purrr::map_dfr(cols, function(cc) {
+      x <- df[[cc]]
+      bad <- if (is.numeric(x) || is.integer(x)) {
+        .is_bad_numeric(x)
+      } else if (is.logical(x)) {
+        is.na(x)
+      } else {
+        .is_zeroish_char(x)
+      }
+      tibble(geo = df$geo, column = cc, bad = bad)
+    })
+    summ <- long_bad %>%
+      group_by(geo, column) %>%
+      summarise(bad_share = mean(bad, na.rm = TRUE), .groups = "drop") %>%
+      mutate(bad_pct = round(100 * bad_share, 1)) %>%
+      arrange(geo, desc(bad_pct), column)
+    
+    hdr(paste0("Sparsity (NA/blank/0) — ", label))
+    geos <- unique(summ$geo)
+    for (g in geos) {
+      cat("\n— Geo type:", g, "—\n")
+      subt <- summ %>% filter(geo == g)
+      print(utils::head(subt %>% select(column, bad_pct), top_n), row.names = FALSE)
+      cat("Columns ≥50% bad:", sum(subt$bad_share >= 0.5),
+          " | ≥75% bad:", sum(subt$bad_share >= 0.75),
+          " | ≥90% bad:", sum(subt$bad_share >= 0.90),
+          " out of ", nrow(subt), "\n", sep = "")
+    }
+  }, silent = TRUE)
+  invisible(NULL)
+}
+
+# Run the first NA/blank/zero audit right after initial glances
+hdr("Initial NA/Blank/Zero audit by geo — input content frames")
+for (df_name in data_frames_all) {
+  if (exists(df_name, envir = .GlobalEnv)) {
+    df <- get(df_name, envir = .GlobalEnv)
+    if (is.data.frame(df) && "geo" %in% names(df)) {
+      try(dbg_na0_by_geo(df, label = paste0(df_name, " (post-glimpse)"), top_n = 8), silent = TRUE)
+    } else {
+      cat("⏭️  ", df_name, ": skipped — no 'geo' column to group by.\n", sep = "")
+    }
+  } else {
+    cat("⏭️  ", df_name, ": not found for sparsity audit.\n", sep = "")
+  }
+}
+
 # --- String normalization helpers (strengthened) ---
 normalize_ascii <- function(x) {
-  # Normalize Unicode to ASCII where possible; preserve original if conversion fails
   y <- iconv(x, from = "", to = "ASCII//TRANSLIT")
   y[is.na(y)] <- x[is.na(y)]
   y
@@ -10139,7 +10231,6 @@ canonize_cd_al <- function(x) {
   x <- str_trim(x)
   x <- str_replace_all(x, "[\u2013\u2014]", "-")   # en/em dash → hyphen
   x <- normalize_ascii(x)
-  # Include common at-large possibilities; keep DC/DE if they appear as '00'
   al_states <- c("AK","ND","SD","VT","WY","DE","DC")
   for (s in al_states) {
     x <- str_replace(x, paste0("^", s, "-00$"), paste0(s, "-AL"))
@@ -10195,7 +10286,34 @@ na_share_summary <- function(df, cols, label, top_n = 8) {
   invisible(NULL)
 }
 
-# Instrumented left_join (unchanged logic, but now names are normalized earlier)
+# ------------------ NEW: Helpers to keep ID/meta columns clean ------------------
+# Coalesce .x/.y pairs for expected ID/meta columns and drop straggler suffixes.
+finalize_ids <- function(df) {
+  id_meta <- c("geo","geo_name","geo_code","State","state_abbr","Region","Division")
+  for (root in id_meta) {
+    x <- paste0(root, ".x"); y <- paste0(root, ".y")
+    if (x %in% names(df) && y %in% names(df)) {
+      df[[root]] <- dplyr::coalesce(df[[root]], df[[x]], df[[y]])
+      df <- dplyr::select(df, -all_of(c(x,y)))
+    } else if (x %in% names(df) && !(root %in% names(df))) {
+      df <- dplyr::rename(df, !!root := all_of(x))
+    } else if (y %in% names(df) && !(root %in% names(df))) {
+      df <- dplyr::rename(df, !!root := all_of(y))
+    } else {
+      df <- dplyr::select(df, -any_of(c(x,y)))
+    }
+  }
+  # Drop any ID/meta columns that accidentally got join-suffixed with dataset names
+  # (e.g., geo_name.tech_pot_geo). Keep only the plain versions.
+  id_pat <- paste0("^(", paste(c("geo","geo_name","geo_code","State","state_abbr","Region","Division"), collapse="|"), ")\\.")
+  df <- dplyr::select(df, -dplyr::matches(id_pat))
+  # Order with IDs first
+  id_first <- intersect(c("geo","geo_name","geo_code"), names(df))
+  other    <- setdiff(names(df), id_first)
+  dplyr::select(df, all_of(c(id_first, other)))
+}
+
+# Instrumented left_join that trims RHS of ID/meta columns not used as join keys.
 safe_left_join <- function(base, add, name,
                            by_pref = c("geo","geo_code"),
                            by_alt  = c("geo","geo_name"),
@@ -10203,7 +10321,6 @@ safe_left_join <- function(base, add, name,
                            keep = FALSE,
                            suffix = c("", paste0(".", name))) {
   hdr(paste0("JOIN ▶ ", name))
-  # basic cols present?
   if (!"geo" %in% names(add)) stop("`", name, "` lacks `geo`")
   if (!"geo_name" %in% names(add)) stop("`", name, "` lacks `geo_name`")
   # normalize types
@@ -10221,7 +10338,7 @@ safe_left_join <- function(base, add, name,
       " | Add unique keys:", nrow(dplyr::distinct(add, across(all_of(use_by)))), "\n")
   # ensure uniqueness on RHS
   assert_unique_keys(add, use_by, label = name)
-  # also look for duplicates on LHS to avoid silent row explosions
+  # also check LHS duplicates to avoid row explosions
   assert_unique_keys(base, use_by, label = paste0("base-before-join:", name))
   n0 <- nrow(base)
   # probe col auto-detect
@@ -10234,8 +10351,14 @@ safe_left_join <- function(base, add, name,
     cat("Examples of unmatched keys (first 10):\n")
     print(utils::head(pre_unmatched %>% select(all_of(use_by), geo), 10))
   }
-  # join
-  out <- base %>% left_join(add, by = use_by, keep = keep, suffix = suffix)
+  # ---------- CRITICAL FIX ----------
+  # Trim ID/meta from RHS that are NOT used as keys to prevent suffix pollution.
+  id_meta <- c("geo","geo_name","geo_code","State","state_abbr","Region","Division")
+  rhs_keys <- intersect(use_by, names(add))
+  rhs_keep <- c(rhs_keys, setdiff(names(add), id_meta))
+  add_trim <- add %>% dplyr::select(all_of(rhs_keep))
+  # ----------------------------------
+  out <- base %>% left_join(add_trim, by = use_by, keep = keep, suffix = suffix)
   if (nrow(out) != n0) {
     cat("‼️  Row count changed after joining ", name, ": ", n0, " → ", nrow(out), "\n", sep="")
     if (DEBUG_STRICT) stop("Row explosion due to non-unique keys in ", name)
@@ -10244,9 +10367,11 @@ safe_left_join <- function(base, add, name,
   if (!is.null(probe_col) && probe_col %in% names(out)) {
     miss <- sum(is.na(out[[probe_col]]))
     cat("Probe '", probe_col, "' missing after join: ", miss, " (", round(100*miss/n0, 1), "%)\n", sep="")
-    # breakdown by geo
-    by_geo <- out %>% mutate(.has_probe = !is.na(.data[[probe_col]])) %>% count(geo, .has_probe) %>%
-      group_by(geo) %>% mutate(pct = round(100*n/sum(n), 1)) %>% ungroup()
+    by_geo <- out %>%
+      mutate(.has_probe = !is.na(.data[[probe_col]])) %>%
+      count(geo, .has_probe) %>%
+      group_by(geo) %>%
+      mutate(pct = round(100*n/sum(n), 1)) %>% ungroup()
     cat("Coverage by geo for '", name, "' (showing first 10 rows):\n", sep = "")
     print(utils::head(by_geo, 10))
     if (name == "rengen" && any(out$geo == "Congressional District") && DEBUG_STRICT && miss > 0) {
@@ -10302,7 +10427,6 @@ if (exists("prop", envir = .GlobalEnv) && is.data.frame(prop)) {
       PropertyValueUSD   = suppressWarnings(as.numeric(PropertyValueUSD)),
       PropertyValue_Rank = suppressWarnings(as.numeric(PropertyValue_Rank))
     ) %>%
-    # Drop clearly broken Metro rows that carry the literal header as value
     filter(!(geo == "Metro Area" & geo_name %in% c("CBSA Title","CBSA.Title"))) %>%
     group_by(geo, geo_name) %>%
     summarise(
@@ -10313,7 +10437,6 @@ if (exists("prop", envir = .GlobalEnv) && is.data.frame(prop)) {
     fix_state_codes()
   
   cat("Rows after cleaning:", nrow(prop), " | removed:", nrow(prop_before) - nrow(prop), "\n")
-  # Diagnostics: duplicates by key should be gone
   prop %>% assert_unique_keys(c("geo","geo_name"), label = "prop (post-clean)")
 }
 
@@ -10325,7 +10448,6 @@ geo_long_all <- geo_long %>%
     geo_name = canonize_geo_name(geo_type, geo_name),
     geo_code = as_chr(geo_code)
   ) %>%
-  # Standardize State FIPS codes to two digits to align with sources
   mutate(geo_code = if_else(geo == "State", str_pad(geo_code, 2, pad = "0"), geo_code)) %>%
   distinct(geo, geo_name, .keep_all = TRUE)
 
@@ -10333,21 +10455,21 @@ cat("geo_long_all row counts by geo:\n")
 print(geo_long_all %>% count(geo))
 assert_unique_keys(geo_long_all, c("geo","geo_name"), label = "geo_long_all")
 
-# Extra diagnostic: code lengths by geo (helps spot misaligned formats)
 code_len_diag <- geo_long_all %>%
   mutate(code_len = nchar(geo_code)) %>%
   count(geo, code_len) %>%
   arrange(geo, code_len)
 cat("geo_code length distribution by geo:\n"); print(code_len_diag)
 
+dbg_na0_by_geo(geo_long_all, "geo_long_all (post-build)", top_n = 8)
+
 # ====================== BUILD: Multi-geo fact table with instrumented joins ======================
 hdr("Build: all_geos via safe joins")
 all_geos <- geo_long_all %>%
-  # Prefer code joins when codes exist on both sides; otherwise fallback to names (canonized)
   safe_left_join(rengen,           "rengen",           by_pref = c("geo","geo_code"), probe_col = "2024_Clean") %>%
   safe_left_join(facilities_all,   "facilities_all",   by_pref = c("geo","geo_code"), probe_col = "total_investment") %>%
   safe_left_join(geo_credits,      "geo_credits",      by_alt  = c("geo","geo_name"), probe_col = "local_45") %>%
-  safe_left_join(fed_inv_geo,      "fed_inv_geo",      by_alt  = c("geo","geo_name"), probe_col = "total_bil_ira_grants") %>% # fed_inv_geo often lacks geo_code; we canonize names
+  safe_left_join(fed_inv_geo,      "fed_inv_geo",      by_alt  = c("geo","geo_name"), probe_col = "total_bil_ira_grants") %>%
   safe_left_join(elec_grid,        "elec_grid",        by_alt  = c("geo","geo_name"), probe_col = "Electricity Consumption Carbon Intensity (CO2eq/kWh)") %>%
   safe_left_join(supplycurve_geo,  "supplycurve_geo",  by_pref = c("geo","geo_code"), probe_col = "solar_totallcoe") %>%
   safe_left_join(tech_pot_geo,     "tech_pot_geo",     by_alt  = c("geo","geo_name"), probe_col = "Total Potential (MWh)") %>%
@@ -10364,7 +10486,9 @@ all_geos <- geo_long_all %>%
 cat("Rows in all_geos:", nrow(all_geos), "\n")
 suppressWarnings(dplyr::glimpse(all_geos))
 
-# Focused audit: rengen coverage (this was degraded by code mismatch; now should be ~100% for CDs and States)
+dbg_na0_by_geo(all_geos, "all_geos (post-build)")
+
+# Focused audit: rengen coverage
 hdr("Audit: rengen coverage by geo")
 if ("2024_Clean" %in% names(all_geos)) {
   cov_tbl <- all_geos %>%
@@ -10392,7 +10516,6 @@ if ("2024_Clean" %in% names(all_geos)) {
 
 # ====================== BUILD: State-level variables ======================
 hdr("Build: state_vars (with per-capita and normalization)")
-# From `geo` crosswalk
 state_lookup <- geo %>%
   distinct(State.Name, state_abbr, Region, Division) %>%
   rename(State = State.Name)
@@ -10412,22 +10535,19 @@ state_vars <- state_lookup %>%
       rename(demshare_state = demshare),
     by = c("State" = "geo_name")
   ) %>%
-  # Electricity industrial price (two-letter code)
   left_join(ind_price %>% rename(state_abbr = State), by = "state_abbr") %>%
-  # Gas price and emissions/gdp growth/policy/cnbc
   left_join(eia_gas_2024,      by = "State") %>%
   left_join(state_ems,         by = "State") %>%
   left_join(xchange_pol_index, by = c("state_abbr" = "State.Code")) %>%
   left_join(state_gdp_quarterly %>% select(State, state_gdp_1_yr, state_gdp_5_yr), by = "State") %>%
   left_join(cnbc_rankings, by = "State")
 
-# Prepare state vars with per-capita emissions & normalized scores
 state_vars_ready <- state_vars %>%
   left_join(pop %>% filter(geo == "State") %>% select(State = geo_name, pop_state = pop), by = "State") %>%
   mutate(
-    elec_price_norm = 1 - minmax(ind_price_cents_kwh),          # lower is better
-    gas_price_norm  = 1 - minmax(gas_price_mcf_2024),           # lower is better
-    cnbc_score_norm = minmax(cnbc_overall_pct),                  # higher is better
+    elec_price_norm = 1 - minmax(ind_price_cents_kwh),
+    gas_price_norm  = 1 - minmax(gas_price_mcf_2024),
+    cnbc_score_norm = minmax(cnbc_overall_pct),
     emissions_pc_2022 = if_else(pop_state > 0, emissions_2022 / pop_state, NA_real_)
   ) %>%
   select(
@@ -10456,16 +10576,12 @@ suppressWarnings(dplyr::glimpse(state_vars_ready))
 # ====================== PROPAGATE state vars onto every geo ======================
 hdr("Augment: all_geos with state_abbr/State and attach state_vars_ready")
 all_geos_aug <- all_geos %>%
-  # CD rows: parse state abbreviation from 'AL-01' / 'AK-AL'
   mutate(state_abbr_cd = if_else(geo == "Congressional District", str_sub(geo_name, 1, 2), NA_character_)) %>%
-  # join for 'State' rows
   left_join(
     state_lookup %>% transmute(geo = "State", geo_name = State, State, state_abbr, Region, Division),
     by = c("geo", "geo_name")
   ) %>%
-  # fill from parsed CD
   mutate(state_abbr = coalesce(state_abbr, state_abbr_cd)) %>%
-  # for counties/CBSA/PEA rows, grab state metadata via `geo` crosswalk
   left_join(
     geo %>% 
       select(GeoName, State.Name, state_abbr_geo = state_abbr, Region_geo = Region, Division_geo = Division),
@@ -10479,7 +10595,6 @@ all_geos_aug <- all_geos %>%
   ) %>%
   select(-state_abbr_cd, -State.Name, -state_abbr_geo, -Region_geo, -Division_geo)
 
-# Coverage check: state_abbr presence
 missing_state_abbr <- sum(is.na(all_geos_aug$state_abbr))
 cat("Rows lacking state_abbr after augmentation: ", missing_state_abbr, "\n", sep = "")
 if (missing_state_abbr > 0) {
@@ -10490,15 +10605,21 @@ if (DEBUG_STRICT && missing_state_abbr > 0) {
   warning("Some rows lack state_abbr after augmentation.")
 }
 
+dbg_na0_by_geo(all_geos_aug, "all_geos_aug (post-augment)")
+
 # Attach state-level variables + other add-ons
+# IMPORTANT: drop State/Region/Division from RHS here to avoid .x/.y pollution
 all_geos_vars <- all_geos_aug %>%
-  left_join(state_vars_ready %>% select(-Region, -Division), by = "state_abbr") %>%
+  left_join(state_vars_ready %>% select(-State, -Region, -Division), by = "state_abbr") %>%
   left_join(county_eci,     by = c("geo","geo_name")) %>%
   left_join(feas_strategic, by = c("geo","geo_name")) %>%
+  finalize_ids() %>%
   distinct()
 
 cat("Rows in all_geos_vars:", nrow(all_geos_vars), "\n")
 suppressWarnings(dplyr::glimpse(all_geos_vars))
+
+dbg_na0_by_geo(all_geos_vars, "all_geos_vars (post-vars)")
 
 # ====================== NA AUDIT prior to normalization ======================
 hdr("NA audit prior to normalization (top offenders by geo)")
@@ -10522,7 +10643,6 @@ for (g in unique(all_geos_vars$geo)) {
 # ====================== NORMALIZATION + INDICES ======================
 hdr("Normalize and build indices")
 
-# Columns used in indices (only these get filled/normalized)
 COLS_INVEST <- c(
   "economic_complexity","incent_gdp","total_gdp_10yr","total_gdp_1yr",
   "durable_man_5yrgdp","prof_science_tech_5yrgdp","man_pay","man_share",
@@ -10548,7 +10668,6 @@ if (length(missing_need) > 0) {
 cat("Present fields participating in indices (n=", length(present_need), "): ",
     paste(present_need, collapse=", "), "\n", sep="")
 
-# Fill only index inputs with group medians (robust), leaving others untouched
 filled <- all_geos_vars %>%
   group_by(geo) %>%
   mutate(across(all_of(present_need), ~ {
@@ -10562,13 +10681,11 @@ filled <- all_geos_vars %>%
 cat("Post-fill NA check on index inputs (top offenders):\n")
 na_share_summary(filled, present_need, "filled (index inputs)")
 
-# Normalize index inputs within each geo group
 normalized_geos <- filled %>%
   group_by(geo) %>%
   mutate(across(all_of(present_need), minmax)) %>%
   ungroup()
 
-# Sanity: confirm all normalized fields in [0,1]
 range_check <- function(v) {
   v <- v[is.finite(v)]
   if (length(v) == 0) return(c(NA_real_, NA_real_))
@@ -10585,8 +10702,6 @@ if (any(bad_rng)) {
   cat("✅ All normalized index inputs appear within [0,1].\n")
 }
 
-# Build the indices (same weights as your spec; corporate tax excluded)
-# Weight sums (for visibility only)
 w_invest  <- 0.10 + 0.05 + 0.05 + 0.05 + 0.025 + 0.025 + 0.10 + 0.10 + 0.15 + 0.15 + 0.10 + 0.05 + 0.025 + 0.025 + 0.10
 w_socio   <- 0.20 + 0.20 + 0.20 + 0.30 + 0.10
 w_energy  <- 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10 + 0.10
@@ -10634,7 +10749,6 @@ indices <- normalized_geos %>%
   ungroup() %>%
   distinct()
 
-# Quick stats on indices pre-normalization
 cat("Index distributions (pre-final scaling) — first few rows of summary by geo:\n")
 idx_summ <- indices %>%
   group_by(geo) %>%
@@ -10650,22 +10764,21 @@ idx_summ <- indices %>%
   )
 print(utils::head(idx_summ, 10))
 
-# Normalize the three indices within each geo type for comparability
 index <- indices %>%
   select(geo, geo_name, socioecon_index, invest_index, energy_clim_index) %>%
   group_by(geo) %>%
   mutate(across(where(is.numeric), minmax)) %>%
   ungroup()
 
-# Join indices back to the wide table
+# ----------- FINAL DATA PRODUCTS (with ID cleanup guardrails) -----------
 all_geo_data <- all_geos_vars %>%
   left_join(index, by = c("geo","geo_name")) %>%
+  finalize_ids() %>%
   distinct()
 
-# Assemble the “index export” table (align names to substitutes)
 all_geo_index <- all_geo_data %>%
   select(
-    geo, geo_name,
+    geo, geo_name, geo_code,
     invest_index, economic_complexity, incent_gdp,
     total_gdp_10yr, total_gdp_1yr, durable_man_5yrgdp, prof_science_tech_5yrgdp,
     man_pay, man_share,
@@ -10682,7 +10795,11 @@ all_geo_index <- all_geo_data %>%
     state_ems_change_1722, emissions_pc_2022
   )
 
-# Optional export-time zero fill to avoid sparse CSVs (kept OFF by default)
+# Pre-cleanup sparsity audits
+dbg_na0_by_geo(all_geo_data,  "all_geo_data (BEFORE cleanup)")
+dbg_na0_by_geo(all_geo_index, "all_geo_index (BEFORE cleanup)")
+
+# ====================== FINAL CLEANUP: replace NA with blanks ======================
 if (ZERO_FILL_FOR_EXPORT) {
   nz_cols <- names(all_geo_data)[vapply(all_geo_data, is.numeric, logical(1))]
   all_geo_data  <- all_geo_data  %>% mutate(across(all_of(nz_cols), ~ tidyr::replace_na(., 0)))
@@ -10690,16 +10807,16 @@ if (ZERO_FILL_FOR_EXPORT) {
   cat("ZERO_FILL_FOR_EXPORT = TRUE → numeric NAs replaced with 0 at export time.\n")
 }
 
-# Final peeks
 hdr("Final glimpse: all_geo_data");  suppressWarnings(dplyr::glimpse(all_geo_data))
 hdr("Final glimpse: all_geo_index"); suppressWarnings(dplyr::glimpse(all_geo_index))
 
-# ====================== FINAL CLEANUP: replace NA with blanks ======================
 all_geo_data  <- all_geo_data  %>% mutate(across(everything(), ~ ifelse(is.na(.), "", .)))
 all_geo_index <- all_geo_index %>% mutate(across(everything(), ~ ifelse(is.na(.), "", .)))
 
+dbg_na0_by_geo(all_geo_data,  "all_geo_data (AFTER cleanup)")
+dbg_na0_by_geo(all_geo_index, "all_geo_index (AFTER cleanup)")
+
 # ====================== ANALYSIS: NA / Blank by Geography Type ======================
-# Treat "" and literal "NA" strings as missing for character fields
 .na_blankify <- function(df) {
   df %>%
     mutate(
@@ -10710,9 +10827,6 @@ all_geo_index <- all_geo_index %>% mutate(across(everything(), ~ ifelse(is.na(.)
     )
 }
 
-# Core function: build NA share (percent) by geo type for every column
-# - Denominator is the number of rows in that geo group
-# - Excludes identifier columns from the metric rollup
 .na_share_by_geo <- function(df, exclude_cols = c("geo", "geo_name", "geo_code")) {
   df %>%
     .na_blankify() %>%
@@ -10725,7 +10839,6 @@ all_geo_index <- all_geo_index %>% mutate(across(everything(), ~ ifelse(is.na(.)
       ),
       .groups = "drop"
     ) %>%
-    # tidy to long form: one row per geo x column with NA share
     tidyr::pivot_longer(
       cols = -geo,
       names_to = "column",
@@ -10735,23 +10848,19 @@ all_geo_index <- all_geo_index %>% mutate(across(everything(), ~ ifelse(is.na(.)
     arrange(geo, desc(na_pct), column)
 }
 
-# Pretty printer: show top-N sparsest columns per geo
 .print_top_na_by_geo <- function(na_tbl, title = "Top NA% by geo", top_n = 20) {
   hdr(paste0("NA/Blank analysis: ", title))
   geos <- unique(na_tbl$geo)
   for (g in geos) {
     cat("\n— Geo type:", g, "—\n")
     subt <- na_tbl %>% filter(geo == g) %>% arrange(desc(na_pct), column)
-    # Print top N
     print(utils::head(subt %>% select(column, na_pct), top_n), row.names = FALSE)
-    # Quick summary tail (least sparse) if helpful
     least <- utils::head(subt %>% arrange(na_pct, column) %>% select(column, na_pct), 5)
     cat("Least missing in", g, "(five best covered):\n")
     print(least, row.names = FALSE)
   }
 }
 
-# Compact overview: for each geo, how many columns are >0%, >25%, >50%, >75% missing?
 .overview_thresholds <- function(na_tbl) {
   cat("\n▶ Threshold overview (columns exceeding NA% thresholds by geo):\n")
   na_tbl %>%
@@ -10768,7 +10877,6 @@ all_geo_index <- all_geo_index %>% mutate(across(everything(), ~ ifelse(is.na(.)
     print(n = 50)
 }
 
-# Column-wise ranks per geo: which columns are in the “worst 10” NA% for each geo?
 .worst_rank_table <- function(na_tbl, worst_k = 10) {
   cat("\n▶ Worst-k columns per geo (by NA%):\n")
   na_tbl %>%
@@ -10787,7 +10895,6 @@ na_by_geo_data <- .na_share_by_geo(all_geo_data, exclude_cols = c("geo","geo_nam
 .overview_thresholds(na_by_geo_data)
 .worst_rank_table(na_by_geo_data, worst_k = 10)
 
-# Also show a quick “overall within each geo” leaderboard (most/least covered columns)
 cat("\n▶ Overall (per geo) — most missing columns:\n")
 na_by_geo_data %>%
   group_by(geo) %>%
@@ -10805,12 +10912,11 @@ na_by_geo_data %>%
   print(n = 50)
 
 # ===== Run the analysis on all_geo_index =====
-na_by_geo_index <- .na_share_by_geo(all_geo_index, exclude_cols = c("geo","geo_name"))
+na_by_geo_index <- .na_share_by_geo(all_geo_index, exclude_cols = c("geo","geo_name","geo_code"))
 .print_top_na_by_geo(na_by_geo_index, title = "all_geo_index — NA% by column within each geo", top_n = 20)
 .overview_thresholds(na_by_geo_index)
 .worst_rank_table(na_by_geo_index, worst_k = 10)
 
-# Extra: If you want a wide, scannable matrix (geo types as rows, columns as variables) for a few key vars:
 cat("\n▶ Spot-check matrix — NA% for selected columns by geo (all_geo_data):\n")
 selected_cols <- c("geothermal_totallcoe","inv_description","topinv_desc","top_industries",
                    "growth_19_24_Fossil","growth_21_24_Fossil","growth_19_24_Clean",
@@ -10823,15 +10929,11 @@ na_by_geo_data %>%
   arrange(geo) %>%
   print(n = 50)
 
-
-
 # ====================== EXPORTS ======================
-# Write the two main products with blanks instead of "NA"
 write_csv(all_geo_data,  paste0("all_geo_data_",  timestamp, "_run.csv"), na = "")
 write_rds(all_geo_data,  paste0("all_geo_data_",  timestamp, "_run.rds"))
 write_csv(all_geo_index, paste0("all_geo_index_", timestamp, "_run.csv"), na = "")
 write_rds(all_geo_index, paste0("all_geo_index_", timestamp, "_run.rds"))
-
 
 # Also export each of the input frames for provenance/troubleshooting
 for (df_name in data_frames_all) {
@@ -10853,6 +10955,56 @@ end_time <- Sys.time()
 cat("▶ Session completed at:", format(end_time), "\n")
 cat("⏱️  Elapsed:", round(as.numeric(difftime(end_time, start_time, units = "secs")), 2), "seconds\n")
 
+library(dplyr)
 
+# ---------------------- FINAL COLUMN SUBSET (clean) ----------------------
+# Core geo identifiers — keep them only once (no geo_name.rengen variants)
+geo_cols <- c("geo", "geo_name", "geo_code")
 
+# Define columns of analytical interest
+cols_of_interest <- c(
+  "PropertyValueUSD",
+  "climate_policy_index",
+  "life_expectancy",
+  "ind_price_cents_kwh",
+  "state_ems_change_1722",
+  "incent_gdp",
+  "emp_pop",
+  "med_house_inc",
+  "pov_rate",
+  "vacancy",
+  "growth_19_24_Clean",
+  "prof_science_tech_5yrgdp",
+  "clean_share",
+  "durable_man_5yrgdp",
+  "total_bil_ira_grants",
+  "bil_grants",
+  "ira_grants",
+  "local_30d",
+  "local_45",
+  "local_45vq",
+  "local_45x",
+  "invest_index",
+  "man_share",
+  "total_manufacturing_investment",
+  "inv_gdp",
+  "total_investment",
+  "socioecon_index"
+)
 
+requested_cols <- c(geo_cols, cols_of_interest)
+
+# Case-insensitive matching against the clean all_geo_data names
+existing_cols <- names(all_geo_data)
+existing_cols_lower <- tolower(existing_cols)
+matched_cols <- existing_cols[existing_cols_lower %in% tolower(requested_cols)]
+
+all_geo_data_selected <- all_geo_data %>%
+  select(all_of(matched_cols))
+
+missing_cols <- setdiff(tolower(requested_cols), existing_cols_lower)
+if (length(missing_cols) > 0) {
+  message("⚠️ The following requested columns were not found: ", paste(missing_cols, collapse = ", "))
+}
+
+glimpse(all_geo_data_selected)
