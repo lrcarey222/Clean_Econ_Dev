@@ -14,6 +14,8 @@ state_abbreviation <- "MT"
 
 # Libraries
 library(bea.R)
+library(scales) 
+library(tigris)
 library(downloader)
 library(shiny)
 library(shinycssloaders)

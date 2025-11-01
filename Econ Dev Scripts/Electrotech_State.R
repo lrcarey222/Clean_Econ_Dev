@@ -1,6 +1,5 @@
 #Electrotech Index
-library(scales) 
-library(tigris)
+
 
 options(tigris_use_cache = TRUE)
 
@@ -8,11 +7,11 @@ options(tigris_use_cache = TRUE)
 
 #Econ Dev Incentives----------------
 
-gjf<- read.csv("OneDrive - RMI/Regional Investment Strategies/Great Lakes Investment Strategy/Great Lakes Overview/Econ Development/gjf_complete.csv")
+gjf<- read.csv(paste0(raw_data,"Good Jobs First/gjf_complete.csv"))
 
 gjf_statetotal_1924<-gjf %>%
   filter(Year>2019) %>%
-  group_by(region,Location) %>%
+  group_by(Location) %>%
   summarize_at(vars(subs_m),sum,na.rm=T) %>%
   arrange(desc(subs_m)) %>%
   ungroup() %>%
@@ -43,6 +42,14 @@ write.csv(top_electrotech,"Downloads/top_electrotech.csv")
 
 electrotech_state<-gjf_electrotech %>%
   group_by(Location,Specific.Industry.of.Parent) %>% 
+  summarize(subs_m=sum(subs_m,na.rm=T)) %>%
+  ungroup() %>%
+  inner_join(state_gdp, by=c("Location"="GeoName")) %>%
+  mutate(incent_gdp=subs_m/X2022*100,
+         incent_gdp_rank = rank(-subs_m/X2022))
+
+electrotech_state_tot <- gjf_electrotech %>%
+  group_by(Location) %>% 
   summarize(subs_m=sum(subs_m,na.rm=T)) %>%
   ungroup() %>%
   inner_join(state_gdp, by=c("Location"="GeoName")) %>%
@@ -145,25 +152,89 @@ leg_index <- climate_leg %>%
   group_by(statename) %>%
   summarize(leg_index=sum(status_index,na.rm=T))
 
-#Policy Intent Index-----------------------
+#CPCN Requirements-------------
+cpcn<-read.csv(paste0(raw_data,"CPCN_Requirements_and_Enactment_Years_by_State_GPT.csv"))
 
-policy_intent <-electrotech_state %>%
-  select(Location,incent_gdp) %>%
-  left_join(spot %>%
-              rename(spot_electricity_score=Policy_Index),by=c("Location"="State")) %>%
-  left_join(dsire_count %>%
-              rename(dsire_policy_count=n),by=c("Location"="state")) %>%
-  left_join(climate_dev_pol_sum %>%
-              rename(economic_development_policy_count=Program_Name),by=c("Location"="State")) %>%
-  left_join(leg_index %>%
-              rename(electrotech_legislation_index=leg_index),by=c("Location"="statename")) %>%
+cpcn <- cpcn %>%
+  mutate(cpcn=ifelse(CPCN.Required.for.Utility.Scale.Projects=="No",0.75,0.25))
+
+
+#QuantGov Regulatory Count-----------
+
+regdata<-read.csv(paste0(raw_data,"Regdata_subnational.csv")) %>%
+  filter(Country=="United States") %>%
+  left_join(pop %>% filter(geo=="State") %>% select(geo_name,pop),by=c("Jurisdiction"="geo_name")) %>%
+  group_by(Country) %>%     # or Year.of.Period.Code
+  mutate(
+    Restrictions_num = parse_number(Restrictions),
+    Words_num        = parse_number(Words),
+    Restrictions01   = rescale(Restrictions_num, to = c(1, 0)),
+    Words01          = rescale(Words_num,        to = c(1, 0)),
+    Restrictions02   = rescale(Restrictions_num/pop, to = c(1, 0)),
+    Words02          = rescale(Words_num/pop,        to = c(1, 0)),
+    RW_avg01         = rowMeans(across(c(Restrictions01, Words01,Restrictions02, Words02)), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+#Solar Ordinances--------
+solar_ordinance <- read.csv(paste0(raw_data,"Solar Ordinances.csv")) %>%
+  filter(State != "") %>%
+  group_by(State) %>%
+  summarize(count=n()) %>%
+  ungroup() %>%
+  mutate(ordinance=rescale(count,to=c(1,0))) %>%
+  arrange(desc(count))
+
+#State SEPA
+sepa<-read.csv(paste0(raw_data,"state_sepa.csv")) %>%
+  mutate(has_sepa=rescale(has_sepa,to=c(1,0)))
+
+#Regulatory Friction------
+reg_friction <-states_simple %>%
+  rename("State"="full") %>%
+  left_join(cpcn %>% select(State,cpcn),by=c("State")) %>%
+  left_join(regdata %>% select(Jurisdiction,RW_avg01),by=c("State"="Jurisdiction")) %>%
+  left_join(solar_ordinance %>% select(State,ordinance),by=c("State")) %>%
+  left_join(sepa,by=c("State"="state")) %>%
   mutate(across(
-    where(is.numeric),
+    where(is.numeric), 
     ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
       (max(.[!is.infinite(.)] - min(.[!is.infinite(.)], na.rm = TRUE), na.rm = TRUE))
   )) %>%
   ungroup() %>%
-  mutate(intent_index = rowMeans(across(where(is.numeric)), na.rm = TRUE))
+  mutate(ease_index = rowMeans(across(where(is.numeric)), na.rm = TRUE)) %>%
+  arrange(desc(ease_index))
+write.csv(reg_friction,"Downloads/reg_friction.csv")
+
+reg_friction_plot <- reg_friction %>%
+  left_join(deployment_index,by=c("abbr"="State"))
+
+ggplot(data=reg_friction_plot,aes(x=ease_index,y=deployment_index))+geom_point()+theme_minimal()
+
+#Policy Intent Index-----------------------
+
+policy_intent <-states_simple %>%
+  rename("State"="full") %>%
+  left_join(electrotech_state_tot %>%
+  select(Location,incent_gdp),by=c("State"="Location")) %>%
+  mutate(incent_gdp = coalesce(incent_gdp, 0)) %>%
+  left_join(spot %>%
+              rename(spot_electricity_score=Policy_Index),by=c("State")) %>%
+  left_join(dsire_count %>%
+              rename(dsire_policy_count=n),by=c("State"="state")) %>%
+  left_join(climate_dev_pol_sum %>%
+              rename(economic_development_policy_count=Program_Name),by=c("State")) %>%
+  left_join(leg_index %>%
+              rename(electrotech_legislation_index=leg_index),by=c("State"="statename")) %>%
+  mutate(electrotech_legislation_index = coalesce(electrotech_legislation_index, 0)) %>%
+   mutate(across(
+    where(is.numeric), 
+    ~ (. - min(.[!is.infinite(.)], na.rm = TRUE)) / 
+      (max(.[!is.infinite(.)] - min(.[!is.infinite(.)], na.rm = TRUE), na.rm = TRUE))
+  )) %>%
+  ungroup() %>%
+  mutate(intent_index = rowMeans(across(where(is.numeric)), na.rm = TRUE)) %>%
+  arrange(desc(intent_index))
 
 
 #Economic Capabilities------------
@@ -799,7 +870,7 @@ write.csv(deployment_index,"Downloads/deployment.csv")
 
 
 #ElectroTech Index -----------------------
-weights <- c(deployment_index = 0.3, infra_index = 0.15, econ_index = 0.15, intent_index = 0.2,cluster_index=0.2)
+weights <- c(deployment_index = 0.4, infra_index = 0.15, econ_index = 0.15, intent_index = 0.2,cluster_index=0.2,ease_index=0.2)
 
 electrotech <- deployment_index %>%
   select(State,full,deployment_index) %>%
@@ -808,8 +879,10 @@ electrotech <- deployment_index %>%
   left_join(econ_index %>%
               select(state_abbr,econ_index),by=c("State"="state_abbr")) %>%
   left_join(policy_intent %>%
-              select(Location,intent_index),by=c("full"="Location")) %>%
+              select(State,intent_index),by=c("full"="State")) %>%
+  left_join(reg_friction %>% select(State,ease_index),by=c("full"="State")) %>%
   left_join(cluster_state %>%select(state,cluster_index),by=c("State"="state")) %>%
+  mutate(cluster_index = coalesce(cluster_index, 0)) %>%
   ungroup() %>%
   mutate(across(
     where(is.numeric),
@@ -826,7 +899,11 @@ electrotech <- deployment_index %>%
       num / den
     }
   ) %>%
-  arrange(desc(electrotech_index))
+  mutate(electrotech_index_w=rescale(electrotech_index_w,to=c(0,1))) %>%
+  arrange(desc(electrotech_index_w)) %>%
+  mutate(electro_high = dense_rank(desc(electrotech_index_w)) <= 10,
+         electro_high_name=ifelse(electrotech_index_w>0.6,State,"")) %>%
+  arrange(desc(electrotech_index_w))
 
 write.csv(electrotech %>%
             arrange(desc(electrotech_index)),"Downloads/electrotech.csv")
@@ -938,6 +1015,13 @@ add_index_sheet(wb,
                 obj_name  = "policy_intent",
                 sheet_name = "Policy_Intent",
                 index_cols = c("intent_index"))
+
+# 1) Regulatory Ease tab
+#    Common index column name: intent_index
+add_index_sheet(wb,
+                obj_name  = "reg_friction",
+                sheet_name = "Regulatory_Ease",
+                index_cols = c("ease_index"))
 
 # 2) Deployment tab
 #    Common index column name: deployment_index
@@ -1108,14 +1192,14 @@ electrotech_fac<-rbind(facilities_cim_electro,datacenter_fac) %>%
   rbind(semi_fac) %>%
   rbind(elec_fac) %>%
   rbind(drones_fac2) %>%
-  mutate(size=ifelse(is.na(size),10,size)) %>%
-  group_by(unit) %>%
-  mutate(size_perc=percent_rank(size)) %>%
+  #mutate(size=ifelse(is.na(size),10,size)) %>%
+  group_by(cat) %>%
+  mutate(size_perc=rescale(size,to=c(0,1))) %>%
   ungroup() %>%
   mutate(size=ifelse(unit=="MW",size*0.66,size))
 
 
-write.csv(electrotech_fac,"Downloads/electrotech.csv")
+write.csv(electrotech_fac,"Downloads/electrotech_fac.csv")
 
 
 #By State
@@ -1140,6 +1224,47 @@ electrotech_fac <- st_join(
 electrotech_fac_df <- st_drop_geometry(electrotech_fac) %>%
   group_by(state_abbr,STATE,cat,unit) %>%
   summarize(size=sum(size,na.rm=T))
+
+state_electro_wide<-electrotech_fac_df %>%
+  filter(state_abbr %in% target_states) %>%
+  ungroup() %>%
+  select(state_abbr,cat,size) %>%
+  pivot_wider(names_from="cat",values_from="size")
+
+write.csv(state_electro_wide,"Downloads/state_electro.csv")  
+
+
+#Economic Areas Facilities
+electrotech_fac <- bind_rows(facilities_cim_electro, datacenter_fac, semi_fac, elec_fac) %>%
+  filter(!is.na(Longitude), !is.na(Latitude)) %>%
+  st_as_sf(coords = c("Longitude","Latitude"), crs = 4326, remove = FALSE)
+
+# 2) Ensure states is sf and in the same CRS
+# (If you created it with tigris/usaboundaries it's already sf; just transform)
+pea <- st_read("Downloads/FCC_PEAs_Website/FCC_PEAs_website.shp", quiet = TRUE)
+
+# Fix any geometry issues (common with multipart shapes)
+if (any(!st_is_valid(pea))) {
+  pea <- st_make_valid(pea)
+}
+
+pea <- st_transform(pea, 4326)
+
+# 3) Spatial join: attach state attrs to each point
+# Use st_intersects (robust for boundary points); st_within also works.
+electrotech_fac <- st_join(
+  electrotech_fac,
+  pea %>% select(PEA_Name),  # adjust to your column names
+  join = st_intersects,
+  left = TRUE
+)
+
+# 4) If you want a plain data.frame again:
+electrotech_fac_ea <- st_drop_geometry(electrotech_fac) %>%
+  group_by(PEA_Name,cat,tech,unit) %>%
+  summarize(size=sum(size,na.rm=T)) %>%
+  left_join(cluster_index,by=c("PEA_Name"="economic_area"))
+write.csv(electrotech_fac_ea,"Downloads/ea_electro.csv")  
 
 state_electro_wide<-electrotech_fac_df %>%
   filter(state_abbr %in% target_states) %>%
@@ -1556,7 +1681,7 @@ cluster<-EA_elecman %>%
          solar_manufacturing,
          EV_manufacturing)
 write.csv(cluster,"Downloads/cluster.csv")
-  
+
 
 
 # 1) Identify the five "anchor" vars and the rest
