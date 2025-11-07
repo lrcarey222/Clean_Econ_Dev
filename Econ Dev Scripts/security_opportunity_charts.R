@@ -1,16 +1,80 @@
-library(comtradr)
-library(WDI)
-library(progress)
+# 0) Libraries & global options   #
+# ------------------------------- #
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(purrr)
+  library(readr)
+  library(writexl)
+  library(countrycode)
+  library(scales)
+})
+
+options(dplyr.summarise.inform = FALSE)
+
 set_primary_comtrade_key('2940653b9bbe4671b3f7fde2846d14be')
+
+# -------------------------------------- #
+# 1) Utilities & normalizers (one place) #
+# -------------------------------------- #
+
+# Robust 0-1 S-curve scaling used across the pipeline.
+# Falls back gracefully if your custom median_scurve() isn't defined.
+safe_scurve <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  if (!length(x) || all(is.na(x))) return(rep(NA_real_, length(x)))
+  if (exists("median_scurve")) return(median_scurve(x))
+  # Conservative fallback: rank-based 0-1
+  rescale(rank(x, na.last = "keep", ties.method = "average"), to = c(0, 1))
+}
+
+# A single place to normalize country names that appear in your sources
+norm_country <- function(x) {
+  x <- stringr::str_squish(x)
+  dplyr::recode(
+    x,
+    "United kingdom" = "United Kingdom",
+    "Korea, south"   = "South Korea",
+    "Korea, Republic of" = "South Korea",
+    "Vietnam"        = "Viet Nam",
+    "Turkey"         = "Turkiye",
+    "T rkiye, Republic of" = "Turkiye",
+    "Czechia"        = "Czech Republic",
+    "Curacao"        = "Cura ao",
+    "Saudi arabia"   = "Saudi Arabia",
+    "Iran, Islamic Rep." = "Iran",
+    "Iran, Islamic Republic of" = "Iran",
+    .default = x
+  )
+}
+
+# ISO3 -> Country helper, backed by your country_info table when possible
+iso_to_country <- function(iso_vec) {
+  lookup <- country_info %>%
+    mutate(country = norm_country(country)) %>%
+    distinct(iso3c, country)
+  tibble(iso3c = iso_vec) %>%
+    left_join(lookup, by = "iso3c") %>%
+    transmute(country = country %||% countrycode(iso3c, "iso3c", "country.name")) %>%
+    pull(country)
+}
+
+# Guard: ensure required objects exist
+required_objs <- c("res","subcat","econ_opp_index","energy_security_index",
+                   "tech_ghg","cat","country_info","allies")
+missing <- setdiff(required_objs, ls())
+if (length(missing)) stop("Missing required objects: ", paste(missing, collapse = ", "))
+
+ally_iso <- unique(allies$iso3c)
+
 
 gdp_data<-WDI(indicator = "NY.GDP.MKTP.CD", start = 2007, end = 2024) 
 gdp <- gdp_data %>%           # iso3c, year, NY.GDP.MKTP.CD
   rename(GDP = NY.GDP.MKTP.CD)
 gdp_2024 <- gdp %>%
   filter(year=="2024")
-##Clean Technology Partnerships-----------------
 
-#Country Cleanup-----------------------------------
 country_info <- WDI_data$country %>%
   filter(region!="Aggregates") %>%
   mutate(country=ifelse(country=="Russian Federation","Russia",country),
@@ -33,13 +97,7 @@ allies<- country_info %>%
     "Venezuela, RB"="Venezuela"
   )) 
 
-
 ref_area <- allies$iso3c
-
-#Country of interest
-
-coi <- "Japan"
-coi_iso3 <- pull(country_info %>% filter(country==coi) %>% distinct(iso3c))
 
 #Overall Indices--------------------------------
 scatter_index<-read.csv("OneDrive - RMI/New Energy Industrial Strategy - Documents/Research/Data/scatter_index.csv")
@@ -182,34 +240,19 @@ library(dplyr)
 library(tidyr)
 library(stringr)
 
+# Keep only columns we need; standardize names; limit to target years
 res_tech <- res %>%
-  # 1) Join; keep the many-to-many if that's expected
   left_join(subcat, by = c("cmd_code" = "code"), relationship = "many-to-many") %>%
-  # 2) Clean types + standardize flow label
+  rename(tech = Technology, supply_chain = `Value.Chain`) %>%
   mutate(
-    primary_value  = as.numeric(primary_value),
-    flow_direction = tolower(flow_direction)
+    primary_value  = suppressWarnings(as.numeric(primary_value)),
+    flow_direction = tolower(flow_direction),
+    period         = suppressWarnings(as.integer(period))
   ) %>%
-  # 3) Collapse duplicates BEFORE pivot: one value per key x flow
-  group_by(
-    reporter_iso, partner_iso, partner_desc, period,
-    Technology, Value.Chain, Sub.Sector, flow_direction
-    # (Optionally drop cmd_desc here to avoid duplicates from multiple descriptions)
-  ) %>%
-  summarise(primary_value = sum(primary_value, na.rm = TRUE), .groups = "drop") %>%
-  # 4) Pivot to export/import; fill missing with 0 (or use NA_real_ if preferred)
-  pivot_wider(
-    names_from  = flow_direction,
-    values_from = primary_value,
-    values_fill = 0
-  ) %>%
-  left_join(gdp %>% filter(year=="2024") %>%
-              select(iso3c,GDP),by=c("reporter_iso"="iso3c")) %>%
-    # 5) Compute balance
-    mutate(trade_balance = export - import,
-           trade_balance_share=trade_balance/(export+import)*100,
-           trade_balance_gdpshare=trade_balance/GDP*100) %>%
-    arrange(desc(trade_balance_gdpshare))
+  filter(!is.na(period), period %in% 2020:2024) %>%
+  select(reporter_iso, partner_iso, period, flow_direction, tech, supply_chain, primary_value)
+
+
 
 
 #Investment Data - IMF Direct Investment Position------------------------
@@ -333,670 +376,621 @@ outbound <- fdi_allies %>%
 
 
 #Export Opportunity index---------------------
-# Build exporter???partner trade indices for one country --------------------
-compute_trade_exports_for <- function(coi_iso3) {
-  res %>%
-    filter(reporter_iso == coi_iso3,
-           flow_direction == "export",
-           !is.na(period)) %>%
-    mutate(period = as.integer(period)) %>%
-    filter(dplyr::between(period, 2020, 2024)) %>%
-    left_join(subcat, by = c("cmd_code" = "code"), relationship = "many-to-many") %>%
-    distinct(reporter_iso, partner_iso, partner_desc, period,
-             Technology, Value.Chain, Sub.Sector, cmd_desc, primary_value) %>%
-    group_by(reporter_iso, partner_iso, Technology, Value.Chain, period) %>%
-    summarise(exports = sum(suppressWarnings(as.numeric(primary_value)), na.rm = TRUE),
-              .groups = "drop_last") %>%
-    # Ensure both years exist per group (missing -> 0) BEFORE pivot
-    complete(period = c(2020L, 2024L), fill = list(exports = 0)) %>%
-    ungroup() %>%
-    pivot_wider(
-      names_from  = period,
-      values_from = exports,
-      names_prefix = "y",          # y2020, y2024
-      values_fill = 0,
-      values_fn   = sum
-    ) %>%
-    mutate(
-      export_growth = dplyr::if_else(y2020 > 0, y2024 / y2020 - 1, NA_real_),
-      exports       = y2024,
-      export_index        = median_scurve(exports),
-      export_growth_index = median_scurve(export_growth),
-      trade_index_raw = {
-        w_exp <- 2; w_gro <- 1
-        num <- w_exp * export_index + w_gro * export_growth_index
-        den <- w_exp * (!is.na(export_index)) + w_gro * (!is.na(export_growth_index))
-        dplyr::if_else(den > 0, num / den, NA_real_)
-      },
-      trade_index = median_scurve(trade_index_raw)
-    ) %>%
-    filter(!is.na(trade_index)) %>%
-    select(reporter_iso, partner_iso, Technology, Value.Chain, trade_index)
-}
+# -------------------------------------------- #
+# Dyad time series -> levels & growth       #
+# -------------------------------------------- #
 
-# Build opportunity index for one country --------------------------------
-# Uses: trade_index (exporter???partner), exporter's econ_opp_index per (tech, chain),
-# partner's energy_security_index per (tech, chain), plus GHG & climate_policy penalty.
-
-compute_opportunity_for <- function(trade_tbl, coi_iso3, coi_name) {
-  # Split tech/supply chain already present-no need to use a combined "industry" field
-  # Map partner ISO3 ??? Country name (for joins that use country names)
-  trade_tbl %>%
-    left_join(all_countries, by = c("partner_iso" = "ISO3166_alpha3")) %>%
-    # Exporter's economic opportunity index for this country and (tech, chain)
-    left_join(
-      econ_opp_index %>%
-        ungroup() %>%
-        filter(Country == coi_name, variable == "Overall Economic Opportunity Index") %>%
-        transmute(tech, supply_chain, econ_opp_index = median_scurve(value)),
-      by = c("Technology" = "tech", "Value.Chain" = "supply_chain")
-    ) %>%
-    # Partner's energy security index (1 - value as in your code)
-    inner_join(
-      energy_security_index %>%
-        ungroup() %>%
-        filter(variable == "Overall Energy Security Index") %>%
-        transmute(Country, tech, supply_chain,
-                  energy_security_index = 1 - value),
-      by = c("Country" = "Country",
-             "Technology" = "tech",
-             "Value.Chain" = "supply_chain")
-    ) %>%
-    # Climate & GHG
-    left_join(tech_ghg %>% rename(Technology = Tech), by = "Technology") %>%
-    left_join(
-      cat %>%
-        mutate(Country = str_to_title(Country)) %>%
-        mutate(
-          Country = recode(
-            Country,
-            "Korea, south" = "South Korea",
-            "Vietnam"      = "Viet Nam",
-            "Turkey"       = "Turkiye",
-            "United kingdom" = "United Kingdom",
-            "Curacao"      = "Curaçao",
-            "Saudi arabia" = "Saudi Arabia",
-            "United arab emirates" = "United Arab Emirates"
-          )
-        ),
-      by = c("Country" = "Country")
-    ) %>%
-    mutate(
-      ghg_index            = replace_na(ghg_index,            median(tech_ghg$ghg_index, na.rm = TRUE)),
-      climate_policy_index = replace_na(climate_policy_index, median(cat$climate_policy_index, na.rm = TRUE))
-    ) %>%
-    rowwise() %>%
-    mutate(
-      opportunity_index_raw = {
-        vals <- c(trade_index, econ_opp_index, energy_security_index)
-        wts  <- c(2, 2, 0.5)
-        keep <- !is.na(vals) & !is.na(wts)
-        if (any(keep)) weighted.mean(vals[keep], wts[keep]) else NA_real_
-      },
-      penalty = (1 - ghg_index) * climate_policy_index,
-      opportunity_index_adj = opportunity_index_raw - 0.2 * penalty
-    ) %>%
+build_dyad_series <- function(res_tech, flow = c("export","import"), years = 2020:2024) {
+  flow <- match.arg(flow)
+  res_tech %>%
+    filter(flow_direction == flow, !is.na(tech), !is.na(supply_chain)) %>%
+    group_by(reporter_iso, partner_iso, tech, supply_chain, period) %>%
+    summarise(val = sum(primary_value, na.rm = TRUE), .groups = "drop_last") %>%
+    complete(period = c(min(years), max(years)), fill = list(val = 0)) %>%
     ungroup() %>%
-    mutate(
-      opportunity_index = median_scurve(opportunity_index_adj)
-    ) %>%
+    pivot_wider(names_from = period, values_from = val, names_prefix = "y", values_fill = 0) %>%
     transmute(
-      reporter_iso,
-      partner_iso,
-      tech = Technology,
-      supply_chain = Value.Chain,
-      trade_index,
-      econ_opp_index,
-      energy_security_index,
-      ghg_index,
-      penalty,
-      climate_policy_index,
-      opportunity_index
+      reporter_iso, partner_iso, tech, supply_chain,
+      level_last  = .data[[paste0("y", max(years))]],
+      level_first = .data[[paste0("y", min(years))]],
+      growth      = dplyr::if_else(level_first > 0, (level_last / level_first) - 1, NA_real_)
     )
 }
+# ------------------------------------------------ #
+# Export-side trade indices (relative scaling)  #
+# ------------------------------------------------ #
 
-# Driver: run for ALL allies and bind ------------------------------------
+ds_export <- build_dyad_series(res_tech, flow = "export", years = 2020:2024)
 
-ally_params <- allies %>% distinct(iso3c, country) %>% arrange(iso3c)
-
-allies_indices <- pmap_dfr(
-  ally_params,
-  function(iso3c, country) {
-    # 1) Export/trade index for this exporter
-    t_exports <- compute_trade_exports_for(iso3c)
-    
-    if (nrow(t_exports) == 0) return(tibble())  # skip if no data
-    
-    # 2) Opportunity index for this exporter (uses exporter name + partner indices)
-    opp <- compute_opportunity_for(t_exports, iso3c, country)
-    
-    # 3) Stamp the exporter for clarity
-    opp %>%
-      mutate(exporter_iso = iso3c, exporter_country = country) %>%
-      relocate(exporter_iso, exporter_country)
-  }
-)
-
-
-# Result: one tidy dataset with all exporters in `allies`
-# Columns:
-# exporter_iso, exporter_country, reporter_iso (=exporter), partner_iso,
-# tech, supply_chain, trade_index, econ_opp_index, energy_security_index,
-# ghg_index, climate_policy_index, opportunity_index
-glimpse(allies_indices)
-
-#All Allies Export Index---------------
-
-# Safety wrapper around your sigmoid/median scaling
-safe_median_scurve <- function(x) {
-  if (length(x) == 0 || all(is.na(x))) return(rep(NA_real_, length(x)))
-  median_scurve(x)
-}
-
-ally_iso <- unique(allies$iso3c)
-
-# 1) Build global dyad-year export table for ALL allies (no per-reporter filter)
-build_dyad_exports_all <- function(res, subcat, years = 2020:2024) {
-  res %>%
-    filter(flow_direction == "export",
-           !is.na(period),
-           reporter_iso %in% ally_iso) %>%
-    mutate(period = as.integer(period)) %>%
-    filter(period %in% years) %>%
-    left_join(subcat, by = c("cmd_code" = "code"), relationship = "many-to-many") %>%
-    # collapse to one number per (reporter, partner, tech, chain, year)
-    group_by(reporter_iso, partner_iso, Technology, Value.Chain, period) %>%
-    summarise(exports = sum(suppressWarnings(as.numeric(primary_value)), na.rm = TRUE),
-              .groups = "drop_last") %>%
-    # ensure both endpoints exist in each group before pivoting
-    complete(period = c(min(years), max(years)), fill = list(exports = 0)) %>%
-    ungroup() %>%
-    pivot_wider(
-      names_from  = period,
-      values_from = exports,
-      names_prefix = "y",
-      values_fill = 0,
-      values_fn   = sum
-    ) %>%
-    rename(y_first = !!sym(paste0("y", min(years))),
-           y_last  = !!sym(paste0("y", max(years)))) %>%
-    mutate(
-      export_growth = if_else(y_first > 0, (y_last / y_first) - 1, NA_real_),
-      exports       = y_last
-    )
-}
-
-dyads_all <- build_dyad_exports_all(res, subcat, years = 2020:2024)
-
-# 2) Trade indices RELATIVE within each (tech × chain) across ALL reporters/partners
-trade_indices_all <- dyads_all %>%
-  group_by(Technology, Value.Chain) %>%
+trade_indices_all <- ds_export %>%
+  group_by(tech, supply_chain) %>%
   mutate(
-    # choose one or both normalizations; here we keep your sigmoid style:
-    export_index        = safe_median_scurve(exports),
-    export_growth_index = safe_median_scurve(export_growth),
-    
-    # Weighted (exports x2 + growth x1), NA-safe
-    trade_index_raw = {
-      w_exp <- 2; w_gro <- 1
-      num <- w_exp * export_index + w_gro * export_growth_index
-      den <- w_exp * (!is.na(export_index)) + w_gro * (!is.na(export_growth_index))
-      if_else(den > 0, num / den, NA_real_)
-    },
-    
-    # Final trade index, rescaled AGAIN within tech×chain to 0-1 (relative)
-    trade_index = safe_median_scurve(trade_index_raw)
+    export_index        = safe_scurve(level_last),     # level in last year
+    export_growth_index = safe_scurve(growth),         # growth from first -> last
+    # NA-safe weighted blend: 2 * level + 1 * growth, then re-scaled in (tech, chain)
+    ti_num = 2 * export_index + 1 * export_growth_index,
+    ti_den = 2*(!is.na(export_index)) + 1*(!is.na(export_growth_index)),
+    trade_index_raw = if_else(ti_den > 0, ti_num / ti_den, NA_real_)
   ) %>%
+  mutate(trade_index = safe_scurve(trade_index_raw)) %>%
   ungroup() %>%
-  select(reporter_iso, partner_iso, Technology, Value.Chain,
-         exports, export_growth, export_index, export_growth_index, trade_index)
+  select(reporter_iso, partner_iso, tech, supply_chain, trade_index)
 
-# (Optional) If you prefer percentile-based scaling instead of sigmoid:
-# inside the group_by, use:
-# export_index        = percent_rank(exports)
-# export_growth_index = percent_rank(replace_na(export_growth, -Inf))
-# trade_index = scales::rescale(trade_index_raw, to = c(0,1), from = range(trade_index_raw, na.rm=TRUE))
 
-# 3) Opportunity index RELATIVE within each (tech × chain) across ALL dyads
-#    - Join exporter name for econ_opp_index
-#    - Join partner name for energy_security_index
-#    - Compute penalty; rescale within tech×chain at the end.
+# ------------------------------------------------------------ #
+# 5) Partner & exporter modifiers for Opportunity calculation  #
+# ------------------------------------------------------------ #
 
-library(countrycode)
-safe_median_scurve <- function(x) {
-  if (length(x) == 0 || all(is.na(x))) return(rep(NA_real_, length(x)))
-  median_scurve(x)
-}
-norm_country <- function(x) {
-  x <- stringr::str_squish(x)
-  dplyr::recode(x,
-                "United kingdom" = "United Kingdom",
-                "Vietnam" = "Viet Nam",
-                "Iran, Islamic Rep." = "Iran",
-                "Turkey" = "Turkiye",
-                "Korea, south" = "South Korea",
-                "United arab emirates" = "United Arab Emirates",
-                .default = x
-  )
-}
-
-# exporter-side economic opportunity (by exporter country, tech, chain)
+# Exporter-side economic opportunity (by exporter ISO, tech, chain)
 econ_opp_iso <- econ_opp_index %>%
   mutate(Country = norm_country(Country),
          exporter_iso = countrycode(Country, "country.name", "iso3c",
                                     custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
-                                                     "Curaçao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
+                                                     "Cura ao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
   filter(grepl("Overall\\s*Economic\\s*Opportunity", variable, ignore.case = TRUE)) %>%
-  transmute(exporter_iso,
-            Technology = tech,
-            `Value.Chain` = supply_chain,
-            econ_opp_raw = value)
+  transmute(exporter_iso, tech, supply_chain, econ_opp_raw = value)
 
-# partner-side energy security (invert so higher = more attractive)
+# Partner-side energy security (invert to "need/attractiveness")
 energy_sec_iso <- energy_security_index %>%
   mutate(Country = norm_country(Country),
          partner_iso = countrycode(Country, "country.name", "iso3c",
                                    custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
-                                                    "Curaçao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
+                                                    "Cura ao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
   filter(grepl("Overall\\s*Energy\\s*Security", variable, ignore.case = TRUE)) %>%
-  transmute(partner_iso,
-            Technology = tech,
-            `Value.Chain` = supply_chain,
-            energy_sec_raw = 1 - value)
+  transmute(partner_iso, tech, supply_chain, energy_sec_raw = 1 - value)
 
-# partner-side climate policy index (country-level)
-policy_iso <- cat %>%
-  mutate(Country = norm_country(stringr::str_to_title(Country)),
-         partner_iso = countrycode(Country, "country.name", "iso3c",
-                                   custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
-                                                    "Curaçao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
-  transmute(partner_iso, climate_policy_index)
-
-# tech-level GHG (by Technology)
-ghg_iso <- tech_ghg %>% rename(Technology = Tech) %>% select(Technology, ghg_index)
-
-# ---- trade_indices_all must already exist and be relative within (tech, chain)
-# columns: reporter_iso, partner_iso, Technology, Value.Chain, trade_index
-
-# ---- build opportunity index (all dyads, ISO-joined)
-default_ghg    <- median(ghg_iso$ghg_index, na.rm = TRUE)
-default_policy <- median(policy_iso$climate_policy_index, na.rm = TRUE)
-
-opportunity_all <- trade_indices_all %>%
-  left_join(econ_opp_iso,  by = c("reporter_iso" = "exporter_iso",
-                                  "Technology", "Value.Chain")) %>%
-  left_join(energy_sec_iso, by = c("partner_iso",
-                                   "Technology", "Value.Chain")) %>%
-  left_join(ghg_iso,        by = "Technology") %>%
-  left_join(policy_iso,     by = "partner_iso") %>%
-  filter(!is.na(econ_opp_raw),
-         !is.na(energy_sec_raw)) %>%
-  group_by(Technology, Value.Chain) %>%
-  mutate(
-    econ_opp_index        = safe_median_scurve(econ_opp_raw),
-    energy_security_index = safe_median_scurve(energy_sec_raw),
-    ghg_index             = coalesce(ghg_index,            default_ghg),
-    climate_policy_index  = coalesce(climate_policy_index, default_policy)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    # NA-safe weighted mean: (2*T + 2*E + 0.5*S) / (2*1[T] + 2*1[E] + 0.5*1[S])
-    num = 2*trade_index + 2*econ_opp_index + 0.5*energy_security_index,
-    den = 2*(!is.na(trade_index)) + 2*(!is.na(econ_opp_index)) + 0.5*(!is.na(energy_security_index)),
-    opportunity_raw = dplyr::if_else(den > 0, num / den, NA_real_),
-    
-    penalty = (1 - ghg_index) * climate_policy_index,
-    opportunity_index_raw = pmax(0, opportunity_raw - 0.2 * penalty)
-  ) %>%
-  group_by(Technology, Value.Chain) %>%
-  mutate(opportunity_index = safe_median_scurve(opportunity_index_raw)) %>%
-  ungroup() %>%
-  select(reporter_iso, partner_iso,
-         tech = Technology, supply_chain = `Value.Chain`,
-         trade_index, econ_opp_index, energy_security_index,
-         ghg_index, climate_policy_index,penalty, opportunity_raw,opportunity_index_raw,opportunity_index) %>%
-  #filter(partner_iso %in% allies$iso3c) %>%
-  arrange(desc(opportunity_index_raw))
-
-#Total Friendshore Index------------------------
-library(countrycode)
-library(scales)
-
-safe_scurve <- function(x) if (length(x)==0 || all(is.na(x))) rep(NA_real_, length(x)) else median_scurve(x)
-
-norm_country <- function(x) {
-  x <- str_squish(x)
-  recode(x,
-         "United kingdom"="United Kingdom",
-         "Vietnam"="Viet Nam",
-         "Iran, Islamic Rep."="Iran",
-         "Iran, Islamic Republic of"="Iran",
-         "Turkey"="Turkiye",
-         "Türkiye, Republic of"="Turkiye",
-         "Korea, Republic of"="South Korea",
-         "Korea, Dem. People's Rep."="Korea, Dem. People's Rep.",
-         "United arab republic"="United Arab Republic",
-         "United arab emirates"="United Arab Emirates",
-         "Czechia"="Czech Republic",
-         "Venezuela, RB"="Venezuela",
-         .default = x
-  )
-}
-
-ally_iso <- unique(allies$iso3c)
-
-# ---- 0) Outbound FDI dyads ??? iso3 
-outbound_edges <-
-  if (exists("outbound") && all(c("COUNTRY","COUNTERPART_COUNTRY","outbound_index") %in% names(outbound))) {
-    outbound %>%
-      left_join(select(country_info, iso3c, country), by = c("COUNTRY"="country")) %>%
-      rename(reporter_iso = iso3c) %>%
-      left_join(rename(select(country_info, iso3c, country), partner_iso = iso3c),
-                by = c("COUNTERPART_COUNTRY"="country")) %>%
-      select(reporter_iso, partner_iso, outbound_index) %>%
-      distinct()
-  } else {
-    tibble(reporter_iso = character(), partner_iso = character(), outbound_index = numeric())
-  }
-
-# ---- 1) Build import-side dyads and import indices (2× level + 1× growth)
-build_dyad_imports_all <- function(res, subcat, years = 2020:2024, restrict_reporters = NULL) {
-  res %>%
-    filter(flow_direction == "import",
-           !is.na(period),
-           if (!is.null(restrict_reporters)) reporter_iso %in% restrict_reporters else TRUE) %>%
-    mutate(period = as.integer(period)) %>%
-    filter(period %in% years) %>%
-    left_join(subcat, by = c("cmd_code"="code"), relationship = "many-to-many") %>%
-    group_by(reporter_iso, partner_iso, Technology, `Value.Chain`, period) %>%
-    summarise(imports = sum(suppressWarnings(as.numeric(primary_value)), na.rm = TRUE),
-              .groups = "drop_last") %>%
-    complete(period = c(min(years), max(years)), fill = list(imports = 0)) %>%
-    ungroup() %>%
-    pivot_wider(names_from = period, values_from = imports, names_prefix = "y", values_fill = 0) %>%
-    mutate(import_2024   = .data[[paste0("y", max(years))]],
-           import_0      = .data[[paste0("y", min(years))]],
-           import_growth = if_else(is.finite(import_0) & import_0 > 0,
-                                   (import_2024 / import_0) - 1, NA_real_))
-}
-
-imports_all <- build_dyad_imports_all(res, subcat, years = 2020:2024, restrict_reporters = NULL)
-
-import_idx_all <- imports_all %>%
-  group_by(Technology, `Value.Chain`) %>%
-  mutate(
-    import_index      = safe_scurve(as.numeric(import_2024)),
-    import_growth_idx = safe_scurve(as.numeric(import_growth)),
-    imp_trd_num       = 2 * import_index + coalesce(import_growth_idx, 0),
-    imp_trd_den       = 2 * as.numeric(!is.na(import_index)) + 1 * as.numeric(!is.na(import_growth_idx)),
-    imp_trade_index   = if_else(imp_trd_den > 0, imp_trd_num / imp_trd_den, NA_real_),
-    imp_trade_index_z = safe_scurve(imp_trade_index)
-  ) %>%
-  ungroup() %>%
-  transmute(
-    reporter_iso, partner_iso,
-    tech = Technology, supply_chain = `Value.Chain`,
-    import_2024, import_growth,
-    import_index, import_growth_idx,
-    imp_trade_index,            # raw weighted mean (2× level + 1× growth)
-    imp_trade_index_z           # 0-1 rescaled within tech×chain
-  )
-
-# ---- 2) Country/sector modifiers (ES need for importer, EO for partner, CPI, GHG)
-es_iso <- energy_security_index %>%
-  mutate(Country = norm_country(Country),
-         iso3c   = countrycode(Country, "country.name", "iso3c",
-                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR",
-                                                "South Korea"="KOR","Curaçao"="CUW","Laos"="LAO",
-                                                "Czech Republic"="CZE"))) %>%
-  filter(grepl("Overall\\s*Energy\\s*Security", variable, ignore.case = TRUE)) %>%
-  transmute(reporter_iso = iso3c, tech = tech, supply_chain = supply_chain,
-            es_need = 1 - value)
-
-eo_partner_iso <- econ_opp_index %>%
-  mutate(Country = norm_country(Country),
-         iso3c   = countrycode(Country, "country.name", "iso3c",
-                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR",
-                                                "South Korea"="KOR","Curaçao"="CUW","Laos"="LAO",
-                                                "Czech Republic"="CZE"))) %>%
-  filter(grepl("Overall\\s*Economic\\s*Opportunity", variable, ignore.case = TRUE)) %>%
-  transmute(partner_iso = iso3c, tech = tech, supply_chain = supply_chain,
-            eo_partner = value)
+# Tech-level GHG and partner climate policy
+ghg_iso <- tech_ghg %>% rename(tech = !!(names(tech_ghg)[names(tech_ghg) %in% c("Tech","tech")][1])) %>%
+  transmute(tech, ghg_index = as.numeric(ghg_index))
 
 policy_iso <- cat %>%
   mutate(Country = norm_country(str_to_title(Country %||% "")),
          iso3c   = countrycode(Country, "country.name", "iso3c",
-                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR",
-                                                "South Korea"="KOR","Curaçao"="CUW","Laos"="LAO",
-                                                "Czech Republic"="CZE"))) %>%
-  transmute(iso3c, climate_policy = climate_policy_index)
+                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
+                                                "Cura ao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
+  transmute(iso3c, climate_policy_index)
 
-# Robustly pick tech column for GHG table
-ghg_tech_col <- if ("Tech" %in% names(tech_ghg)) "Tech" else if ("tech" %in% names(tech_ghg)) "tech" else stop("`tech_ghg` must have column 'Tech' or 'tech'.")
-ghg_iso <- tech_ghg %>% transmute(tech = .data[[ghg_tech_col]], ghg_index = as.numeric(ghg_index))
+default_ghg    <- if (nrow(ghg_iso))    median(ghg_iso$ghg_index, na.rm = TRUE) else 0.5
+default_policy <- if (nrow(policy_iso)) median(policy_iso$climate_policy_index, na.rm = TRUE) else 0.5
 
-# Defaults if some countries/sectors are missing
-default_ghg <- if (nrow(ghg_iso)) median(ghg_iso$line %||% ghg_iso$ghg_index, na.rm = TRUE) else 0.5
-default_cpi <- if (nrow(policy_iso)) median(policy_iso$climate_policy,         na.rm = TRUE) else 0.5
+# -------------------------------------- #
+# 6) Opportunity index (global, dyads)   #
+# -------------------------------------- #
 
-# ---- 3) Friend-Shore Index (relative to ALL countries; scale within tech×chain) 
+opportunity_all <- trade_indices_all %>%
+  left_join(econ_opp_iso,  by = c("reporter_iso" = "exporter_iso", "tech","supply_chain")) %>%
+  left_join(energy_sec_iso, by = c("partner_iso","tech","supply_chain")) %>%
+  left_join(ghg_iso,        by = "tech") %>%
+  left_join(policy_iso,     by = c("partner_iso" = "iso3c")) %>%
+  filter(!is.na(econ_opp_raw), !is.na(energy_sec_raw)) %>%
+  group_by(tech, supply_chain) %>%
+  mutate(
+    econ_opp_index        = safe_scurve(econ_opp_raw),
+    energy_security_index = safe_scurve(energy_sec_raw),
+    ghg_index             = coalesce(ghg_index, default_ghg),
+    climate_policy_index  = coalesce(climate_policy_index, default_policy)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Weighted blend: 2*trade + 2*econ_opp + 0.5*energy_security
+    o_num = 2*trade_index + 2*econ_opp_index + 0.5*energy_security_index,
+    o_den = 2*(!is.na(trade_index)) + 2*(!is.na(econ_opp_index)) + 0.5*(!is.na(energy_security_index)),
+    opportunity_raw = if_else(o_den > 0, o_num / o_den, NA_real_),
+    penalty = (1 - ghg_index) * climate_policy_index * 0.20,
+    opportunity_index_raw = pmax(0, opportunity_raw - penalty)
+  ) %>%
+  group_by(tech, supply_chain) %>%
+  mutate(opportunity_index = safe_scurve(opportunity_index_raw)) %>%
+  ungroup() %>%
+  select(reporter_iso, partner_iso, tech, supply_chain,
+         trade_index, econ_opp_index, energy_security_index,
+         ghg_index, climate_policy_index, penalty,
+         opportunity_raw, opportunity_index_raw, opportunity_index)
+
+
+
+#Total Friendshore Index------------------------
+# ------------------------------------------------------------ #
+# 7) Import-side + friend-shoring (global, dyads)              #
+# ------------------------------------------------------------ #
+
+ds_import <- build_dyad_series(res_tech, flow = "import", years = 2020:2024)
+
+import_idx_all <- ds_import %>%
+  group_by(tech, supply_chain) %>%
+  mutate(
+    import_index      = safe_scurve(level_last),
+    import_growth_idx = safe_scurve(growth),
+    imp_num = 2*import_index + 1*import_growth_idx,
+    imp_den = 2*(!is.na(import_index)) + 1*(!is.na(import_growth_idx)),
+    imp_trade_index   = if_else(imp_den > 0, imp_num / imp_den, NA_real_),
+    imp_trade_index_z = safe_scurve(imp_trade_index)
+  ) %>%
+  ungroup() %>%
+  transmute(reporter_iso, partner_iso, tech, supply_chain,
+            imp_trade_index = imp_trade_index_z)
+
+# importer energy-security "need", partner opportunity, optional outbound FDI ties
+es_iso <- energy_security_index %>%
+  mutate(Country = norm_country(Country),
+         iso3c   = countrycode(Country, "country.name", "iso3c",
+                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
+                                                "Cura ao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
+  filter(grepl("Overall\\s*Energy\\s*Security", variable, ignore.case = TRUE)) %>%
+  transmute(reporter_iso = iso3c, tech, supply_chain, es_need = 1 - value)
+
+eo_partner_iso <- econ_opp_index %>%
+  mutate(Country = norm_country(Country),
+         iso3c   = countrycode(Country, "country.name", "iso3c",
+                               custom_match = c("Viet Nam"="VNM","Turkiye"="TUR","South Korea"="KOR",
+                                                "Cura ao"="CUW","Laos"="LAO","Czech Republic"="CZE"))) %>%
+  filter(grepl("Overall\\s*Economic\\s*Opportunity", variable, ignore.case = TRUE)) %>%
+  transmute(partner_iso = iso3c, tech, supply_chain, eo_partner = value)
+
+# Outbound FDI ties if available; else fallback to 0
+outbound_edges <- if (exists("outbound") &&
+                      all(c("COUNTRY","COUNTERPART_COUNTRY","outbound_index") %in% names(outbound))) {
+  outbound %>%
+    left_join(select(country_info, iso3c, country), by = c("COUNTRY"="country")) %>%
+    rename(reporter_iso = iso3c) %>%
+    left_join(rename(select(country_info, iso3c, country), partner_iso = iso3c),
+              by = c("COUNTERPART_COUNTRY"="country")) %>%
+    select(reporter_iso, partner_iso, outbound_index) %>%
+    distinct()
+} else {
+  tibble(reporter_iso = character(), partner_iso = character(), outbound_index = numeric())
+}
+
 friendshore_all <- import_idx_all %>%
-  left_join(es_iso,        by = c("tech","supply_chain","reporter_iso")) %>%
+  left_join(es_iso,         by = c("tech","supply_chain","reporter_iso")) %>%
   left_join(eo_partner_iso, by = c("tech","supply_chain","partner_iso")) %>%
   left_join(outbound_edges, by = c("reporter_iso","partner_iso")) %>%
-  left_join(rename(policy_iso, reporter_iso = iso3c, cpi_r = climate_policy), by = "reporter_iso") %>%
-  left_join(rename(policy_iso, partner_iso  = iso3c, cpi_p = climate_policy),  by = "partner_iso") %>%
-left_join(ghg_iso,       by = "tech") %>%
-  mutate(cpi_r          = coalesce(cpi_r, default_cpi),
-    cpi_p          = coalesce(cpi_p, default_cpi),
-    gh_entry       = coalesce(ghg_index, default_ghg)
+  left_join(rename(policy_iso, reporter_iso = iso3c, cpi_r = climate_policy_index), by = "reporter_iso") %>%
+  left_join(rename(policy_iso, partner_iso  = iso3c, cpi_p = climate_policy_index), by = "partner_iso") %>%
+  left_join(ghg_iso, by = "tech") %>%
+  mutate(
+    cpi_r    = coalesce(cpi_r, default_policy),
+    cpi_p    = coalesce(cpi_p, default_policy),
+    gh_entry = coalesce(ghg_index, default_ghg),
+    outbound_index = coalesce(outbound_index, 0)
   ) %>%
   mutate(
-    fsi_raw = imp_trade_index +
-      es_need + eo_partner + outbound_index,
+    # Your global variant: 1*(imports) + 1*(ES need) + 1*(EO partner) + 1*(FDI ties)
+    fsi_raw   = imp_trade_index + es_need + eo_partner + outbound_index,
     penalty_r = (1 - gh_entry) * cpi_r * 0.10,
     penalty_p = (1 - gh_entry) * cpi_p * 0.10,
     fsi_adj   = pmax(0, fsi_raw - (penalty_r + penalty_p))
   ) %>%
   group_by(tech, supply_chain) %>%
   mutate(friendshore_index = safe_scurve(fsi_adj)) %>%
-  ungroup()
-
-# ---- 4) Friend-Shore Index per-exporter (scale within each reporter×tech×chain) 
-friendshore_by_exporter <- import_idx_all %>%
-  semi_join(tibble(reporter_iso = ally_iso), by = "reporter_iso") %>%
-  left_join(es_iso,        by = c("tech","supply_chain","reporter_iso")) %>%
-  left_join(eo_partner_iso, by = c("tech","supply_chain","partner_iso")) %>%
-  left_join(outbound_edges, by = c("reporter_iso","partner_iso")) %>%
-  left_join(rename(policy_iso, reporter_iso = iso3c, cpi_r = climate_policy), by = "reporter_iso") %>%
-  left_join(rename(policy_iso, partner_iso  = iso3c, cpi_p = climate_policy),  by = "partner_iso") %>%
-left_join(ghg_iso,       by = "tech") %>%
-  mutate(cpi_r          = coalesce(cpi_r, default_cpi),
-    cpi_p          = coalesce(cpi_p, default_cpi),
-    gh_entry       = coalesce(ghg_index, default_ghg),
-    fsi_raw        = 2*imp_trade_index +
-      2*es_need + 2*eo_partner + 2*outbound_index,
-    penalty_r      = (1 - gh_entry) * cpi_r * 0.10,
-    penalty_p      = (1 - gh_entry) * cpi_p * 0.10,
-    fsi_adj        = pmax(0, fsi_raw - (penalty_r + penalty_p))
-  ) %>%
-group_by(reporter_iso) %>%
-  mutate(friendshore_index = safe_scurve(fsi_adj)) %>%
   ungroup() %>%
-  left_join(select(country_info, iso3c, country), by = c("reporter_iso" = "iso3c")) %>%
-              rename(exporter_country = country) %>%
-              select(reporter_iso, exporter_country, partner_iso,
-                     tech, supply_chain,
-                     imp_trade_index, es_need, eo_partner, outbound_index,
-                     penalty_r, penalty_p, fsi_raw, fsi_adj, friendshore_index)
-            
+  select(reporter_iso, partner_iso, tech, supply_chain,
+         imp_trade_index, es_need, eo_partner, outbound_index,
+         penalty_r, penalty_p, fsi_raw, fsi_adj, friendshore_index)
 
+# ---------------------------------------------------------------- #
+# 8) Build tidy sheets in the 'security_opp_indices' style schema  #
+#     (Country, tech, supply_chain, Pillar, category, variable,    #
+#      data_type, value, source, explanation)                      #
+# ---------------------------------------------------------------- #
 
-res_list <- purrr::cross_df(list(
-  win = year_windows,
-  cc  = code_chunks
-)) %>%
-  dplyr::mutate(
-    out = purrr::pmap(
-      list(win, cc), \(win, cc) {
-        Sys.sleep(0.4)
-        safe_ct(
-          reporter       = allies$iso3c,
-          partner        = country_info_iso$iso3c,
-          commodity_code = cc,
-          start_date     = win[1],
-          end_date       = win[2],
-          flow_direction = "import"
-        )
-      }
-    )
+# NOTE: set top_n_dyads once here for consistency with your indices:
+top_n_dyads <- 3
+
+# --- 1) Build richer EXPORTS dyad table -----------------------------------
+exports_dyads <- ds_export %>%
+  # attach export-side indices from earlier step
+  left_join(
+    trade_indices_all %>%
+      group_by(reporter_iso, partner_iso, tech, supply_chain) %>%
+      summarise(trade_index = max(trade_index, na.rm = TRUE), .groups = "drop"),
+    by = c("reporter_iso","partner_iso","tech","supply_chain")
   ) %>%
-  dplyr::pull(out)
-
-energy_imports<-res_list %>%
-  discard(is.null) %>%
-  dplyr::bind_rows()
-
-imports <- res %>%
-  filter(reporter_iso==coi_iso,
-         flow_direction=="import") %>%
-  left_join(energy_codes,by=c("cmd_code"="code6")) %>%
-  distinct(reporter_iso,partner_iso,partner_desc,period,industry,cmd_desc,primary_value) %>%
-  group_by(reporter_iso,partner_iso,industry,period) %>%
-  summarize(imports=sum(primary_value,na.rm=T)) %>%
-  ungroup() %>%
-  pivot_wider(names_from="period",values_from="imports") %>%
-  mutate(import_growth=`2024`/`2020`-1) %>%
-  rename(imports="2024") %>%
-  mutate(import_index=median_scurve(imports),
-         importgrowth_index=median_scurve(import_growth)) %>%
-  rowwise() %>%
-  mutate(trade_index = mean(c_across(ends_with("_index")), na.rm = TRUE)) %>%
-  group_by() %>%
-  mutate(trade_index = median_scurve(trade_index)) %>%
-  filter(!is.na(trade_index),
-         !is.na(industry)) %>%
-  distinct(reporter_iso,partner_iso,industry,import_index,importgrowth_index,trade_index)
-
-
-friendshore_index<- imports %>%
- left_join(country_info,by=c("reporter_iso"="iso3c")) %>%
-  left_join(energy_security_index %>%
-              ungroup() %>%
-              filter(Country== coi,
-                     variable=="Overall Energy Security Index") %>%
-              mutate(industry=paste(tech,supply_chain),
-                     energy_security_index=1-value) %>%
-              select(Country,tech,supply_chain,industry,energy_security_index),by=c("country"="Country","industry")) %>%
-  left_join(econ_opp_index %>%
-              ungroup() %>%
-              filter(Country== coi,
-                     variable=="Overall Economic Opportunity Index") %>%
-              mutate(industry=paste(tech,supply_chain),
-                     econ_opp_index=1-value) %>%
-              select(Country,industry,econ_opp_index),by=c("country"="Country","industry")) %>%
-  left_join(country_info,by=c("partner_iso"="iso3c")) %>%
-  inner_join(econ_opp_index %>%
-               mutate(Country=str_to_title(Country)) %>%
-               ungroup() %>%
-               filter(variable=="Overall Economic Opportunity Index") %>%
-               mutate(industry=paste(tech,supply_chain),
-                      econ_opp_index2=value) %>%
-               select(Country,industry,econ_opp_index2),by=c("country.y"="Country","industry")) %>%
-  left_join(outbound %>%
-              filter(COUNTRY== coi),
-            by=c("country.y"="COUNTERPART_COUNTRY")) %>%
-  #climate adjustment
-  left_join(tech_ghg,by=c("tech"="Tech")) %>%
-  left_join(cat %>%
-              mutate(Country=recode(
-                Country,
-                "Korea, south" = "South Korea",
-                "Vietnam" = "Viet Nam",
-                "Turkey"          = "Turkiye",
-                "United kingdom"  = "United Kingdom",
-                "Curacao"         = "Curaçao",
-                "Saudi arabia"         = "Saudi Arabia"
-              )),
-            by=c("country.y"="Country")) %>%
-  left_join(cat %>%
-              mutate(Country=recode(
-                Country,
-                "Korea, south" = "South Korea",
-                "Vietnam" = "Viet Nam",
-                "Turkey"          = "Turkiye",
-                "United kingdom"  = "United Kingdom",
-                "Curacao"         = "Curaçao",
-                "Saudi arabia"         = "Saudi Arabia"
-              )),
-            by=c("country.x"="Country")) %>%
+  # (re)compute subcomponents for clarity
+  group_by(tech, supply_chain) %>%
   mutate(
-    ghg_index            = replace_na(ghg_index,
-                                      median(tech_ghg$ghg_index, na.rm = TRUE)),
-    climate_policy_index.x = replace_na(climate_policy_index.x,                                      median(cat$climate_policy_index, na.rm = TRUE)),
-    #climate_policy_index.y = replace_na(climate_policy_index.y,                                        median(cat$climate_policy_index, na.rm = TRUE))
+    export_index        = safe_scurve(level_last),   # last-year exports level
+    export_growth_index = safe_scurve(growth),       # growth 2020->2024
+    # same recipe you used to build trade_index_raw before scaling
+    ti_num = 2*export_index + 1*export_growth_index,
+    ti_den = 2*(!is.na(export_index)) + 1*(!is.na(export_growth_index)),
+    trade_index_raw = if_else(ti_den > 0, ti_num / ti_den, NA_real_)
   ) %>%
-  filter(!country.y %in% c("China",
-                           "Russia")) %>%
-  rowwise() %>% 
+  ungroup() %>%
   mutate(
-    friendshore_index_unadj = {                 # braces let you run many lines
-      vals <- c(trade_index,
-                energy_security_index,
-                econ_opp_index2,
-                outbound_index)
-      wts  <- c(3, 2,1,2)
-      keep <- !is.na(vals) & !is.na(wts)
-      weighted.mean(vals[keep], wts[keep])   # returns a single number
-    }
-  ) %>% 
-  mutate(penalty1    = (1 - ghg_index) *climate_policy_index.x,
-         penalty2    = (1 - ghg_index) *climate_policy_index.y,
-         friendshore_index=friendshore_index_unadj-0.1*penalty1-0.1*penalty2) %>%
-  ungroup() %>% 
-  #mutate(friendshore_index=median_scurve(friendshore_index)) %>%
-  #filter(!grepl("Geothermal", tech)) %>% 
-  arrange(desc(friendshore_index)) %>%
-  distinct(reporter_iso,country.x,partner_iso,country.y,industry,friendshore_index,friendshore_index_unadj,
-           trade_index,energy_security_index,econ_opp_index,econ_opp_index2,
-           outbound_index,climate_policy_index.x,climate_policy_index.y)
+    Reporter = iso_to_country(reporter_iso),
+    Partner  = iso_to_country(partner_iso)
+  )
 
-friendshore_1<-friendshore_index %>%
-  group_by(country.y) %>%
-  slice_max(order_by=friendshore_index,n=1)
+# Tidy/long with metadata
+exports_meta <- tribble(
+  ~variable,              ~source,                          ~explanation,                                                                ~data_type,
+  "level_first",          "UN Comtrade (exports)",          "Exporter->partner value in first year (e.g., 2020).",                        "value",
+  "level_last",           "UN Comtrade (exports)",          "Exporter->partner value in last year (e.g., 2024).",                         "value",
+  "growth",               "UN Comtrade (exports) + author", "Percent change last/first ??? 1.",                                            "rate",
+  "export_index",         "UN Comtrade (exports) + author", "Rescaled last-year exports level within tech × chain.",                      "index",
+  "export_growth_index",  "UN Comtrade (exports) + author", "Rescaled export growth within tech × chain.",                                "index",
+  "trade_index_raw",      "Author calculation",             "2×level_index + 1×growth_index (pre-rescale).",                              "composite",
+  "trade_index",          "Author calculation",             "Export-side composite rescaled within tech × chain.",                        "index"
+)
 
-friendshore_index_total<-friendshore_index %>%
-  group_by(country.y) %>%
-  slice_max(order_by=friendshore_index,n=3) %>%
-  summarize(total_friendshore_index=mean(friendshore_index,na.rm=T)) %>%
+Exports_Dyads <- exports_dyads %>%
+  pivot_longer(
+    cols = c(level_first, level_last, growth, export_index, export_growth_index, trade_index_raw, trade_index),
+    names_to = "variable", values_to = "value"
+  ) %>%
+  left_join(exports_meta, by = "variable") %>%
+  mutate(
+    Country    = iso_to_country(partner_iso),
+    Pillar     = "Trade (Exports)",
+    category   = "Exports",
+    source     = coalesce(source, "Author calculation"),
+    explanation= coalesce(explanation, "Derived in pipeline."),
+    data_type  = coalesce(data_type, "value")
+  ) %>%
+  select(Reporter, Partner, reporter_iso, partner_iso,
+         Country, tech, supply_chain, Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(tech, supply_chain, Reporter, Partner, variable)
+
+# Country-aggregated (average of the same top-N dyads used by OPPORTUNITY index)
+Exports_ByCountry <- opportunity_all %>%
+  filter(!is.na(opportunity_index)) %>%
+  group_by(partner_iso, tech, supply_chain) %>%
+  slice_max(order_by = opportunity_index, n = top_n_dyads, with_ties = FALSE) %>%
   ungroup() %>%
-  #mutate(total_friendshore_index=median_scurve(total_friendshore_index)) %>%
-  arrange(desc(total_friendshore_index))
+  select(reporter_iso, partner_iso, tech, supply_chain) %>%
+  inner_join(exports_dyads, by = c("reporter_iso","partner_iso","tech","supply_chain")) %>%
+  group_by(partner_iso, tech, supply_chain) %>%
+  summarise(across(c(level_first, level_last, growth, export_index, export_growth_index, trade_index_raw, trade_index),
+                   ~mean(.x, na.rm = TRUE)),
+            .groups = "drop") %>%
+  mutate(Country = iso_to_country(partner_iso)) %>%
+  pivot_longer(cols = c(level_first, level_last, growth, export_index, export_growth_index, trade_index_raw, trade_index),
+               names_to = "variable", values_to = "value") %>%
+  left_join(exports_meta, by = "variable") %>%
+  mutate(
+    Pillar    = "Trade (Exports)",
+    category  = "Exports (Top Dyads Avg)",
+    source    = coalesce(source, "Author calculation"),
+    explanation = coalesce(explanation, "Average over top dyads that define the Opportunity index."),
+    data_type = coalesce(data_type, "value")
+  ) %>%
+  select(Country, tech, supply_chain, Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(Country, tech, supply_chain, variable)
 
-
-friendshore_scatter<-friendshore_index %>%
+# --- 2) Build richer IMPORTS dyad table -----------------------------------
+imports_dyads <- ds_import %>%
+  left_join(import_idx_all, by = c("reporter_iso","partner_iso","tech","supply_chain")) %>%
+  group_by(tech, supply_chain) %>%
+  mutate(
+    import_index      = safe_scurve(level_last),
+    import_growth_idx = safe_scurve(growth),
+    imp_num = 2*import_index + 1*import_growth_idx,
+    imp_den = 2*(!is.na(import_index)) + 1*(!is.na(import_growth_idx)),
+    imp_trade_index_raw = if_else(imp_den > 0, imp_num / imp_den, NA_real_)
+  ) %>%
   ungroup() %>%
-  mutate(country_industry=paste0(country.y,": ",industry))%>%
-  select(country_industry,energy_security_index,econ_opp_index2) %>%
-  mutate(energy_security_index=median_scurve(energy_security_index))
+  mutate(
+    Reporter = iso_to_country(reporter_iso),
+    Partner  = iso_to_country(partner_iso)
+  )
 
+imports_meta <- tribble(
+  ~variable,               ~source,                           ~explanation,                                                                ~data_type,
+  "level_first",           "UN Comtrade (imports)",           "Importer<-partner value in first year (e.g., 2020).",                        "value",
+  "level_last",            "UN Comtrade (imports)",           "Importer<-partner value in last year (e.g., 2024).",                         "value",
+  "growth",                "UN Comtrade (imports) + author",  "Percent change last/first ??? 1.",                                            "rate",
+  "import_index",          "UN Comtrade (imports) + author",  "Rescaled last-year imports level within tech × chain.",                      "index",
+  "import_growth_idx",     "UN Comtrade (imports) + author",  "Rescaled import growth within tech × chain.",                                "index",
+  "imp_trade_index_raw",   "Author calculation",              "2×level_index + 1×growth_index (pre-rescale).",                              "composite",
+  "imp_trade_index",       "Author calculation",              "Import-side composite rescaled within tech × chain.",                        "index"
+)
+
+Imports_Dyads <- imports_dyads %>%
+  pivot_longer(
+    cols = c(level_first, level_last, growth, import_index, import_growth_idx, imp_trade_index_raw, imp_trade_index),
+    names_to = "variable", values_to = "value"
+  ) %>%
+  left_join(imports_meta, by = "variable") %>%
+  mutate(
+    Country     = iso_to_country(partner_iso),
+    Pillar      = "Trade (Imports)",
+    category    = "Imports",
+    source      = coalesce(source, "Author calculation"),
+    explanation = coalesce(explanation, "Derived in pipeline."),
+    data_type   = coalesce(data_type, "value")
+  ) %>%
+  select(Reporter, Partner, reporter_iso, partner_iso,
+         Country, tech, supply_chain, Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(tech, supply_chain, Reporter, Partner, variable)
+
+# Country-aggregated (average of the same top-N dyads used by FRIENDSHORE index)
+Imports_ByCountry <- friendshore_all %>%
+  filter(!is.na(friendshore_index)) %>%
+  group_by(partner_iso, tech, supply_chain) %>%
+  slice_max(order_by = friendshore_index, n = top_n_dyads, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(reporter_iso, partner_iso, tech, supply_chain) %>%
+  inner_join(imports_dyads, by = c("reporter_iso","partner_iso","tech","supply_chain")) %>%
+  group_by(partner_iso, tech, supply_chain) %>%
+  summarise(across(c(level_first, level_last, growth, import_index, import_growth_idx, imp_trade_index_raw, imp_trade_index),
+                   ~mean(.x, na.rm = TRUE)),
+            .groups = "drop") %>%
+  mutate(Country = iso_to_country(partner_iso)) %>%
+  pivot_longer(cols = c(level_first, level_last, growth, import_index, import_growth_idx, imp_trade_index_raw, imp_trade_index),
+               names_to = "variable", values_to = "value") %>%
+  left_join(imports_meta, by = "variable") %>%
+  mutate(
+    Pillar    = "Trade (Imports)",
+    category  = "Imports (Top Dyads Avg)",
+    source    = coalesce(source, "Author calculation"),
+    explanation = coalesce(explanation, "Average over top dyads that define the Friendshore index."),
+    data_type = coalesce(data_type, "value")
+  ) %>%
+  select(Country, tech, supply_chain, Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(Country, tech, supply_chain, variable)
+
+# --- 3) Build richer OUTBOUND dyad table -----------------------------------
+# If you have extra columns in `outbound` (e.g., flows), merge them safely
+outbound_dyads <- outbound_edges %>%
+  mutate(
+    Reporter = iso_to_country(reporter_iso),
+    Partner  = iso_to_country(partner_iso)
+  )
+
+# If you have a reporter/partner policy you might attach penalties again (optional)
+# Example: none added here-keep it as a clean network/ties sheet.
+
+outbound_meta <- tribble(
+  ~variable,         ~source,                     ~explanation,                                                ~data_type,
+  "outbound_index",  "Your outbound FDI ties tbl","Normalized outbound FDI/network ties to partner (0-1).",   "index"
+)
+
+Outbound_Dyads <- outbound_dyads %>%
+  ungroup() %>%
+  pivot_longer(cols = c(outbound_index), names_to = "variable", values_to = "value") %>%
+  left_join(outbound_meta, by = "variable") %>%
+  mutate(
+    Country     = iso_to_country(partner_iso),
+    Pillar      = "Outbound Investment",
+    category    = "Outbound Ties",
+    source      = coalesce(source, "Author calculation"),
+    explanation = coalesce(explanation, "Derived in pipeline."),
+    data_type   = coalesce(data_type, "index")
+  ) %>%
+  select(Reporter, Partner, reporter_iso, partner_iso,
+         Country,Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(Reporter, Partner, variable)
+
+# Country-aggregated (align with FRIENDSHORE selection or choose top dyads by outbound_index)
+Outbound_ByCountry <- friendshore_all %>%
+  filter(!is.na(friendshore_index)) %>%
+  group_by(partner_iso) %>%
+  slice_max(order_by = friendshore_index, n = top_n_dyads, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(reporter_iso, partner_iso) %>%
+  inner_join(outbound_dyads, by = c("reporter_iso","partner_iso")) %>%
+  group_by(partner_iso) %>%
+  summarise(outbound_index = mean(outbound_index, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Country = iso_to_country(partner_iso)) %>%
+  pivot_longer(cols = c(outbound_index), names_to = "variable", values_to = "value") %>%
+  left_join(outbound_meta, by = "variable") %>%
+  mutate(
+    Pillar    = "Outbound Investment",
+    category  = "Outbound Ties (Top Dyads Avg)",
+    source    = coalesce(source, "Author calculation"),
+    explanation = coalesce(explanation, "Average over top dyads that define the Friendshore index."),
+    data_type = coalesce(data_type, "index")
+  ) %>%
+  select(Country, Pillar, category, variable, data_type, value, source, explanation) %>%
+  arrange(Country, variable)
+
+
+
+# 1) Variable-level metadata -----------------------------------------------
+opp_meta <- tribble(
+  ~variable,               ~source,                         ~explanation,                                                                 ~data_type,
+  "trade_index",           "UN Comtrade (exports) + author","Export-side composite of last-year level and 4-5y growth, rescaled within tech × chain.", "index",
+  "econ_opp_index",        "Your econ_opp_index table",      "Exporter economic opportunity (already scaled 0-1 in your pipeline).",               "index",
+  "energy_security_index", "Your energy_security_index tbl", "Partner energy-security 'need' (higher = more need), scaled 0-1.",                   "index",
+  "ghg_index",             "Tech GHG lookup (tech_ghg)",     "Technology-level lifecycle GHG factor (higher = cleaner).",                          "index",
+  "climate_policy_index",  "Policy/CAT lookup (cat)",        "Partner climate-policy stringency proxy, scaled 0-1.",                               "index",
+  "penalty",               "Author calculation",             "(1???GHG) × climate_policy × 0.20 applied to opportunity.",                           "composite",
+  "opportunity_raw",       "Author calculation",             "Pre-penalty weighted blend: 2×trade + 2×econ_opp + 0.5×energy_security.",           "composite",
+  "opportunity_index_raw", "Author calculation",             "Post-penalty value before within-tech×chain rescale.",                               "composite",
+  "opportunity_index",     "Author calculation",             "Final opportunity index rescaled within tech × chain.",                              "index"
+)
+
+fsi_meta <- tribble(
+  ~variable,            ~source,                          ~explanation,                                                                 ~data_type,
+  "imp_trade_index",    "UN Comtrade (imports) + author", "Import-side composite of last-year level and 4-5y growth, rescaled within tech × chain.", "index",
+  "es_need",            "Your energy_security_index tbl", "Importer energy-security 'need' (higher = more need), scaled 0-1.",                      "index",
+  "eo_partner",         "Your econ_opp_index table",      "Partner economic opportunity (scaled 0-1).",                                           "index",
+  "outbound_index",     "Your outbound FDI ties table",   "Normalized outbound FDI/network ties to partner (0 if unavailable).",                   "index",
+  "penalty_r",          "Author calculation",             "Reporter-side climate penalty: (1???GHG) × reporter_policy × 0.10.",                      "composite",
+  "penalty_p",          "Author calculation",             "Partner-side climate penalty: (1???GHG) × partner_policy × 0.10.",                        "composite",
+  "fsi_raw",            "Author calculation",             "Pre-penalty composite: imports + ES need + EO partner + outbound.",                     "composite",
+  "fsi_adj",            "Author calculation",             "Post-penalty value before within-tech×chain rescale.",                                  "composite",
+  "friendshore_index",  "Author calculation",             "Final friendshore index rescaled within tech × chain.",                                 "index"
+)
+
+# 2) Helper that injects metadata per variable ------------------------------
+build_inputs_sheet <- function(df, index_col, vars, pillar_name, category_name, meta_tbl, n_top = 3) {
+  stopifnot(all(c("partner_iso","tech","supply_chain", index_col) %in% names(df)))
+  # pick same top-N dyads as the final index
+  top_dyads <- df %>%
+    filter(!is.na(.data[[index_col]])) %>%
+    group_by(partner_iso, tech, supply_chain) %>%
+    slice_max(order_by = .data[[index_col]], n = n_top, with_ties = FALSE) %>%
+    ungroup()
+  
+  # average each requested input across those dyads
+  agg <- top_dyads %>%
+    group_by(partner_iso, tech, supply_chain) %>%
+    summarise(across(all_of(vars), ~mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+    mutate(Country = iso_to_country(partner_iso))
+  
+  # tidy + attach variable-level metadata (with sensible defaults)
+  agg %>%
+    pivot_longer(cols = all_of(vars), names_to = "variable", values_to = "value") %>%
+    left_join(meta_tbl, by = "variable") %>%
+    mutate(
+      Pillar      = pillar_name,
+      category    = category_name,
+      data_type   = coalesce(data_type, "index"),
+      source      = coalesce(source, "Author calculation"),
+      explanation = coalesce(explanation, "Derived in pipeline; see code comments.")
+    ) %>%
+    select(Country, tech, supply_chain, Pillar, category, variable, data_type, value, source, explanation) %>%
+    arrange(Country, tech, supply_chain, variable)
+}
+
+# Opportunity inputs sheet (per-variable source/explanation)
+opp_vars <- c("trade_index","econ_opp_index","energy_security_index",
+              "ghg_index","climate_policy_index","penalty",
+              "opportunity_raw","opportunity_index_raw","opportunity_index")
+
+opp_inputs_sheet <- build_inputs_sheet(
+  opportunity_all,
+  index_col   = "opportunity_index",
+  vars        = opp_vars,
+  pillar_name = "Opportunity",
+  category_name = "Opportunity Inputs",
+  meta_tbl    = opp_meta,
+  n_top       = 3
+)
+
+# Friendshoring inputs sheet (per-variable source/explanation)
+fsi_vars <- c("imp_trade_index","es_need","eo_partner","outbound_index",
+              "penalty_r","penalty_p","fsi_raw","fsi_adj","friendshore_index")
+
+fsi_inputs_sheet <- build_inputs_sheet(
+  friendshore_all %>% filter(!partner_iso %in% c("CHN","RUS")),
+  index_col   = "friendshore_index",
+  vars        = fsi_vars,
+  pillar_name = "Friendshoring",
+  category_name = "Friendshoring Inputs",
+  meta_tbl    = fsi_meta,
+  n_top       = 3
+)
+
+# Make sure no lingering dplyr groups interfere
+security_opp_indices <- security_opp_indices %>% dplyr::ungroup()
+
+# Columns we want, in order
+pillar_cols <- c(
+  "Country", "tech", "supply_chain",
+  "Pillar", "category", "variable", "data_type",
+  "value", "source", "explanation"
+)
+
+# Defensive select (in case extra cols exist)
+select_pillar_cols <- function(df) {
+  missing <- setdiff(pillar_cols, names(df))
+  if (length(missing)) {
+    stop("security_opp_indices is missing columns: ",
+         paste(missing, collapse = ", "))
+  }
+  df %>% dplyr::select(dplyr::all_of(pillar_cols))
+}
+
+energy_security_sheet <- security_opp_indices %>%
+  dplyr::filter(Pillar == "Energy Security") %>%
+  select_pillar_cols() %>%
+  dplyr::arrange(Country, tech, supply_chain)
+
+economic_opportunity_sheet <- security_opp_indices %>%
+  dplyr::filter(Pillar == "Economic Opportunity") %>%
+  select_pillar_cols() %>%
+  dplyr::arrange(Country, tech, supply_chain)
+
+# Build README as a single text column (Excel will wrap lines)
+readme_tbl <- tibble(
+  README = c(
+    "README - Opportunity & Friendshoring Indices Workbook",
+    "",
+    "Purpose",
+    "This workbook summarizes composite indices to assess clean-energy trade, investment, and partner opportunity across technologies and value-chain stages.",
+    "It integrates export/import flows, economic opportunity, energy security, emissions intensity, climate-policy alignment, and outbound ties.",
+    "",
+    "Sheet Overview",
+    ". Opportunity_Index - Final country-level Opportunity Index (avg of top-3 export dyads per Country×Tech×Supply Chain).",
+    ". Friendshore_Index - Final country-level Friendshore Index (avg of top-3 import dyads per Country×Tech×Supply Chain).",
+    ". Opportunity_Inputs - Inputs to Opportunity (trade, econ_opp, energy_security, ghg, policy, penalties, raw/adj), averaged over same top-3 dyads.",
+    ". Friendshoring_Inputs - Inputs to Friendshoring (imports, ES need, EO partner, outbound, penalties, raw/adj), averaged over same top-3 dyads.",
+    ". Exports_Dyads / Exports_ByCountry - Export levels, growth, and indices at dyad level and averaged by partner country.",
+    ". Imports_Dyads / Imports_ByCountry - Import levels, growth, and indices at dyad level and averaged by partner country.",
+    ". Outbound_Dyads / Outbound_ByCountry - Outbound investment/FDI ties (normalized 0-1) at dyad level and averaged by partner country.",
+    "",
+    "Method Summary",
+    "Data sources: UN Comtrade (2020-2024), econ_opp_index, energy_security_index, tech_ghg, climate policy (CAT), outbound ties.",
+    "Rescaling: median-S-curve to 0-1 within Technology × Supply Chain groups.",
+    "Aggregation: country-level indices = mean of the top 3 dyads per Country×Tech×Supply Chain (prevents outliers, rewards consistency).",
+    "",
+    "Weighting (pre-scaling)",
+    "Opportunity = 2×Trade + 2×Exporter EconOpp + 0.5×Partner EnergySec ??? 0.2×(1???GHG)×Policy.",
+    "Friendshoring = Imports + ES Need + EO Partner + Outbound ??? [0.1×(1???GHG)×Policy_reporter + 0.1×(1???GHG)×Policy_partner].",
+    "",
+    "Variable Conventions",
+    "trade_index / imp_trade_index: export/import composite (level + growth, 0-1).",
+    "econ_opp_index / eo_partner: exporter/partner opportunity (0-1).",
+    "energy_security_index / es_need: partner/importer vulnerability (0-1).",
+    "ghg_index: tech cleanliness (0-1, higher = cleaner).  climate_policy_index: policy strength (0-1).",
+    "outbound_index: outbound ties (0-1).  penalty / penalty_r / penalty_p: climate-related deductions.",
+    " *_raw / *_adj: pre-scaling composites; *_index: final normalized 0-1.",
+    "",
+    "Intended Use",
+    "Identify priority partner countries by technology and value-chain stage; compare export competitiveness vs. friendshoring feasibility;",
+    "support industrial strategy where economic, climate, and trade objectives align.",
+    "",
+    "Citation",
+    "Author calculation based on UN Comtrade, ILO/World Bank (as applicable), Climate Action Tracker, and RMI/NEIS datasets (2020-2024)."
+  )
+)
+
+# Write as FIRST tab with the rest of your sheets
+# (Assumes you already created: op_sheet, fsi_sheet, opp_inputs_sheet, fsi_inputs_sheet,
+#  Exports_Dyads, Exports_ByCountry, Imports_Dyads, Imports_ByCountry, Outbound_Dyads, Outbound_ByCountry)
+
+
+
+# ----------------------
+# Write all four sheets
+# ----------------------
+out_xlsx <- file.path(getwd(), "OneDrive - RMI/New Energy Industrial Strategy - Documents/NEIS Center Asia Trips/Research/Benchmark_Indices.xlsx")
+writexl::write_xlsx(
+  list(
+    README              = readme_tbl,
+    Opportunity_Index   = op_sheet,
+    Friendshore_Index   = fsi_sheet,
+    Opportunity_Inputs  = opp_inputs_sheet,
+    Friendshoring_Inputs= fsi_inputs_sheet,
+    Economic_Opportunity=economic_opportunity_sheet,
+    Energy_Security = energy_security_sheet,
+    Exports_Dyads       = Exports_Dyads,
+    Imports_Dyads       = Imports_Dyads,
+    Outbound_Dyads      = Outbound_Dyads
+  ),
+  path = out_xlsx
+)
+message("Wrote Excel workbook with indices + inputs: ", out_xlsx)
 
 #Top 10 of Each library(dplyr)
 country_flags<-read.csv("Downloads/Country flag lookup table - Sheet1.csv")
 friendshore_ten <- 
   # 1) Safer (friend-shore) block
   friendshore_index %>%
-    ungroup() %>%
-    mutate(ci = paste0(country.y,": ",industry)) %>%
-    left_join(country_flags %>%
-                mutate(Country=recode(
-                  Country,"United States of America"="United States"
-                )),by=c("country.y"="Country")) %>%
-    select(
-      code_1=Code,
-      "Friendshoring"       = ci,
-      friendshore_index) %>%
-    slice_max(friendshore_index, n = 10)
+  ungroup() %>%
+  mutate(ci = paste0(country.y,": ",industry)) %>%
+  left_join(country_flags %>%
+              mutate(Country=recode(
+                Country,"United States of America"="United States"
+              )),by=c("country.y"="Country")) %>%
+  select(
+    code_1=Code,
+    "Friendshoring"       = ci,
+    friendshore_index) %>%
+  slice_max(friendshore_index, n = 10)
 write.csv(friendshore_ten,"Downloads/friendshore.csv")
 
 
@@ -1333,8 +1327,8 @@ plot_opportunity_chord_topN_capped_highlight <- function(opportunity_all, allies
 plot_opportunity_chord_topN_capped_highlight(
   # or whatever you name it
   opportunity_all, allies,
-  tech_sel = "Electric Grid", chain_sel = "Midstream",
-  top_overall = 10, per_exporter_cap = 5,
+  tech_sel = "Electric Vehicles", chain_sel = "Midstream",
+  top_overall = 25, per_exporter_cap = 10,
   # highlight allies instead of filtering
   extra_iso = NULL,            # or "CHN" to include China among partners
   ally_alpha = 0.9, other_alpha = 0.1,

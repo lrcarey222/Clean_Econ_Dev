@@ -86,7 +86,7 @@ dsire_count<-dsire_inc %>%
   group_by(state) %>%
   summarise(n = n(), .groups = "drop")
 
-#Climate/Clean ENergy/Manufacturing Incentive Policies------------------------------------------
+#Climate/Clean Energy/Manufacturing Incentive Policies------------------------------------------
 
 dev_pol <- read.csv("OneDrive - RMI/Documents - US Program/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/dbo_Program.csv")
 

@@ -2133,6 +2133,159 @@ lcoe_bnef <- lcoe_bnef %>%
     )
   )
 
+#Labor Costs----------------------------
+# ILO-friendly country normalizer
+norm_iso_ilo <- function(x) {
+  x <- stringr::str_squish(x)
+  custom <- c(
+    "United States of America"                         = "USA",
+    "United Kingdom of Great Britain and Northern Ireland" = "GBR",
+    "Republic of Korea"                                = "KOR",
+    "Russian Federation"                               = "RUS",
+    "Hong Kong, China"                                 = "HKG",
+    "Macao, China"                                     = "MAC",
+    "Türkiye"                                          = "TUR",
+    "Côte d'Ivoire"                                    = "CIV",
+    "Curaçao"                                          = "CUW",
+    "Lao People's Democratic Republic"                 = "LAO",
+    "Tanzania, United Republic of"                     = "TZA",
+    "Congo, Democratic Republic of the"                = "COD",
+    "Congo"                                            = "COG",
+    "Eswatini"                                         = "SWZ",
+    "Cabo Verde"                                       = "CPV",
+    "Viet Nam"                                         = "VNM",
+    "Kosovo"                                           = "XKX",
+    "United States Virgin Islands"                     = "VIR"
+  )
+  # Try exact first; if NA, try removing ", China"
+  iso <- countrycode(x, "country.name", "iso3c", custom_match = custom, warn = TRUE)
+  iso <- ifelse(
+    is.na(iso),
+    countrycode(str_replace(x, ",\\s*China$", ""), "country.name", "iso3c",
+                custom_match = custom, warn = TRUE),
+    iso
+  )
+  iso
+}
+
+ilo<-read.csv("https://rplumber.ilo.org/data/indicator/?id=EAR_4MTH_SEX_ECO_CUR_NB_A&lang=en&type=label&format=.csv&channel=ilostat&title=average-monthly-earnings-of-employees-by-sex-and-economic-activity-annual")
+
+ilo_ind<-ilo %>%
+  filter(classif1.label %in% c("Economic activity (Aggregate): Total",
+                               "Economic activity (Aggregate): Manufacturing",
+                               "Economic activity (Aggregate): Agriculture",
+                               "Economic activity (Aggregate): Construction"),
+         sex.label=="Total",
+         classif2.label=="Currency: 2021 PPP $") %>%
+  mutate(country_std = norm_iso_ilo(ref_area.label)) %>%
+  slice_max(time, n = 1, with_ties = FALSE, by = c(ref_area.label, classif1.label)) %>%
+  arrange(desc(obs_value)) %>%
+  filter(ref_area.label != "Zimbabwe") %>%
+  group_by(classif1.label) %>%
+  mutate(labor_index=median_scurve(obs_value))
+
+ilo_sc <- ilo_ind %>%
+  ungroup() %>%
+  mutate(
+    supply_chain = case_when(
+      str_detect(classif1.label, "Agriculture")   ~ "Upstream",
+      str_detect(classif1.label, "Manufacturing") ~ "Midstream",
+      str_detect(classif1.label, "Construction")  ~ "Downstream",
+      str_detect(classif1.label, "Total")         ~ "Total",
+      TRUE                                        ~ NA_character_
+    )
+  ) %>%
+  filter(supply_chain != "Total") %>%
+  select(country_std,supply_chain,labor_index)
+
+labor_weights <- tribble(
+  ~Technology,          ~supply_chain, ~labor_share,
+  "Solar",              "Upstream",     0.15,   # polysilicon/modules (labor ~10-20%)
+  "Solar",              "Midstream",    0.15,   # EPC/interconnection (10-20%)
+  "Solar",              "Downstream",   0.07,   # ops labor (5-10%)
+  
+  "Wind",               "Upstream",     0.15,   # turbine mfg (10-20%)
+  "Wind",               "Midstream",    0.12,   # installation (10-15%)
+  "Wind",               "Downstream",   0.15,   # O&M labor (10-20%; higher offshore)
+  
+  "Geothermal",         "Upstream",     0.15,   # exploration/drilling (10-20%)
+  "Geothermal",         "Midstream",    0.12,   # plant build (10-15%)
+  "Geothermal",         "Downstream",   0.22,   # ops incl. pumping (15-30%)
+  
+  "Nuclear",            "Upstream",     0.18,   # fuel cycle (10-25%)
+  "Nuclear",            "Midstream",    0.15,   # construction (10-20%)
+  "Nuclear",            "Downstream",   0.18,   # O&M staffing (10-25%)
+  
+  "Gas",                "Upstream",     0.18,   # extraction (10-25%)
+  "Gas",                "Midstream",    0.10,   # pipelines/LNG (5-15%)
+  "Gas",                "Downstream",   0.07,   # CCGT O&M labor (5-10%)
+  
+  "Coal",               "Upstream",     0.40,   # mining (30-50%)
+  "Coal",               "Midstream",    0.15,   # rail/ports (10-20%)
+  "Coal",               "Downstream",   0.15,   # plant O&M (10-20%)
+  
+  "Oil",                "Upstream",     0.18,   # finding/lifting (10-25%)
+  "Oil",                "Midstream",    0.10,   # pipelines/shipping (5-15%)
+  "Oil",                "Downstream",   0.15,   # refining O&M labor (10-20%)
+  
+  "Hydrogen",           "Upstream",     0.06,   # electrolysis labor (3-10%)
+  "Hydrogen",           "Midstream",    0.10,   # compression/storage (5-15%)
+  "Hydrogen",           "Downstream",   0.08,   # station O&M labor (5-10%)
+  
+  "Electric Grid",      "Upstream",     0.20,   # equipment mfg (15-25%)
+  "Electric Grid",      "Midstream",    0.25,   # transmission O&M labor (20-35%)
+  "Electric Grid",      "Downstream",   0.38,   # distribution field ops (30-45%)
+  
+  "Electric Vehicles",  "Upstream",     0.20,   # battery minerals (15-30%)
+  "Electric Vehicles",  "Midstream",    0.20,   # vehicle & cell/pack mfg (15-25%)
+  "Electric Vehicles",  "Downstream",   0.10,   # charging ops labor (5-15%)
+  
+  "Batteries",          "Upstream",     0.22,   # mining/refining of actives (15-30%)
+  "Batteries",          "Midstream",    0.08,   # cell/pack mfg labor (5-10%)
+  "Batteries",          "Downstream",   0.08    # storage ops labor (5-10%)
+)
+
+# 3) Normalize shares within each Technology so they sum to 1 (convex weights)
+
+
+labor_index_tech_sc <- ilo_sc %>%
+  inner_join(labor_weights, by = "supply_chain") %>%
+  mutate(
+    labor_index_weighted = labor_index * labor_share
+  ) %>%
+  select(country_std, Technology, supply_chain, labor_share, labor_index, labor_index_weighted) %>%
+  left_join(country_info %>% select(iso3c,country),by=c("country_std"="iso3c")) %>%
+  pivot_longer(cols=labor_share:labor_index_weighted,names_to="variable",values_to="value") %>%
+  # 4) attach category, source, explanation
+  transmute(
+    Country = country,
+    tech = Technology,
+    supply_chain,
+    category   = "Input Costs",
+    variable,
+    data_type = "index",
+    value,
+    source     = "International Labor Organization",
+    explanation = case_when(
+      variable =="labor_share" ~ 
+        glue("Estimated Labor Share of Costs"),
+      variable =="labor_index" ~ 
+        glue("Estimated weekly earnings by economic activity, indexed"),
+      variable =="labor_index_weighted" ~ 
+        glue("Weighted labor costs index by labor share of costs"),
+      TRUE ~ variable
+    )
+  ) 
+
+#Capital Costs------------------------
+bis<-read.csv(paste0(raw_data,'bis_debtserviceratio.csv'),skip=6) %>%
+  group_by(BORROWERS_CTY.Borrowers..country) %>%
+  summarize(dsr=mean(OBS_VALUE.Value,na.rm=T)) %>%
+  ungroup() %>%
+  mutate(cap_cost_index=median_scurve(dsr)) %>%
+  arrange(cap_cost_index)
+
+
 #Energy Production----------------------------
 production_growth<-ei%>%
   select(Country,Year,Var,Value) %>%
@@ -2720,6 +2873,9 @@ econ_opp_indices<- rbind(trade_tidy,production_tidy %>%
           ungroup() %>%
           mutate(variable=ifelse(variable=="elec_growth_index",
                                  "Overall Production",variable))) %>%
+  rbind(labor_index_tech_sc %>%
+          mutate(variable=ifelse(variable=="labor_index_weighted",
+                                 "Overall input cost index",variable))) %>%
   mutate(Pillar="Economic Opportunity") %>%
   filter(Country != "Korea, Dem. People's Rep.") %>%
   mutate(Country=ifelse(grepl("Korea",Country),"South Korea",Country),
@@ -2793,6 +2949,7 @@ scatter_index<-rbind(energy_security_index %>%
                        filter(variable=="Overall Economic Opportunity Index")) %>%
   mutate(tech=ifelse(tech=="Green Hydrogen","Hydrogen",tech),industry=paste0(tech,": ",supply_chain)) %>%
   filter(industry != "Geothermal: Midstream")
+write.csv(scatter_index,"OneDrive - RMI/New Energy Industrial Strategy - Documents/Research/Data/scatter_index.csv")
 
 us_scatter_index <- scatter_index %>%
   filter(Country=="South Korea")%>%
