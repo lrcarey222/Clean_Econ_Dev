@@ -4,7 +4,6 @@
 ##           Point/Facility → Cross-Geography → Final
 ###############################################################################
 
-
 # =============================================================================
 # SECTION 1: SETUP - PACKAGES, PATHS, HELPERS
 # =============================================================================
@@ -1799,34 +1798,99 @@ if (file.exists(EDA_FILE)) {
   g(EDA_DISTRESSED_COMMUNITIES, "EDA_DISTRESSED_COMMUNITIES")
 }
 
-# =============================================================================
-# SECTION 9: FINAL OPERATIONS
-# =============================================================================
+#Syracuse University State Policy & Politics Database
+SYRACUASE_STATE_POLITICS_POLICY_FILE <- fp(RAW_DATA_FOLDER, "Syracuse University State Policy and Politics Database", "SPPD_v1_3.1_2025_Update.xlsx")
+if (file.exists(SYRACUASE_STATE_POLITICS_POLICY_FILE)) {
+  SYRACUASE_STATE_POLITICS_POLICY <- readxl::read_excel(SYRACUASE_STATE_POLITICS_POLICY_FILE)
+  g(SYRACUASE_STATE_POLITICS_POLICY, "SYRACUASE_STATE_POLITICS_POLICY")
+}
 
-.msg("INFO", "=== COMPLETING DATA LOAD ===")
+#Light-Duty Vehicles Trends, DOE
+LDV_TRENDS_LINK <- "https://developer.nrel.gov/api/vehicles/v1/light_duty_automobiles.csv?api_key=zWXzDiPTFsCBQQrfRhrlm1Sh1FIC4ZpfvbVY8EIr&download=true"
+LDV_TRENDS <- tryCatch({
+  safe_fread(LDV_TRENDS_LINK)
+}, error = function(e) {
+  .warn(paste("LDV Trends:", e$message))
+  tibble::tibble()
+})
+g(LDV_TRENDS, "LDV_TRENDS")
 
-# List all loaded datasets
-all_objects <- ls()
-data_objects <- all_objects[sapply(all_objects, function(x) {
-  obj <- get(x)
-  is.data.frame(obj) || inherits(obj, "sf")
-})]
+#CATF Fusion Map: https://www.catf.us/global-fusion-map/
+suppressPackageStartupMessages({library(httr);library(jsonlite);library(dplyr);library(purrr);library(stringr);library(sf);library(tigris)})
+`%||%`<-function(a,b) if(!is.null(a)) a else b
+options(tigris_use_cache=TRUE,tigris_class="sf"); UA<-user_agent("Mozilla/5.0 (compatible; catf-fusion-scrape/1.50)")
+endpoints<-c(public="https://catf-fusion-2024.vercel.app/Data_for_global_fusion_map_2020-2024update_public.geojson",private="https://catf-fusion-2024.vercel.app/Data_for_global_fusion_map_2020-2024update_private.geojson",devices="https://catf-fusion-2024.vercel.app/Data_for_global_fusion_map_2020-2024update_devices.geojson")
+counties_sf<-counties(year=2024,cb=FALSE,progress_bar=FALSE)%>%st_transform(4326)%>%select(STATEFP,GEOID,NAMELSAD,CBSAFP,CSAFP,geometry)
+fusion_flat_usa<-imap(endpoints,function(u,nm){
+  r<-tryCatch(GET(u,UA,timeout(30)),error=function(e)NULL); if(is.null(r)||status_code(r)!=200)return(tibble())
+  j<-tryCatch(fromJSON(content(r,as="text",encoding="UTF-8"),simplifyVector=FALSE),error=function(e)NULL)
+  if(!is.list(j)||j$type!="FeatureCollection")return(tibble())
+  fe<-j$features; pr<-map(fe,~.x$properties%||%list()); df<-bind_rows(map(pr,as.list))
+  gm<-map(fe,~.x$geometry%||%list(type=NA,coordinates=NA)); gt<-map_chr(gm,~.x$type%||%NA_character_)
+  lon<-lat<-rep(NA_real_,length(gm)); ip<-which(gt=="Point"); if(length(ip)){cd<-map(gm[ip],~.x$coordinates%||%c(NA,NA)); lon[ip]<-map_dbl(cd,1); lat[ip]<-map_dbl(cd,2)}
+  df%>%mutate(dataset=nm,lon=lon,lat=lat,source_url=u)
+})%>%bind_rows()%>%
+  mutate(
+    name=case_when(dataset=="private"~`Company`%||%NA_character_,dataset=="public"~`Company/Institution`%||%NA_character_,dataset=="devices"~((`Device Name`%||%`Full device name`)%||%NA_character_),TRUE~NA_character_),
+    entity_type=case_when(dataset=="private"~"company",dataset=="public"~"education_research",dataset=="devices"~"device",TRUE~NA_character_),
+    country=str_squish(`country`%||%Country%||%COUNTRY%||%NA_character_), location=str_squish(Location%||%`Location `%||%location%||%NA_character_),
+    fusion_category=fusion_category%||%NA_character_, investment_numeric=suppressWarnings(as.numeric(investment_numeric%||%NA_real_)),
+    investment_usd=str_squish(investment_usd%||%NA_character_), website=str_squish(website%||%`website*`%||%NA_character_), notes=other_notes%||%notes%||%NA_character_, name=str_squish(ifelse(is.na(name)|name=="",NA_character_,name))
+  )%>%
+  distinct(entity_type,name,country,lat,lon,.keep_all=TRUE)%>%filter(!is.na(lat)&!is.na(lon)&country=="USA")%>%
+  st_as_sf(coords=c("lon","lat"),crs=4326,remove=FALSE)%>%
+  st_join(counties_sf,join=st_within,left=TRUE)%>%st_drop_geometry()%>%
+  rename(statefp=STATEFP,county_geoid=GEOID,county_namelsad=NAMELSAD,cbsafp=CBSAFP,csafp=CSAFP)%>%
+  mutate(investment_usd_million=ifelse(!is.na(investment_numeric),investment_numeric*1e6,NA_real_))%>%
+  select(dataset,entity_type,name,country,location,lat,lon,fusion_category,investment_numeric,investment_usd,website,notes,source_url,statefp,county_geoid,county_namelsad,cbsafp,csafp,investment_usd_million)
+glimpse(fusion_flat_usa)
 
-.msg("INFO", sprintf("Total datasets loaded: %d", length(data_objects)))
-.msg("INFO", "Data categories:")
-.msg("INFO", sprintf("  County-level: %d", sum(grepl("COUNTY|county", data_objects, ignore.case = TRUE))))
-.msg("INFO", sprintf("  State-level: %d", sum(grepl("STATE|state", data_objects, ignore.case = TRUE))))
-.msg("INFO", sprintf("  CBSA/Metro: %d", sum(grepl("CBSA|MSA|METRO", data_objects, ignore.case = TRUE))))
-.msg("INFO", sprintf("  National: %d", sum(grepl("NATIONAL|national", data_objects, ignore.case = TRUE))))
+#County Health Rankings Data
+#Their website: https://www.countyhealthrankings.org/ 
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(data.table)
+library(lubridate)
+library(censusapi)
 
-# Memory usage
-.msg("INFO", sprintf("Total memory used: %.2f MB", sum(sapply(data_objects, function(x) {
-  object.size(get(x)) / 1024^2
-}))))
+# Other resources of note
+# https://www.countyhealthrankings.org/sites/default/files/media/document/analytic_data2025_v2.csv
+# https://www.countyhealthrankings.org/sites/default/files/media/document/Analytic%20Dataset%20Codebook%20Supplemental%20Release_November2025.pdf
+# https://www.countyhealthrankings.org/sites/default/files/media/document/analytic_supplement_20251104.csv
+# https://www.countyhealthrankings.org/sites/default/files/media/document/DataDictionary_2025.pdf
+# https://www.countyhealthrankings.org/sites/default/files/media/document/DataDictionary_2025.xlsx
+# https://www.countyhealthrankings.org/sites/default/files/media/document/chr_trends_csv_2025.csv
+# https://www.countyhealthrankings.org/sites/default/files/media/document/2025%20County%20Health%20Rankings%20Data%20-%20v3.xlsx
 
-# Close parallel processing
-future::plan(sequential)
-.msg("INFO", "Script completed successfully.")
-.msg("INFO", sprintf("Log saved to: %s", log_file))
+#2025 CHR CSV Analytic Data
+county_health_rankings_2025 <-read_csv("https://www.countyhealthrankings.org/sites/default/files/media/document/analytic_data2025_v2.csv", skip = 1)
+cat("Glimpse of 2025 County Health Rankings Analytic Data:\n"); glimpse(county_health_rankings_2025)
+cat("\nColumn names in 2025 County Health Rankings Analytic Data:\n"); print(colnames(county_health_rankings_2025))
 
-# End of script
+#Data dictionary also available here: https://www.countyhealthrankings.org/sites/default/files/media/document/DataDictionary_2025.pdf 
+data_dictionary_link <- "https://www.countyhealthrankings.org/sites/default/files/media/document/DataDictionary_2025.xlsx" 
+#Confirm that the link works; download temporarily; list sheet names
+temp_file <- tempfile(fileext = ".xlsx")
+download.file(data_dictionary_link, destfile = temp_file, mode = "wb")
+sheet_names <- excel_sheets(temp_file)
+print(sheet_names)
+#Read in the "Data Dictionary 2025" sheet
+data_dictionary_2025 <- read_excel(temp_file, sheet = "Data Dictionary 2025")
+glimpse(data_dictionary_2025)
+
+#Revise county_health_rankings_2025 such that we take each column name, we look to see if there is a matching "Variable Name" value in data_dictionary_2025, and if there is, replace the column name with the corresponding "Measure" information from data_dictionary_2025
+#Then we would rename this county_health_rankings_2025_readable
+county_health_rankings_2025_readable <- county_health_rankings_2025
+for (col_name in colnames(county_health_rankings_2025)) {
+  measure_name <- data_dictionary_2025 %>%
+    filter(`Variable Name` == col_name) %>%
+    select(Measure) %>%
+    pull()
+  if (length(measure_name) > 0) {
+    colnames(county_health_rankings_2025_readable)[which(colnames(county_health_rankings_2025_readable) == col_name)] <- measure_name
+  }
+}
+cat("\nGlimpse of 2025 County Health Rankings Analytic Data with Readable Column Names:\n"); glimpse(county_health_rankings_2025_readable)
