@@ -1894,3 +1894,255 @@ for (col_name in colnames(county_health_rankings_2025)) {
   }
 }
 cat("\nGlimpse of 2025 County Health Rankings Analytic Data with Readable Column Names:\n"); glimpse(county_health_rankings_2025_readable)
+
+#YALE CLIMATE OPINION MAPS
+# YCOM unified long table (type-stable) 
+required <- c("tidyverse", "janitor", "readr", "stringr")
+to_install <- setdiff(required, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+library(tidyverse); library(janitor); library(readr); library(stringr)
+
+ycom_url_2024 <- "https://public.ypccc.tools/ycom/us/2024/YCOM8.0_2024_fullstack_76.csv"
+coot_url      <- "https://public.ypccc.tools/ycom/us/2024/coot2024_webtool.csv"
+param_url     <- "https://public.ypccc.tools/ycom/us/2024/webtool.parameters.YCOM8.2024.tapp.tsv"
+
+y24   <- read_csv(ycom_url_2024, show_col_types = FALSE) %>% clean_names()
+coot  <- read_csv(coot_url,      show_col_types = FALSE) %>% clean_names()
+param <- read_tsv(param_url,     show_col_types = FALSE) %>% clean_names()
+
+# ---- helpers ------------------------------------------------------------------
+normalize_geoid <- function(geoid, geo_type) {
+  # Return character GEOID with expected width by geotype
+  geo_type <- as.character(geo_type)
+  out <- as.character(geoid)
+  out <- case_when(
+    geo_type == "national" ~ "9999",
+    geo_type == "state"    ~ str_pad(as.character(as.integer(geoid)), 2, "left", "0"),
+    geo_type == "county"   ~ str_pad(as.character(as.integer(geoid)), 5, "left", "0"),
+    geo_type == "cbsa"     ~ str_pad(as.character(as.integer(geoid)), 5, "left", "0"),
+    geo_type == "cd"       ~ str_pad(as.character(as.integer(geoid)), 4, "left", "0"),
+    TRUE                   ~ as.character(geoid)
+  )
+  out
+}
+
+add_metrics_and_long <- function(df_support_oppose, key_cols) {
+  df_support_oppose %>%
+    mutate(
+      margin    = if_else(!is.na(support) & !is.na(oppose), support - oppose, NA_real_),
+      undecided = if_else(!is.na(support) & !is.na(oppose),
+                          pmax(0, 100 - support - oppose), NA_real_)
+    ) %>%
+    pivot_longer(c(support, oppose, margin, undecided),
+                 names_to = "metric", values_to = "value") %>%
+    filter(!is.na(value))
+}
+
+var_dict <- param %>%
+  transmute(
+    variable = variable_name,
+    title    = coalesce(short_title, maptitle, legendtitle, variable_name),
+    qtext    = qtext,
+    qcategory = q_category,
+    agree_text, disagree_text
+  ) %>% distinct()
+
+# ---- 2024 cross-section -> tidy long (with normalized IDs) --------------------
+y24_prepped <- y24 %>%
+  mutate(
+    geo_type = as.character(geo_type),
+    # normalize geoid by geo_type and coerce to character
+    geoid = normalize_geoid(geoid, geo_type),
+    # ensure name is character
+    geo_name = as.character(geo_name)
+  )
+
+y24_long <- y24_prepped %>%
+  select(geo_type, geoid, geo_name, population, disable_geo, everything()) %>%
+  pivot_longer(
+    -c(geo_type, geoid, geo_name, population, disable_geo),
+    names_to = "raw_var",
+    values_to = "value_raw"
+  ) %>%
+  mutate(
+    variable = str_remove(raw_var, "_oppose$"),
+    measure  = if_else(str_detect(raw_var, "_oppose$"), "oppose", "support")
+  ) %>%
+  select(geo_type, geoid, geo_name, population, variable, measure, value_raw) %>%
+  pivot_wider(names_from = measure, values_from = value_raw) %>%
+  add_metrics_and_long(key_cols = c("geo_type","geoid","geo_name","population","variable")) %>%
+  mutate(
+    source  = "YCOM_2024",
+    year    = 2024L
+  )
+
+# ---- COOT (state time series) -> tidy long (with normalized IDs) --------------
+coot_long <- coot %>%
+  pivot_longer(starts_with("x20"),
+               names_to = "year_str", values_to = "pct") %>%
+  mutate(
+    year     = readr::parse_number(year_str),
+    geo_type = "state",
+    geoid    = str_pad(as.character(geoid), 2, "left", "0"),
+    geo_name = as.character(geoname),
+    variable = variable
+  ) %>%
+  transmute(
+    source = "COOT",
+    geo_type, geoid, geo_name, year, variable,
+    metric = "support",
+    value  = pct,
+    population = NA_real_
+  )
+
+# ---- align schemas and bind ---------------------------------------------------
+y24_ready <- y24_long %>%
+  transmute(
+    source, geo_type, geoid = as.character(geoid),
+    geo_name = as.character(geo_name),
+    year, variable, metric, value, population
+  )
+
+coot_ready <- coot_long %>%
+  transmute(
+    source, geo_type, geoid = as.character(geoid),
+    geo_name = as.character(geo_name),
+    year, variable, metric, value, population
+  )
+
+ycom_unified <- bind_rows(y24_ready, coot_ready) %>%
+  left_join(var_dict, by = "variable") %>%
+  arrange(source, geo_type, variable, geo_name, year, metric)
+
+# ---- quick sanity prints -------------------------------------------------------
+cat("\nUnified rows:", nrow(ycom_unified), "\n")
+str(ycom_unified %>% select(source, geo_type, geoid, geo_name, year, variable, metric, value, population) %>% slice(1))
+glimpse(ycom_unified)
+
+# County Hourly Load Profiles 2016-2023
+# Metadata-only inspection of an HDF5 file with:
+#   - no assumptions about internal structure
+#   - no assumptions about which HDF5 package you have (rhdf5 vs hdf5r)
+#   - safe handling of attributes in hdf5r
+
+file_url <- "https://data.openei.org/files/8562/historic_load_hourly_2016_2023_county.h5"
+local_fp <- "historic_load_hourly_2016_2023_county.h5"
+
+# -------------------------------------------------------------------
+# 1. Download file if needed
+# -------------------------------------------------------------------
+if (!file.exists(local_fp)) {
+  download.file(file_url, local_fp, mode = "wb")
+}
+
+# -------------------------------------------------------------------
+# 2. Detect which HDF5 package is available (if any)
+# -------------------------------------------------------------------
+ip <- rownames(installed.packages())
+have_rhdf5 <- "rhdf5" %in% ip
+have_hdf5r <- "hdf5r" %in% ip
+
+if (!have_rhdf5 && !have_hdf5r) {
+  stop(
+    "No HDF5 package found.\n",
+    "Please install one of the following and re-run this script:\n",
+    "  - 'rhdf5' (via Bioconductor)\n",
+    "  - 'hdf5r' (via CRAN)\n"
+  )
+}
+
+# -------------------------------------------------------------------
+# 3A. Metadata inspection using rhdf5 (if available)
+# -------------------------------------------------------------------
+if (have_rhdf5) {
+  library(rhdf5)
+  cat("Using package: rhdf5\n")
+  
+  cat("\n=== High-level structure (h5ls) ===\n")
+  print(h5ls(local_fp))
+  
+  cat("\n=== Recursive metadata (attributes) ===\n")
+  
+  inspect_rhdf5 <- function(file, path = "/") {
+    # list items directly under 'path'
+    items <- h5ls(file, recursive = FALSE, path = path)
+    
+    for (i in seq_len(nrow(items))) {
+      obj <- items[i, ]
+      obj_path <- file.path(obj$group, obj$name)
+      obj_path <- gsub("//", "/", obj_path)
+      
+      cat("\n---", obj$otype, ":", obj_path, "---\n")
+      
+      # attempt to read attributes (metadata)
+      attrs <- try(h5readAttributes(file, obj_path), silent = TRUE)
+      if (inherits(attrs, "try-error") || length(attrs) == 0) {
+        cat("No attributes.\n")
+      } else {
+        print(attrs)
+      }
+      
+      # recurse into groups
+      if (obj$otype == "H5I_GROUP") {
+        inspect_rhdf5(file, obj_path)
+      }
+    }
+  }
+  
+  inspect_rhdf5(local_fp)
+  H5close()
+}
+
+# -------------------------------------------------------------------
+# 3B. Metadata inspection using hdf5r (if rhdf5 not used / not present)
+#    This is the branch that ran in your last attempt
+# -------------------------------------------------------------------
+if (!have_rhdf5 && have_hdf5r) {
+  library(hdf5r)
+  cat("Using package: hdf5r\n")
+  
+  h5 <- H5File$new(local_fp, mode = "r")
+  
+  cat("\n=== High-level structure at root (h5$ls) ===\n")
+  print(h5$ls(recursive = FALSE))
+  
+  cat("\n=== Recursive metadata (attributes) ===\n")
+  
+  inspect_hdf5r <- function(node, path = "/") {
+    cat("\n### Object:", path, "###\n")
+    
+    # attributes (metadata) using high-level helper
+    atts <- try(h5attributes(node), silent = TRUE)
+    if (inherits(atts, "try-error") || length(atts) == 0) {
+      cat("No attributes.\n")
+    } else {
+      print(atts)
+    }
+    
+    # recurse into children if this is a file or group
+    if (inherits(node, "H5File") || inherits(node, "H5Group")) {
+      children <- node$ls(recursive = FALSE)
+      
+      if (nrow(children) == 0) return(invisible(NULL))
+      
+      for (i in seq_len(nrow(children))) {
+        nm <- children$name[i]
+        child <- node[[nm]]
+        
+        # build child path nicely
+        if (path == "/") {
+          child_path <- paste0("/", nm)
+        } else {
+          child_path <- file.path(path, nm)
+        }
+        child_path <- gsub("//", "/", child_path)
+        
+        inspect_hdf5r(child, child_path)
+      }
+    }
+  }
+  
+  inspect_hdf5r(h5, "/")
+  h5$close_all()
+}
+
