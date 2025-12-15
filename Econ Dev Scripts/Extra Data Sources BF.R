@@ -1895,7 +1895,7 @@ for (col_name in colnames(county_health_rankings_2025)) {
 }
 cat("\nGlimpse of 2025 County Health Rankings Analytic Data with Readable Column Names:\n"); glimpse(county_health_rankings_2025_readable)
 
-#YALE CLIMATE OPINION MAPS
+#YALE CLIMATE OPINION MAPS---------------------
 # YCOM unified long table (type-stable) 
 required <- c("tidyverse", "janitor", "readr", "stringr")
 to_install <- setdiff(required, rownames(installed.packages()))
@@ -2146,3 +2146,293 @@ if (!have_rhdf5 && have_hdf5r) {
   h5$close_all()
 }
 
+
+#UnionStats -- Union membership by state and sector, time series---------------------
+library(tidyverse); library(data.table); library(lubridate); library(readxl)
+unionstats_state_sector <- "http://www.unionstats.com/state/xls/state_1983_2024.xlsx"
+#Download to temp file
+temp_unionstats_file <- tempfile(fileext = ".xlsx")
+download.file(unionstats_state_sector, destfile = temp_unionstats_file, mode = "wb")
+#List sheet names
+sheet_names <- excel_sheets(temp_unionstats_file)
+cat("\nUnionStats Excel Sheet Names:\n"); print(sheet_names)
+#Read in the Excel file
+unionstats_data <- read_excel(temp_unionstats_file, skip = 2)
+glimpse(unionstats_data)
+
+#Michigan State University - Correlates of State Policy and Politics Project Dataset
+library(tidyverse); library(csppData); library(cspp)
+correlates_state_policy_data <- csppData::correlates
+head(correlates_state_policy_data)
+correlates_of_state_policy_codebook <- csppData::codebook
+glimpse(correlates_of_state_policy_codebook)
+#Revise correlates_of_state_policy_codebook such that we extract any URLs from "sources" column and add in URL column alongside
+#First, we should check to see if any row contains more than one URL
+#Note that URL could start with http or https; note also that we might have some URLs end in a / and some might not
+#Example: https://www.census.gov/acs/www/data/data-tables-and-tools/american- factfinder/ 
+#Example: http://stateminder.org/
+#Example: https://www.cdc.gov/nchs/data_access/vitalstatsonline.htm
+#Note that we will need to clean any URLs too, e.g. "https://www.census.gov/acs/www/data/data-tables-and-tools/american- factfinder/"
+print(unique(correlates_of_state_policy_codebook$sources))
+print(unique(correlates_of_state_policy_codebook$category))
+
+#Zoning Data Across United States: https://github.com/dmilo75/ai-zoning 
+bartik_gupta_milo_zoning_data_folder <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/Bartik_Gupta_Milo_Zoning_Data"
+zoning_data_cbsa <- read_csv(file.path(bartik_gupta_milo_zoning_data_folder, "cbsa.csv"))
+zoning_data_csa <- read_csv(file.path(bartik_gupta_milo_zoning_data_folder, "csa.csv"))
+zoning_data_local_gov_level <- read_csv(file.path(bartik_gupta_milo_zoning_data_folder, "local_gov_level.csv"))
+zoning_data_state <- read_csv(file.path(bartik_gupta_milo_zoning_data_folder, "state.csv"))
+zoning_data_zcta <- read_csv(file.path(bartik_gupta_milo_zoning_data_folder, "zcta.csv"))
+glimpse(zoning_data_cbsa)
+glimpse(zoning_data_csa)
+glimpse(zoning_data_local_gov_level)
+glimpse(zoning_data_state)
+glimpse(zoning_data_zcta)
+
+#Event-Correlated Outage Data
+event_correlated_outreach_data_zip <- "https://data.openei.org/files/6458/Outage_Dataset_R1.zip"
+temp_outage_zip <- tempfile(fileext = ".zip")
+data_dir <- file.path(tempdir(), "Outage_Dataset")
+download.file(event_correlated_outreach_data_zip, temp_outage_zip, mode = "wb")
+
+outage_zip_contents <- unzip(temp_outage_zip, list = TRUE)
+print(outage_zip_contents)
+
+if (!dir.exists(data_dir)) dir.create(data_dir, recursive = TRUE)
+unzip(temp_outage_zip, exdir = data_dir)
+
+csv_paths <- list.files(data_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
+
+group_files      <- csv_paths[grepl("eaglei_outages_\\d{4}_group\\.csv$",      basename(csv_paths))]
+merged_files     <- csv_paths[grepl("eaglei_outages_\\d{4}_merged\\.csv$",     basename(csv_paths))]
+events_files     <- csv_paths[grepl("eaglei_outages_with_events_\\d{4}\\.csv$", basename(csv_paths))]
+events_8h_files  <- csv_paths[grepl("eaglei_outages_with_events_\\d{4}_8_hours_lag\\.csv$",  basename(csv_paths))]
+events_24h_files <- csv_paths[grepl("eaglei_outages_with_events_\\d{4}_24_hours_lag\\.csv$", basename(csv_paths))]
+
+read_and_bind <- function(files) {
+  if (!length(files)) return(NULL)
+  do.call(rbind, lapply(files, function(f) {
+    y <- as.integer(sub(".*_(\\d{4}).*", "\\1", basename(f)))
+    df <- read.csv(f, stringsAsFactors = FALSE)
+    if ("year" %in% names(df)) {
+      if (!"source_year" %in% names(df)) df$source_year <- y
+    } else {
+      df$year <- y
+    }
+    df
+  }))
+}
+
+outages_group_all      <- read_and_bind(group_files)
+outages_merged_all     <- read_and_bind(merged_files)
+outages_events_all     <- read_and_bind(events_files)
+outages_events_8h_all  <- read_and_bind(events_8h_files)
+outages_events_24h_all <- read_and_bind(events_24h_files)
+
+sapply(list(
+  group      = outages_group_all,
+  merged     = outages_merged_all,
+  events     = outages_events_all,
+  events_8h  = outages_events_8h_all,
+  events_24h = outages_events_24h_all
+), function(x) if (is.null(x)) 0L else nrow(x))
+
+cat("\nGlimpse of Event-Correlated Outage Data:\n")
+cat("Glimpse of outages_group_all:\n"); glimpse(outages_group_all)
+cat("Glimpse of outages_merged_all:\n"); glimpse(outages_merged_all)
+cat("Glimpse of outages_events_all:\n"); glimpse(outages_events_all)
+cat("Glimpse of outages_events_8h_all:\n"); glimpse(outages_events_8h_all)
+cat("Glimpse of outages_events_24h_all:\n"); glimpse(outages_events_24h_all)
+
+#Opportunity Insights Data: https://opportunityinsights.org/wp-content/uploads/2018/03/patents_data.zip
+
+#Business Formation Statistics, Census Bureau
+library(httr); library(tidyverse); library(readxl)
+business_applications_by_county_2005_2024_link <- "https://www.census.gov/econ/bfs/xlsx/bfs_county_apps_annual.xlsx" 
+temp_bfs_file <- tempfile(fileext = ".xlsx")
+download.file(business_applications_by_county_2005_2024_link, destfile = temp_bfs_file, mode = "wb")
+business_applications_by_county_2005_2024 <- read_excel(temp_bfs_file, skip = 2)
+glimpse(business_applications_by_county_2005_2024)
+
+#Electric Vehicle Adoption by County, 2023 and 2024
+#Note: This file includes data, notes, and references behind Figures 1 and 2 of Muratori et al. (2025) Trends and 2025 Insights on the Rise of Electric Vehicles in United States. Nature Reviews Clean Technology.
+EV_adoption_county_23_24_link <- "https://static-content.springer.com/esm/art%3A10.1038%2Fs44359-025-00108-3/MediaObjects/44359_2025_108_MOESM2_ESM.xlsx"
+temp_ev_file <- tempfile(fileext = ".xlsx")
+download.file(EV_adoption_county_23_24_link, destfile = temp_ev_file, mode = "wb")
+EV_adoption_county_23_24 <- read_excel(temp_ev_file, sheet = "Fig1Data")
+glimpse(EV_adoption_county_23_24)
+
+#Lifetime EV Charging Costs by Scenario, by County
+ev_charging_county_scenario_link <- "https://static-content.springer.com/esm/art%3A10.1038%2Fs41560-025-01894-7/MediaObjects/41560_2025_1894_MOESM4_ESM.xlsx"
+temp_ev_charging_file <- tempfile(fileext = ".xlsx")
+download.file(ev_charging_county_scenario_link, destfile = temp_ev_charging_file, mode = "wb")
+#Loop through each sheet in the file and glimpse
+ev_charging_county_scenario_sheets <- excel_sheets(temp_ev_charging_file)
+ev_charging_county_scenario_list <- list()
+for (sheet in ev_charging_county_scenario_sheets) {
+  df <- read_excel(temp_ev_charging_file, sheet = sheet)
+  ev_charging_county_scenario_list[[sheet]] <- df
+  cat(paste0("\nGlimpse of sheet: ", sheet, "\n"))
+  glimpse(df)
+}
+
+# psvi_glimpse_only.R — scrape PSVI county GeoJSON payload(s), build wide/long, GLIMPSE only (no exports)
+suppressPackageStartupMessages({
+  pkgs <- c("httr2","xml2","stringr","jsonlite","purrr","dplyr","tidyr","tibble","digest")
+  miss <- setdiff(pkgs, rownames(installed.packages()))
+  if (length(miss)) install.packages(miss, quiet = TRUE)
+  invisible(lapply(pkgs, require, character.only = TRUE))
+})
+
+get_psvi_long <- function(base_url = "https://psvi.netlify.app/",
+                          ua = sprintf("psvi-glimpse/1.0 (R %s; %s)", getRversion(), R.version$platform),
+                          timeout_sec = 30) {
+  `%||%` <- function(a,b) if (is.null(a)) b else a
+  
+  fetch_html <- function(url) {
+    resp <- httr2::request(url) |>
+      httr2::req_user_agent(ua) |>
+      httr2::req_timeout(timeout_sec) |>
+      httr2::req_perform()
+    if (httr2::resp_status(resp) != 200) stop("HTTP failed: ", httr2::resp_status(resp))
+    httr2::resp_body_html(resp)
+  }
+  
+  extract_payloads <- function(doc) {
+    blob <- paste(xml2::xml_text(xml2::xml_find_all(doc, ".//script")), collapse = "\n")
+    re <- stringr::regex(
+      "geo_json_[A-Za-z0-9_]+_add\\s*\\(\\s*(\\{.*?\\})\\s*\\)\\s*;",
+      dotall = TRUE
+    )
+    m <- stringr::str_match_all(blob, re)[[1]]
+    if (nrow(m)) return(m[,2])
+    
+    re2 <- stringr::regex(
+      "\\{[\"']type[\"']\\s*:\\s*[\"']FeatureCollection[\"'][\\s\\S]*?\\}\\s*",
+      dotall = TRUE
+    )
+    alt <- stringr::str_extract_all(blob, re2)[[1]]
+    if (!length(alt)) stop("No GeoJSON payloads found; site may have changed.")
+    alt
+  }
+  
+  parse_payload <- function(txt) {
+    purrr::possibly(jsonlite::fromJSON, otherwise = NULL)(txt, simplifyVector = FALSE)
+  }
+  
+  looks_like_counties <- function(obj) {
+    if (is.null(obj$features) || !length(obj$features)) return(FALSE)
+    props <- obj$features[[1]]$properties %||% list()
+    any(c("FIPS","CNTY_FIPS","FULLNAME","STATE_NAME","GEOID") %in% names(props))
+  }
+  
+  props_table <- function(obj) {
+    props_list <- purrr::map(obj$features, ~{
+      p <- .x$properties %||% list()
+      purrr::map(p, \(v) if (is.null(v)) NA else if (length(v) > 1) paste(v, collapse="; ") else v)
+    })
+    all_cols <- unique(unlist(purrr::map(props_list, names)))
+    norm <- purrr::map(props_list, \(p){ p[setdiff(all_cols, names(p))] <- NA; p[all_cols] })
+    tibble::as_tibble(dplyr::bind_rows(norm))
+  }
+  
+  # ---- run ----
+  doc <- fetch_html(base_url)
+  payloads <- extract_payloads(doc)
+  objs <- purrr::compact(purrr::map(payloads, parse_payload))
+  county_objs <- purrr::keep(objs, looks_like_counties)
+  if (!length(county_objs)) stop("No county FeatureCollection detected.")
+  
+  hashes <- purrr::map_chr(county_objs, ~ digest::digest(.x, algo = "xxhash64"))
+  county_objs <- county_objs[!duplicated(hashes)]
+  best <- county_objs[[ which.max(purrr::map_int(county_objs, ~ length(.x$features))) ]]
+  
+  wide <- props_table(best)
+  
+  id_cols <- intersect(
+    c("FIPS","CNTY_FIPS","STATE_FIPS","STATE_NAME","NAME","FULLNAME","GEOID"),
+    names(wide)
+  )
+  if (!length(id_cols)) stop("No identifier columns found in wide table.")
+  
+  time_cols <- grep("^X?\\d{4}_", names(wide), value = TRUE)
+  if (!length(time_cols)) return(tibble::tibble())
+  
+  info <- tibble::tibble(col = time_cols) |>
+    dplyr::mutate(
+      clean  = stringr::str_remove(col, "^X"),
+      year   = as.integer(stringr::str_extract(clean, "^\\d{4}")),
+      metric = stringr::str_replace(clean, "^\\d{4}_", "")
+    ) |>
+    dplyr::filter(!is.na(year), !is.na(metric))
+  
+  years <- sort(unique(info$year))
+  base <- wide |>
+    dplyr::select(dplyr::all_of(id_cols)) |>
+    tidyr::crossing(year = years)
+  
+  for (m in unique(info$metric)) {
+    cols_m <- info |> dplyr::filter(metric == m) |> dplyr::pull(col)
+    tmp <- wide |>
+      dplyr::select(dplyr::all_of(id_cols), dplyr::all_of(cols_m)) |>
+      tidyr::pivot_longer(cols = dplyr::all_of(cols_m), names_to = "c", values_to = m) |>
+      dplyr::mutate(year = as.integer(stringr::str_extract(stringr::str_remove(c, "^X"), "^\\d{4}"))) |>
+      dplyr::select(-c)
+    base <- dplyr::left_join(base, tmp, by = c(id_cols, "year"))
+  }
+  
+  base |>
+    dplyr::arrange(dplyr::across(dplyr::all_of(id_cols[1])), year)
+}
+
+psvi_long <- get_psvi_long()
+dplyr::glimpse(psvi_long)
+
+#Data Center Current and Projected Locations--------------
+#Source: PNNL Open-Source Data-Center Atlas, https://im3.pnnl.gov/datacenter-atlas
+im3_datacenter_folder <- "~/Library/CloudStorage/OneDrive-RMI/US Program - Documents/6_Projects/Clean Regional Economic Development/ACRE/Data/Raw Data/IM3 Open Source Data Center Atlas/v1"
+library(sf)
+existing_data_centers_gpkg <- file.path(im3_datacenter_folder, "existing", "im3_open_source_data_center_atlas.gpkg")
+existing_data_centers_csv <- file.path(im3_datacenter_folder, "existing", "im3_open_source_data_center_atlas.csv")
+#For existing, load and glimpse the relevant files
+#For the geopackage, loop through and glimpse all layers available
+#Print out all unique layers in the geopackage
+print("Layers in existing data centers GeoPackage:")
+existing_layers <- st_layers(existing_data_centers_gpkg)
+print(existing_layers)
+
+#Load geopackage with all layers included; glimpse the resulting sf object
+existing_data_centers_gpkg_sf <- st_read(existing_data_centers_gpkg)
+glimpse(existing_data_centers_gpkg_sf)
+
+existing_data_centers_csv_df <- readr::read_csv(existing_data_centers_csv)
+cat("\nGlimpse of existing data centers from CSV:\n"); glimpse(existing_data_centers_csv_df)
+
+#For projected, loop through each scenario subfolder within "projected" and load and glimpse the relevant geojson files
+projected_data_centers_folder <- file.path(im3_datacenter_folder, "projected")
+scenario_folders <- list.dirs(projected_data_centers_folder, recursive = FALSE, full.names = TRUE)
+projected_data_centers_list <- list()
+for (scenario_folder in scenario_folders) {
+  scenario_name <- basename(scenario_folder)
+  geojson_files <- list.files(scenario_folder, pattern = "\\.geojson$", full.names = TRUE)
+  scenario_data_list <- list()
+  for (geojson_file in geojson_files) {
+    df <- st_read(geojson_file, quiet = TRUE)
+    scenario_data_list[[basename(geojson_file)]] <- df
+    cat(paste0("\nGlimpse of projected data centers for scenario: ", scenario_name, ", file: ", basename(geojson_file), "\n"))
+    glimpse(df)
+  }
+  projected_data_centers_list[[scenario_name]] <- scenario_data_list
+}
+
+#Civic Opportunity by County--------------
+civic_opporutnity_county_link <- "https://github.com/snfagora/american_civic_opportunity_datasets/blob/main/data_outputs/cnty_counts_cov.csv"
+civic_opportunity_zipcode_link <- "https://github.com/snfagora/american_civic_opportunity_datasets/blob/main/data_outputs/zcta_counts_cov.csv"
+temp_civic_county_file <- tempfile(fileext = ".csv")
+download.file(civic_opporutnity_county_link, destfile = temp_civic_county_file, mode = "wb")
+civic_opportunity_county <- read_csv(temp_civic_county_file)
+cat("\nGlimpse of Civic Opportunity by County:\n"); glimpse(civic_opportunity_county)
+temp_civic_zipcode_file <- tempfile(fileext = ".csv")
+download.file(civic_opportunity_zipcode_link, destfile = temp_civic_zipcode_file, mode = "wb")
+civic_opportunity_zipcode <- read_csv(temp_civic_zipcode_file)
+cat("\nGlimpse of Civic Opportunity by Zipcode:\n"); glimpse(civic_opportunity_zipcode)
