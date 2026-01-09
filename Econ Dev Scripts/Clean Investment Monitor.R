@@ -166,8 +166,8 @@ state_inv_tot <- investment %>%
   left_join(census_divisions, by=c("State"="State.Code")) %>%
   group_by(Division,State,quarter) %>%
   summarize_at(vars(Estimated_Actual_Quarterly_Expenditure),sum,na.rm=T) %>%
-  filter(Division==division_abbr$Division,
-         State != "DC") %>%
+  #filter(Division==division_abbr$Division,
+   #      State != "DC") %>%
   left_join(socioecon,by=c("State"="State","quarter"="quarter"))%>%
   mutate(inv_gdp=Estimated_Actual_Quarterly_Expenditure/real_gdp)
   

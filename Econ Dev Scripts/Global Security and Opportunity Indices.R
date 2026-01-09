@@ -402,6 +402,41 @@ Upstream_demand<-mineral_demand %>%                     #SM: doesnt look like Up
   ungroup() %>%
   mutate(demand_index=median_scurve(demand_index))
 
+#Critical Mineral Demand by Component-------------
+#from 'Understanding supply chain constraints for the US clean energy transition' - https://www.nature.com/articles/s44406-025-00009-1#Sec2
+
+component_demand<-read_excel(path=paste0(raw_data,"yao_etal_nature_supplychains.xlsx"),sheet=3,skip=1)  %>%
+  slice(1:27) %>%
+  rename("mineral"=`...1`)
+component_demand <- component_demand %>%
+  mutate(across(-mineral, ~ as.numeric(as.character(.x)))) %>%
+  pivot_longer(
+    cols = -mineral,
+    names_to = "key",
+    values_to = "value"
+  ) %>%
+  separate(
+    key,
+    into = c("tech", "component", "subtech"),
+    sep = "_",
+    fill = "right",
+    extra = "merge"
+  )%>%
+  mutate(
+    tech = recode(
+      tech,
+      LBW = "Wind",
+      OSW = "Offshore Wind",
+      SPV = "Solar",
+      LIB = "Batteries"
+    )
+  ) 
+component_demand <- component_demand %>%
+  group_by(mineral) %>%
+  mutate(demand_index=median_scurve(value))
+
+tech_demand<-component_demand %>%
+  group_by(tech,subtech)
 
 
 #Resource Availability---------------------
@@ -573,7 +608,7 @@ zinc_res <- read_reserves(
 
 pgm_res <- read_reserves(
   path        = path_excel,
-  sheet       =91,
+  sheet       = 91,
   skip        = 2,
   nm_col      = "Thousand tonnes",
   val_col     = "At end of 2024",
@@ -1432,10 +1467,9 @@ subcat<-read.csv(paste0(raw_data,"hts_codes_categories_bolstered_final.csv")) %>
   mutate(code=as.character(HS6))
 
 energy_codes<-subcat %>%
-  rename(code6=code) %>%
   mutate(industry=paste(Technology,`Value.Chain`),
-         code=substr(code6,1,4)) %>%
-  select(industry,code,code6)
+         code=substr(HS6,1,4)) %>%
+  select(industry,HS6,code)
 
 #4 Digit
 aec_4_data<-read.csv(paste0(raw_data,"hs92_country_product_year_4.csv")) %>%
@@ -3058,22 +3092,67 @@ iea_weo<-read.csv(paste0(raw_data,"WEO2024_AnnexA_Free_Dataset_World.csv")) %>%
   mutate(variable=ifelse(variable=="demand","Overall Global Demand",variable))
 
 
+neo_global<-bnef_neo %>%
+  filter(Scenario=="ETS",
+         Indicator %in% c("Primary energy consumption",
+                          "Final energy consumption"),
+         !grepl("Other|Rest|Africa",Region),
+         Sector=="All sectors",
+         Fuel.type %in% c("Electric Vehicles",
+                          "Nuclear",
+                          "Coal",
+                          "Batteries",
+                          "Hydrogen",
+                          "Wind",
+                          "Oil",
+                          "Solar",
+                          "Gas",
+                          "Geothermal"),
+         Region=="Global") %>%
+  mutate_at(vars(X2000:X2050),as.numeric) %>%
+  mutate(growth=(`X2035`-`X2024`)/X2024) %>%
+  rename(tech = Fuel.type) %>%
+  select(tech, X2024, X2035, growth) %>%
+  rename(
+    global_2024  = X2024,
+    global_2035  = X2035,
+    global_growth = growth
+  )
+
 neo<-bnef_neo %>%
   filter(Scenario=="ETS",
-         Indicator=="Primary energy consumption",
+         Indicator %in% c("Primary energy consumption",
+                          "Final energy consumption"),
          !Region %in% c("Global",
                         "MENAT"),
          !grepl("Other|Rest|Africa",Region),
          Sector=="All sectors",
-         Fuel.type %in% techs) %>%
+         Fuel.type %in% c("Electric Vehicles",
+                          "Nuclear",
+                          "Coal",
+                          "Batteries",
+                          "Hydrogen",
+                          "Wind",
+                          "Oil",
+                          "Solar",
+                          "Gas",
+                          "Geothermal")) %>%
   mutate(Region=ifelse(Region=="US","United States",
                        ifelse(Region=="UK","United Kingdom",Region))) %>%
   mutate_at(vars(X2000:X2050),as.numeric) %>%
   mutate(growth=(`X2035`-`X2024`)/X2024) %>%
-  group_by(Fuel.type) %>%
-  mutate(demand_size_index=median_scurve(`X2035`),
-         demand_growth_index=median_scurve(growth)) %>%
   rename("tech"="Fuel.type") %>%
+  left_join(neo_global, by = "tech") %>%
+  group_by(tech) %>%
+  mutate(
+    # relative-to-global measures (global average = 1)
+    rel_size_2035   = `X2035` / global_2035,
+    rel_growth      = growth / global_growth,
+    
+    # now convert those relatives into indices (still "compared to global")
+    demand_size_index   = median_scurve(rel_size_2035),
+    demand_growth_index = median_scurve(rel_growth)
+  ) %>%
   rowwise() %>%
   mutate(
     demand_index = (demand_size_index + 2 * demand_growth_index) / 3
@@ -3158,7 +3237,7 @@ evs<-iea_ev %>%
          forecast_growth_index=median_scurve(forecast_growth),
          forecast_size_index=median_scurve(`2030`)
          ) %>%
-  select(region_country,parameter,growth_index,size_index,forecast_growth_index,forecast_size_index,`2030`,`2024`,growth_2124,forecast_growth) 
+  select(region_country,parameter,growth_index,size_index,forecast_growth_index,forecast_size_index,`2030`,`2024`,`2021`,growth_2124,forecast_growth) 
 
 value_cols <- c(
   "growth_index","size_index","forecast_growth_index","forecast_size_index",
@@ -3354,16 +3433,39 @@ scatter_index<-rbind(energy_security_index %>%
 write.csv(scatter_index,"OneDrive - RMI/New Energy Industrial Strategy - Documents/Research/Data/scatter_index.csv")
 
 us_scatter_index <- scatter_index %>%
-  filter(Country=="India")%>%
+  filter(Country=="United States")%>%
   select(industry,tech,supply_chain,variable,value) %>%
   #group_by(variable) %>%
   #mutate(value=median_scurve(value)) %>%
   pivot_wider(names_from=variable,values_from=value)
 
 write.csv(us_scatter_index %>%
-            mutate( `Overall Energy Security Index`=1- `Overall Energy Security Index`),"Downloads/ind_scatter.csv")
+            mutate( `Overall Energy Security Index`=1- `Overall Energy Security Index`),"Downloads/us_scatter.csv")
 View(us_scatter_index %>% ungroup() %>% summarize(security=mean((1- `Overall Energy Security Index`),na.rm=T),
                                                   opportunity=mean(`Overall Economic Opportunity Index`,na.rm=T)))
+
+dotplot_index <- scatter_index %>%
+  filter(Country %in% c("United States",
+                        "Japan",
+                        "Australia",
+                        "South Korea",
+                        "Viet Nam",
+                        "India"
+                        ),
+         tech %in% c("Batteries",
+                     "Electric Vehicles",
+                     "Solar",
+                     "Nuclear",
+                     "Electric Grid"),
+         variable=="Overall Energy Security Index")%>%
+  mutate(value=1-value) %>%
+  select(industry,tech,supply_chain,variable,value) %>%
+  #group_by(variable) %>%
+  #mutate(value=median_scurve(value)) %>%
+  pivot_wider(names_from=Country,values_from=value) 
+
+write.csv(dotplot_index,"Downloads/dotplot.csv")
+
 
 
 #------------------Bilateral Relationships-----------------
